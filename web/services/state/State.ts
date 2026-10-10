@@ -566,6 +566,9 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
     // the banner is for what nobody asked for at that moment: the periodic automatic check.
     const awayToggle = autoSwgAwayToggle && Date.now() - autoSwgAwayToggle.at < 5 * 60 * 1000 ? autoSwgAwayToggle : undefined;
     let userStarted = trigger === 'check-now' || trigger === 'refine' || trigger === 'refresh-and-apply' || (trigger === 'automatic-check' && !!awayToggle);
+    // Applying a result you asked for (Refresh and Apply, Check Now and Apply, or Apply after reviewing it) settles the notice that njsPC was not running: this
+    // calculation already counts the outage, and you have looked at the dashboard. An unattended automatic check does not.
+    if (!isAutoApply || trigger === 'check-now' || trigger === 'refine' || trigger === 'refresh-and-apply') dismissAutoSwgOutages();
     if (awayToggle) {
         state.autoSwg.awayChangeNote = `Away protection ${awayToggle.on ? 'was turned on' : 'ended'}: the SWG % ${typeof previousAppliedPct === 'number' && previousAppliedPct !== pct ? `changed from ${previousAppliedPct}% to ${pct}%` : `stays at ${pct}%`}${awayToggle.on ? ' (it is never below the maintenance % while Away protection is on)' : ''}.`;
         autoSwgAwayToggle = undefined;
@@ -960,6 +963,22 @@ function autoSwgChlorinatorPowered(cfg: typeof sys.autoSwg, body: number): boole
     }
     catch (err) { return false; }
 }
+// Marks the outages as seen (all of them, or the one whose alert id is given) so the dashboard stops showing their notice. The outage itself stays in the
+// state: the calculation counts it as a loss for as long as it matters (see stormOutages) and the history records it. Returns how many were marked.
+function dismissAutoSwgOutages(alertId?: string): number {
+    let marked = 0;
+    const outages: any[] = (state.autoSwg.outages || []).map((o: any) => {
+        if (!o || o.dismissed || (typeof alertId === 'string' && 'outage-' + o.to !== alertId)) return o;
+        marked++;
+        return Object.assign({}, o, { dismissed: true });
+    });
+    if (marked > 0) {
+        state.autoSwg.outages = outages;
+        watchAutoSwg();
+        state.autoSwg.emitEquipmentChange();
+    }
+    return marked;
+}
 function watchAutoSwg() {
     try {
         let cfg = sys.autoSwg;
@@ -993,7 +1012,7 @@ function watchAutoSwg() {
             stepAt: state.autoSwg.stepAt,
             tempsUnchangedMs: autoSwgTempsUnchangedMs(now),
             runWindow: { start: win.swgStartTime, stop: win.swgStopTime, scheduleNote: win.scheduleNote },
-            outages: state.autoSwg.outages || [],
+            outages: (state.autoSwg.outages || []).filter((o: any) => o && !o.dismissed),
         }));
     }
     catch (err) { logger.warn(`AutoSwg: could not update the dashboard alerts: ${err.message}`); }
@@ -1889,6 +1908,12 @@ export class StateRoute {
         app.put('/state/autoSwg/acknowledge', (req, res) => {
             state.autoSwg.lastAutoApplyLargeChange = false;
             state.autoSwg.emitEquipmentChange();
+            return res.status(200).send(state.autoSwg.get(true));
+        });
+        // Dismisses the "njsPC was not running" notice (all of them, or the one whose alert id is in the body) so the dashboard stops showing it. The outage
+        // itself stays: the calculation counts it and the history records it. Applying a result you asked for does the same.
+        app.put('/state/autoSwg/dismissOutages', (req, res) => {
+            dismissAutoSwgOutages(req.body && typeof req.body.id === 'string' ? req.body.id : undefined);
             return res.status(200).send(state.autoSwg.get(true));
         });
         // Dismisses the current Check Now result without applying it. Clears every field
