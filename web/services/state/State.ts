@@ -38,6 +38,7 @@ import { getAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
 import { outputLog } from "../../../controller/AutoSwgOutputLog";
+import { weatherHistory } from "../../../controller/WeatherHistory";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
@@ -1169,6 +1170,22 @@ async function runAutoSwgAutoCheck() {
     }
 }
 
+// The hourly weather log (see WeatherHistory.ts): the station named in the `weather` section of config.json is read once an hour. It does nothing
+// until that section is enabled and has a station id and an API key.
+const WEATHER_FIRST_DELAY_MS = 4 * 60 * 1000;
+const WEATHER_MS = 60 * 60 * 1000;
+let weatherTimer: NodeJS.Timeout | undefined;
+export function armWeatherLog(delayMs: number = WEATHER_FIRST_DELAY_MS) {
+    if (typeof weatherTimer !== 'undefined') clearTimeout(weatherTimer);
+    weatherTimer = setTimeout(() => {
+        weatherHistory.sync(config.getSection('weather'))
+            .then(n => { if (n > 0) logger.verbose(`Weather: ${n} hour${n === 1 ? '' : 's'} added or updated.`); })
+            .catch(err => logger.error(`Weather: reading the station failed: ${err.message}`))
+            .finally(() => armWeatherLog(WEATHER_MS));
+    }, delayMs);
+    weatherTimer.unref();
+}
+
 export class StateRoute {
     public static initRoutes(app: express.Application) {
         ChlorinatorState.onPoolSetpointChanged = (chlor, previous, current) => {
@@ -1221,6 +1238,35 @@ export class StateRoute {
                 let additions = archivedSaltAdditions().filter(a => a.ts.getTime() >= Date.now() - days * 86400000).map(a => ({ ts: a.ts.toISOString(), pounds: Math.round(a.pounds * 10) / 10, ppm: Math.round(saltAdditionPpm(a.pounds, gallons)) }));
                 return res.status(200).send({ samples: saltHistory.count(), recentDrop: saltHistory.recentDrop(Date.now(), autoSwgSaltAdditions()) || null, additions: additions, daily: saltHistory.daily(days) });
             }
+            catch (err) { next(err); }
+        });
+        armWeatherLog();
+        // The hourly weather log: GET /state/weather/hourly?days=7, /state/weather/daily?days=30 (days are the station's local days) and /state/weather/status.
+        app.get('/state/weather/hourly', (req, res, next) => {
+            try {
+                let days = parseFloat(req.query.days as string);
+                if (isNaN(days) || days <= 0 || days > 800) days = 7;
+                let cfg = config.getSection('weather');
+                return res.status(200).send({ stationId: weatherHistory.getStatus(cfg).stationId, units: cfg.units === 'm' ? 'm' : 'e', days: days, hours: weatherHistory.hours(cfg, Date.now() - days * 86400000) });
+            }
+            catch (err) { next(err); }
+        });
+        app.get('/state/weather/daily', (req, res, next) => {
+            try {
+                let days = parseFloat(req.query.days as string);
+                if (isNaN(days) || days <= 0 || days > 800) days = 30;
+                let cfg = config.getSection('weather');
+                return res.status(200).send({ stationId: weatherHistory.getStatus(cfg).stationId, units: cfg.units === 'm' ? 'm' : 'e', days: days, daily: weatherHistory.daily(cfg, Date.now() - days * 86400000) });
+            }
+            catch (err) { next(err); }
+        });
+        app.get('/state/weather/status', (req, res, next) => {
+            try { return res.status(200).send(weatherHistory.getStatus(config.getSection('weather'))); }
+            catch (err) { next(err); }
+        });
+        // Today and yesterday with the station's latest report, for the dashboard.
+        app.get('/state/weather/summary', async (req, res, next) => {
+            try { return res.status(200).send(await weatherHistory.summary(config.getSection('weather'))); }
             catch (err) { next(err); }
         });
         app.get('/state/rs485Port/:id', async (req, res, next) => {
