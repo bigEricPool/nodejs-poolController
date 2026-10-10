@@ -119,6 +119,15 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
             return c;
         } catch (err) { return Promise.reject(logger.error(`Nixie Controller: initPumpAsync Error: ${err.message}`)); }
     }
+    // A schedule has just turned the circuit on. The pumps that run for that circuit and have priming set up are primed.
+    public async primeForScheduleAsync(circuitId: number) {
+        for (let i = 0; i < this.length; i++) {
+            try {
+                let pump = this[i] as NixiePump;
+                if (typeof pump.pump.circuits.find(elem => elem.circuit === circuitId) !== 'undefined') await pump.startPrimingAsync(circuitId);
+            } catch (err) { logger.error(`Nixie Pump primeForScheduleAsync: ${err.message}`); }
+        }
+    }
     private pumpFactory(pump: Pump) {
         let type = sys.board.valueMaps.pumpTypes.getName(pump.type);
         switch (type) {
@@ -205,6 +214,93 @@ export class NixiePump extends NixieEquipment {
         this.pollEquipmentAsync();
     }
     public get id(): number { return typeof this.pump !== 'undefined' ? this.pump.id : -1; }
+    // Priming for relay pumps with more than one speed (the pump types marked schedulePriming), which have no priming of their own. The pump also
+    // runs at the speed of the priming relay, with the priming circuit turned on if one is chosen, for primingMinutes:
+    //   * when a schedule turns the pump on (it ends early when the circuit the schedule turned on goes off);
+    //   * when the pump stopped although it was meant to be running, because its relays were not refreshed within their latch time (see
+    //     checkLatchAsync): njsPC was restarted or stalled, or the relay manager could not be reached. Water can settle and leave air in the lines
+    //     while the pump is stopped, however briefly. It ends early when the pump is turned off.
+    // Turning the pump on by hand does not prime. Priming is off until it is turned on for the pump (primingEnabled).
+    // Priming is off until it is turned on for the pump (primingEnabled). Not set, the priming time is 3 minutes, and a two speed pump primes at its
+    // high speed. The other pump types prime only once a priming speed or a priming circuit has been chosen.
+    public static readonly defaultPrimingMinutes = 3;
+    public get primingSettings(): { minutes: number, relay: number, circuit: number } {
+        let type = sys.board.valueMaps.pumpTypes.transform(this.pump.type);
+        let minutes = typeof this.pump.primingMinutes === 'undefined' || this.pump.primingMinutes === null ? NixiePump.defaultPrimingMinutes : this.pump.primingMinutes;
+        let relay = this.pump.primingRelay, circuit = this.pump.primingCircuit;
+        if (typeof relay === 'undefined' || relay === null) relay = type.name === 'ds' && !(circuit > 0) ? 2 : 0;
+        if (type.schedulePriming !== true || !utils.makeBool(this.pump.primingEnabled)) minutes = 0;
+        return { minutes: minutes, relay: relay, circuit: circuit > 0 ? circuit : 0 };
+    }
+    protected _priming: { until: number, trigger: number, circuitOn: boolean };
+    public get isPriming(): boolean { return typeof this._priming !== 'undefined'; }
+    public async startPrimingAsync(triggerCircuitId?: number, why: string = 'a schedule turned it on') {
+        let settings = this.primingSettings;
+        let minutes = settings.minutes, relay = settings.relay, circuit = settings.circuit;
+        if (!(minutes > 0) || this.closing) return;
+        if (!(relay > 0) && !(circuit > 0)) return;
+        let circuitOn = this.isPriming && this._priming.circuitOn;
+        // A priming circuit that is already on was turned on by someone else, so it is left as it is when priming ends.
+        if (circuit > 0 && circuit !== triggerCircuitId && !circuitOn && !state.circuits.getInterfaceById(circuit).isOn) {
+            await sys.board.circuits.setCircuitStateAsync(circuit, true);
+            circuitOn = true;
+        }
+        this._priming = { until: new Date().getTime() + minutes * 60000, trigger: triggerCircuitId, circuitOn: circuitOn };
+        logger.info(`NCP: Priming pump ${this.pump.name} for ${minutes} minute${minutes === 1 ? '' : 's'} because ${why}.`);
+        (this.controlPanel as NixieControlPanel).pumps.syncPumpStates();
+    }
+    protected endPriming(reason: string) {
+        let priming = this._priming;
+        if (typeof priming === 'undefined') return;
+        this._priming = undefined;
+        logger.info(`NCP: Priming pump ${this.pump.name} ended: ${reason}.`);
+        if (priming.circuitOn) sys.board.circuits.setCircuitStateAsync(this.pump.primingCircuit, false).catch(err => logger.error(`NCP: Error turning off the priming circuit for pump ${this.pump.name}: ${err.message}`));
+    }
+    // The relay manager turns a pump relay off when it is not refreshed within the latch time sent with each command, so a pump that is meant to be
+    // running stops when njsPC is restarted, stalls, or cannot reach the relay manager for longer than that. njsPC cannot see the relay, but it knows
+    // when it last set the relays as wanted: a gap longer than the latch means the pump stopped. So does njsPC starting up with the pump on, since
+    // starting takes longer than the latch. Either way the pump is primed (when priming is set up for it). Called after each pass that sets the relays.
+    protected static readonly relayLatchMs = 5000;
+    protected _relaysOkAt: number;
+    protected _relaysChecked = false;
+    protected async checkLatchAsync(relaysSet: boolean) {
+        let now = new Date().getTime();
+        let first = !this._relaysChecked;
+        this._relaysChecked = true;
+        if (this._targetSpeed === 0) { this._relaysOkAt = undefined; return; }
+        if (!relaysSet) return;
+        let gap = typeof this._relaysOkAt === 'undefined' ? 0 : now - this._relaysOkAt;
+        this._relaysOkAt = now;
+        try {
+            if (this.isPriming) return;
+            if (first) await this.startPrimingAsync(undefined, 'njsPC started with the pump on, so its relays had timed out');
+            else if (gap > NixiePump.relayLatchMs) await this.startPrimingAsync(undefined, `its relays were not refreshed for ${Math.round(gap / 100) / 10} s, longer than their ${NixiePump.relayLatchMs / 1000} s latch`);
+        } catch (err) { logger.error(`NCP: Error priming pump ${this.pump.name} after its relays timed out: ${err.message}`); }
+    }
+    // While it primes the pump's status is 'priming', which a dashboard shows and the solar decision waits for. Called after each pass that sets the
+    // relays.
+    protected notePrimingStatus(pstate: PumpState) {
+        // A pump status is a set of bits; the value for priming is the bit the status map names 'priming'.
+        let primingStatus: number = undefined;
+        for (let b = 0; b < 16 && typeof primingStatus === 'undefined'; b++) {
+            if (sys.board.valueMaps.pumpStatus.transform(1 << b).name === 'priming') primingStatus = 1 << b;
+        }
+        if (typeof primingStatus === 'undefined') return;
+        let saysPriming = sys.board.valueMaps.pumpStatus.transform(pstate.status).name === 'priming';
+        if (this.isPriming && this._targetSpeed > 0) { if (!saysPriming) pstate.status = primingStatus; }
+        else if (saysPriming) pstate.status = this._targetSpeed > 0 ? 1 : 0;
+    }
+    // The speed with priming applied. The pump types that can be primed combine the priming relay with the speed their circuits ask for.
+    protected primedSpeed(speed: number, relay: number): number { return speed; }
+    protected applyPriming(speed: number): number {
+        let priming = this._priming;
+        if (typeof priming === 'undefined') return speed;
+        if (typeof priming.trigger === 'number' && !state.circuits.getInterfaceById(priming.trigger).isOn) this.endPriming('the circuit the schedule turned on is off');
+        else if (typeof priming.trigger !== 'number' && speed === 0) this.endPriming('the pump was turned off');
+        else if (new Date().getTime() >= priming.until) this.endPriming('the priming time is up');
+        else if (speed > 0 && this.primingSettings.relay > 0) return this.primedSpeed(speed, this.primingSettings.relay);
+        return speed;
+    }
     public async setPumpStateAsync(pstate: PumpState) {
         try {
             // Here we go we need to set the pump state.
@@ -268,6 +364,16 @@ export class NixiePump extends NixieEquipment {
                 }
             }
             else data.circuits = [];
+            if (type.schedulePriming === true) {
+                for (let name of ['primingMinutes', 'primingRelay', 'primingCircuit']) {
+                    if (typeof data[name] === 'undefined') continue;
+                    let val = parseInt(data[name], 10);
+                    if (isNaN(val)) delete data[name];
+                    else data[name] = val < 0 ? 0 : val;
+                }
+                if (data.primingMinutes > 60) data.primingMinutes = 60;
+                if (typeof data.primingEnabled !== 'undefined') data.primingEnabled = utils.makeBool(data.primingEnabled);
+            }
             this.pump.set(data); // Sets all the data back to the pump.  This also sets the relays should it exist on the data.
             let spump = state.pumps.getItemById(this.pump.id, true);
             spump.name = this.pump.name;
@@ -318,6 +424,7 @@ export class NixiePump extends NixieEquipment {
             logger.info(`Nixie Pump closing ${this.pump.name}.`)
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
+            this.endPriming('the pump is closing');
             this._targetSpeed = 0;
             let pstate = state.pumps.getItemById(this.pump.id);
             try {
@@ -441,6 +548,8 @@ export class NixiePumpSS extends NixiePump {
             pstate.command = 4;
         }
         pstate.relay = relayState;
+        await this.checkLatchAsync(relayState === this._targetSpeed);
+        this.notePrimingStatus(pstate);
         let statusAfter = pstate.status;
         let detail = `relays set ${relayState}, relays wanted ${this._targetSpeed}, the state's targetSpeed ${pstate.targetSpeed}`;
         if (statusBefore !== statusAfter) {
@@ -472,9 +581,11 @@ export class NixiePumpDS extends NixiePumpSS {
             }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
+        _newSpeed = this.applyPriming(_newSpeed);
         this.logSpeed(_newSpeed);
         this._targetSpeed = _newSpeed;
     }
+    protected primedSpeed(speed: number, relay: number): number { return speed | (1 << relay - 1); }
     public logSpeed(_newSpeed: number) {
         if (this._targetSpeed !== _newSpeed) pumpLog(`NCP: Setting Pump ${this.pump.name} relays to Relay 1: ${_newSpeed & 1 ? 'on' : 'off'}, Relay 2: ${_newSpeed & 2 ? 'on' : 'off'}.`);
     }
@@ -524,10 +635,12 @@ export class NixiePumpHWRLY extends NixiePumpDS {
             }
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
+        _newSpeed = this.applyPriming(_newSpeed);
         this._targetSpeed = _newSpeed;
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minSpeed, this._targetSpeed), this.pump.maxSpeed);
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed}.`);
     }
+    protected primedSpeed(speed: number, relay: number): number { return Math.max(speed, relay); }
     public async setPumpStateAsync(pstate: PumpState) {
         // Don't poll while we are seting the state.
         this.suspendPolling = true;
@@ -561,6 +674,7 @@ export class NixiePumpHWRLY extends NixiePumpDS {
                     }
                 }
             }
+            await this.checkLatchAsync(targetState === relayState);
             pstate.command = this._targetSpeed;
             if (targetState === relayState) {
                 pstate.status = relayState > 0 ? 1 : 0;
@@ -570,6 +684,7 @@ export class NixiePumpHWRLY extends NixiePumpDS {
             else {
                 pstate.driveState = 0;
             }
+            this.notePrimingStatus(pstate);
             return new InterfaceServerResponse(200, 'Success');
         }
         catch (err) {

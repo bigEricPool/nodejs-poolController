@@ -125,6 +125,8 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                 // actually started.
                 else if (!c.cstate.isOn && shouldBeOn) {
                     await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
+                    // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
+                    await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
                     c.cstate.priority = 'scheduled';
                     let untriggered = false;
                     // If this schedule has been triggered then mOP comes into play if manualPriority has been set in the config.
