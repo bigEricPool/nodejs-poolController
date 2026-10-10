@@ -402,6 +402,9 @@ export class NixiePumpSS extends NixiePump {
     public async setPumpStateAsync(pstate: PumpState) {
         let relays: PumpRelay[] = this.pump.relays.get();
         let relayState = 0;
+        // At log level verbose, why and when the pump's status changes, and a reminder while it stays at 16 (blocked) although the relays are set
+        // as wanted, so a status that does not match what the pump is doing can be traced.
+        let statusBefore = pstate.status;
         for (let i = 0; i < relays.length; i++) {
             let pr = relays[i];
             if (typeof pr.id === 'undefined') pr.id = i + 1; // remove when id is added to dP relays upon save.
@@ -416,7 +419,10 @@ export class NixiePumpSS extends NixiePump {
                     if (res.status.code === 200) {
                         if (isOn) relayState |= (1 << pr.id - 1);
                     }
-                    else pstate.status = 16;
+                    else {
+                        logger.verbose(`NCP: Pump ${this.pump.name} relay ${pr.id} to ${isOn ? 'on' : 'off'}: the relay manager answered ${res.status.code} ${res.status.message || ''}, so the pump status is set to 16 (blocked).`);
+                        pstate.status = 16;
+                    }
                 }
                 catch (err) {
                     logger.error(`NCP: Error setting pump ${this.pump.name} relay ${pr.id} to ${isOn ? 'on' : 'off'}.  Error ${err.message}}`);
@@ -435,8 +441,19 @@ export class NixiePumpSS extends NixiePump {
             pstate.command = 4;
         }
         pstate.relay = relayState;
+        let statusAfter = pstate.status;
+        let detail = `relays set ${relayState}, relays wanted ${this._targetSpeed}, the state's targetSpeed ${pstate.targetSpeed}`;
+        if (statusBefore !== statusAfter) {
+            logger.verbose(`NCP: Pump ${this.pump.name} status changed from ${statusBefore} to ${statusAfter} (${detail}).`);
+            this._statusNoteAt = new Date().getTime();
+        }
+        else if (statusAfter === 16 && relayState === this._targetSpeed && new Date().getTime() - (this._statusNoteAt || 0) >= 600000) {
+            logger.verbose(`NCP: Pump ${this.pump.name} status is still 16 (blocked) although its relays are set as wanted (${detail}).`);
+            this._statusNoteAt = new Date().getTime();
+        }
         return new InterfaceServerResponse(200, 'Success');
     }
+    protected _statusNoteAt: number;
 }
 export class NixiePumpDS extends NixiePumpSS {
     public setTargetSpeed(pState: PumpState) {
