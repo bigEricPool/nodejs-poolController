@@ -220,16 +220,16 @@ export class NixiePump extends NixieEquipment {
     //   * when the pump stopped although it was meant to be running, because its relays were not refreshed within their latch time (see
     //     checkLatchAsync): njsPC was restarted or stalled, or the relay manager could not be reached. Water can settle and leave air in the lines
     //     while the pump is stopped, however briefly. It ends early when the pump is turned off.
-    // Turning the pump on by hand does not prime.
-    // Not set, the priming time is 3 minutes, and a two speed pump primes at its high speed. The other pump types prime only once a priming speed
-    // or a priming circuit has been chosen.
+    // Turning the pump on by hand does not prime. Priming is off until it is turned on for the pump (primingEnabled).
+    // Priming is off until it is turned on for the pump (primingEnabled). Not set, the priming time is 3 minutes, and a two speed pump primes at its
+    // high speed. The other pump types prime only once a priming speed or a priming circuit has been chosen.
     public static readonly defaultPrimingMinutes = 3;
     public get primingSettings(): { minutes: number, relay: number, circuit: number } {
         let type = sys.board.valueMaps.pumpTypes.transform(this.pump.type);
         let minutes = typeof this.pump.primingMinutes === 'undefined' || this.pump.primingMinutes === null ? NixiePump.defaultPrimingMinutes : this.pump.primingMinutes;
         let relay = this.pump.primingRelay, circuit = this.pump.primingCircuit;
         if (typeof relay === 'undefined' || relay === null) relay = type.name === 'ds' && !(circuit > 0) ? 2 : 0;
-        if (type.schedulePriming !== true) minutes = 0;
+        if (type.schedulePriming !== true || !utils.makeBool(this.pump.primingEnabled)) minutes = 0;
         return { minutes: minutes, relay: relay, circuit: circuit > 0 ? circuit : 0 };
     }
     protected _priming: { until: number, trigger: number, circuitOn: boolean };
@@ -372,6 +372,7 @@ export class NixiePump extends NixieEquipment {
                     else data[name] = val < 0 ? 0 : val;
                 }
                 if (data.primingMinutes > 60) data.primingMinutes = 60;
+                if (typeof data.primingEnabled !== 'undefined') data.primingEnabled = utils.makeBool(data.primingEnabled);
             }
             this.pump.set(data); // Sets all the data back to the pump.  This also sets the relays should it exist on the data.
             let spump = state.pumps.getItemById(this.pump.id, true);
