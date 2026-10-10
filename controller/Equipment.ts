@@ -397,6 +397,8 @@ export class PoolSystem implements IPoolSystem {
         if (this._timerChanges) clearTimeout(this._timerChanges);
         if (this._timerDirty) clearTimeout(this._timerDirty);
         logger.info(`Shut down sys (config) object timers`); 
+        // A configuration save that is still being written is finished before the process exits.
+        while (typeof this._saving !== 'undefined') await this._saving;
         return this.board.stopAsync();
     }
     public initNixieController() {
@@ -472,10 +474,18 @@ export class PoolSystem implements IPoolSystem {
             return;
         }
         sys.emitEquipmentChange();
-        Promise.resolve()
-            .then(() => { utils.writeFileAtomicSync(sys.cfgPath, JSON.stringify(sys.data, undefined, 2)); })
-            .catch(function (err) { if (err) logger.error('Error writing pool config %s %s', err, sys.cfgPath); });
+        // Saved without holding up the process, one save at a time (see State.persist and utils.writeFileAtomicAsync).
+        if (typeof this._saving !== 'undefined') { this._saveAgain = true; return; }
+        const self = this;
+        this._saving = utils.writeFileAtomicAsync(sys.cfgPath, JSON.stringify(sys.data, undefined, 2))
+            .catch(function (err) { if (err) logger.error('Error writing pool config %s %s', err, sys.cfgPath); })
+            .then(function () {
+                self._saving = undefined;
+                if (self._saveAgain) { self._saveAgain = false; self.persist(); }
+            });
     }
+    private _saving: Promise<void>;
+    private _saveAgain = false;
     // We are doing this because TS is lame. Accessing the app servers from the routes causes a cyclic include.
     public findServersByType(type: string) {
         let srv = [];
