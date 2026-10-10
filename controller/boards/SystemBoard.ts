@@ -4678,7 +4678,12 @@ export class HeaterCommands extends BoardCommands {
                                                     }
                                                 }
                                             }
-                                            if ((heatOk || committed === 'heat') && committed !== 'cool' && !blockStart && !valveWait) {
+                                            // A stop that has been decided stands until the heater reports it is off, as a start does. Switching the valve relay off takes a moment, and
+                                            // the passes made in that moment see the heater still on; with the collector lead right at the run delta a new water reading used to
+                                            // judge solar worth running again, which cleared the reheat guard the stop had just set and reported heating for an instant.
+                                            const stopping = hState.isOn && solarOffNoted.has(heater.id);
+                                            if (stopping) { }
+                                            else if ((heatOk || committed === 'heat') && committed !== 'cool' && !blockStart && !valveWait) {
                                                 isOn = true;
                                                 body.heatStatus = sys.board.valueMaps.heatStatus.getValue('solar');
                                                 isHeating = true;
@@ -4734,11 +4739,11 @@ export class HeaterCommands extends BoardCommands {
                                                 const collectorStop = hState.isCooling
                                                     ? (state.heliotrope.isNight && (!(solarT < waterTemp) || !((waterTemp - solarT) > heater.stopTempDelta)))
                                                     : (!(solarT > waterTemp) || !((solarT - waterTemp) > heater.stopTempDelta));
-                                                hState.prevHeaterOffTemp = collectorStop ? solarT : undefined;
-                                                // A stop because the water stayed past the stop level waits for the hysteresis on the other side before the next start.
-                                                hState.targetStop = (!collectorStop && stopNow) ? (hState.isCooling ? 'cooling' : 'heating') : undefined;
-                                                const restartAt = hState.isCooling ? (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
                                                 const firstOffPass = !solarOffNoted.has(heater.id);
+                                                if (firstOffPass) hState.prevHeaterOffTemp = collectorStop ? solarT : undefined;
+                                                // A stop because the water stayed past the stop level waits for the hysteresis on the other side before the next start.
+                                                if (firstOffPass) hState.targetStop = (!collectorStop && stopNow) ? (hState.isCooling ? 'cooling' : 'heating') : undefined;
+                                                const restartAt = hState.isCooling ? (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
                                                 solarOffNoted.add(heater.id);
                                                 if (firstOffPass && typeof solarReturn !== 'undefined') logger.solar(`Solar ${heater.name} (${body.name}): as it turned off the return read ${solarReturn}, ${Math.abs(Math.round((solarReturn - body.temp) * 10) / 10)} ${solarReturn - body.temp >= 0 ? 'above' : 'below'} the water at ${Math.round(body.temp * 100) / 100}.`);
                                                 if (logger.solarExplain && firstOffPass) logger.solar(`Solar ${heater.name} (${body.name}) turned off because ${collectorStop ? 'the collector lead over the water fell to the run delta ' + heater.stopTempDelta + ' (reheat guard set: the collector must rise ' + heater.startTempDelta + ' above ' + (Math.round(solarT * 10) / 10) + ')' : 'the water was ' + (hState.isCooling ? 'at or below ' : 'at or above ') + stopAt + (stopFar ? ' by ' + Math.max(hysteresis, 1) + ' or more, so there was no wait' : ' for ' + Math.round(settleMs / 1000) + ' s') + ' (no reheat guard set; solar restarts when the water is ' + (hState.isCooling ? 'above ' : 'below ') + restartAt + ')'}.`);
