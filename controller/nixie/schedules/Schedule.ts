@@ -178,6 +178,8 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             if (!ssched.triggered && ssched.scheduleTime.shouldBeOn) {
                                 if (!c.cstate.isOn) {
                                     await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
+                                    // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
+                                    await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
                                 }
                                 let ssched = c.sscheds[j];
                                 c.cstate.priority = 'scheduled';
