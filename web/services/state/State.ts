@@ -71,6 +71,11 @@ export class StateRoute {
             try { return res.status(200).send(weatherHistory.getStatus(config.getSection('weather'))); }
             catch (err) { next(err); }
         });
+        // Today and yesterday with the station's latest report, for the dashboard.
+        app.get('/state/weather/summary', async (req, res, next) => {
+            try { return res.status(200).send(await weatherHistory.summary(config.getSection('weather'))); }
+            catch (err) { next(err); }
+        });
         app.get('/state/rs485Port/:id', async (req, res, next) => {
             try {
                 let portId = parseInt(req.params.id, 10);
