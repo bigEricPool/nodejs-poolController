@@ -34,7 +34,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
 | `feature/solar-nocturnal-cooling-check` | feature | A nocturnal cooling check is also made when the water would qualify at the solar pump speed. New behaviour, not yet run; to be looked at again later. | feature/solar-enhancements | none |
-| `feature/pi-status` | feature | GET /state/system: the condition of the computer njsPC runs on (temperature, throttling, load, memory, storage, uptime). New, not yet run. | none | none |
+| `feature/pi-status` | feature | GET /state/system: the condition of the computer njsPC runs on (processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, whether other services answer, and how late njsPC itself runs), with a longer log. New, not yet run. | none | none |
 
 ## Planned (not created yet)
 
