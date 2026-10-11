@@ -12,6 +12,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 |---|---|---|---|---|
 | `master` | mirror | Untouched copy of the original project's master. Every module and fix branch is cut from it. | none | none |
 | `pool` | integration | Everything together; the branch the pool controller runs. To be built from the branches below, never edited directly. | all module and fix branches | none |
+| `pool-next` | integration | The rebuild of pool from the branches in this list; replaces pool once the remaining re-cut branches are in and it has been tested. | all module and fix branches | none |
 | `fix/schedule-restart` | fix | Sunrise/sunset schedules after a restart: relay re-trigger at boot, heat setpoint re-push, sunset window, failed window cache, heliotrope init. | none | tagyoureit/nodejs-poolController#1247 (open) |
 | `fix/solar-restart` | fix | Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset. | none | tagyoureit/nodejs-poolController#1248 (open) |
 | `fix/chlorinator-poll-stall` | fix | Nixie chlorinator polling restarts when the serial port reopens; a poll cycle is limited. | none | tagyoureit/nodejs-poolController#1255 (open) |
@@ -30,7 +31,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `pool-next` | integration | The rebuild of pool from this manifest; replaces pool once its content matches and the build check passes. | all module and fix branches | none |
 | `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
 | `feature/swg-assist` | feature | feature/auto-swg plus the rename to SWG Assist (user-facing text only). | feature/auto-swg | none |
 

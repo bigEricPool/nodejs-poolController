@@ -33,13 +33,13 @@
     {
       "name": "pool-next",
       "kind": "integration",
-      "status": "planned",
-      "purpose": "The rebuild of pool from this manifest; replaces pool once its content matches and the build check passes.",
+      "status": "active",
+      "purpose": "The rebuild of pool from the branches in this list; replaces pool once the remaining re-cut branches are in and it has been tested.",
       "depends": [
         "all module and fix branches"
       ],
       "upstream": "",
-      "build": false
+      "build": true
     },
     {
       "name": "fix/schedule-restart",
