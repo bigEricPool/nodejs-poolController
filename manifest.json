@@ -7,6 +7,7 @@
     "active": "in use",
     "legacy": "exists, being replaced by the planned branches",
     "planned": "not created yet",
+    "parked": "exists and is compiled, but is kept out of pool until it has been tested",
     "archive": "kept for history"
   },
   "branches": [
@@ -160,6 +161,17 @@
         "optional: fix/heater-command-inflight"
       ],
       "upstream": "#1248",
+      "build": true
+    },
+    {
+      "name": "feature/solar-nocturnal-cooling-check",
+      "kind": "feature",
+      "status": "parked",
+      "purpose": "A nocturnal cooling check is also made when the water would qualify at the solar pump speed. New behaviour, not yet run; to be looked at again later.",
+      "depends": [
+        "feature/solar-enhancements"
+      ],
+      "upstream": "",
       "build": true
     },
     {

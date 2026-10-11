@@ -29,6 +29,12 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
+## Parked (kept out of pool)
+
+| Branch | Kind | Purpose | Depends on | Related report |
+|---|---|---|---|---|
+| `feature/solar-nocturnal-cooling-check` | feature | A nocturnal cooling check is also made when the water would qualify at the solar pump speed. New behaviour, not yet run; to be looked at again later. | feature/solar-enhancements | none |
+
 ## Planned (not created yet)
 
 | Branch | Kind | Purpose | Depends on | Related report |
