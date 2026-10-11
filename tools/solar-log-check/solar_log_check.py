@@ -270,7 +270,7 @@ def analyze(events, timeline):
         brief = [r for r in runs if (r['end'] - r['start']).total_seconds() < 600]
         if len(brief) >= 3:
             P('  CYCLING: %d run(s) under 10 minutes (%.1f runs an hour). Solar is switching around the setpoint;' % (len(brief), len(runs) * 3600.0 / span if span else 0))
-            P('  controller.solar.hysteresis (default 1) makes it stop a degree past the target and restart a degree back.')
+            P('  controller.solar.hysteresis (default 0.5; try 1) makes it stop that far past the target and restart that far back.')
         short = [r for r in runs if (r['end'] - r['start']).total_seconds() < 300]
         if short:
             P('  %d run(s) were shorter than 5 minutes: %s' % (len(short), ', '.join('%s (%s)' % (fmt_t(r['start']), fmt_dur((r['end'] - r['start']).total_seconds())) for r in short[:8])))
@@ -381,7 +381,8 @@ def analyze(events, timeline):
             jumps.append((ta, tb, wa, wb))
     if jumps:
         # The water reading moves when the pump changes speed (the valve delay check, a solar start or stop), and stays there.
-        speed = [r[0] for r in relay] + [v['t'] for v in vd]
+        # Relay 2 is the faster speed. A relay line that leaves it as it was (the pump starting on relay 1, or stopping) is not a speed change.
+        speed = [r[0] for i, r in enumerate(relay) if r[1] != (relay[i - 1][1] if i else 'off')] + [v['t'] for v in vd]
         at_speed = lambda ta, tb: any(-90 <= (t - ta).total_seconds() and (t - tb).total_seconds() <= 90 for t in speed)
         n_speed = sum(1 for j in jumps if at_speed(j[0], j[1]))
         P('%d jump(s) of 1 degree or more within 90 seconds: %d at a pump speed change (the reading differs with the pump speed), %d not (warm or cool water standing in the pipes reaching the sensor):' % (
