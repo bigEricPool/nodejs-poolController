@@ -178,7 +178,7 @@
       "name": "feature/pi-status",
       "kind": "feature",
       "status": "parked",
-      "purpose": "GET /state/system: the condition of the computer njsPC runs on (temperature, throttling, load, memory, storage, network, services). New, not yet run.",
+      "purpose": "GET /state/system: the condition of the computer njsPC runs on (temperature, throttling, load, memory, storage, uptime). New, not yet run.",
       "depends": [],
       "upstream": "",
       "build": true
