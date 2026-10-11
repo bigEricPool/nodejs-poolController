@@ -4581,14 +4581,14 @@ export class HeaterCommands extends BoardCommands {
                                                     && (hState.targetStop !== 'cooling' || waterTemp > (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis)));
                                             const heatOk = state.temps.solar > waterTemp // 1
                                                 && heatWater // 2 and 5
-                                                && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)) // 3
+                                                && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
                                                 && (state.temps.solar - waterTemp) > heater.stopTempDelta; // 4
                                             // reverse logic from heating states
                                             const coolOk = heater.coolingEnabled
                                                 && state.heliotrope.isNight
                                                 && state.temps.solar < waterTemp // 1
                                                 && coolWater // 2 and 5
-                                                && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta)) // 3
+                                                && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
                                                 && (waterTemp - state.temps.solar) > heater.stopTempDelta; // 4
                                             // The same decisions as the valve delay check makes them, with the pump at its solar speed. The collector side is the same. The water side
                                             // is the level solar would stop at, not the level it starts at: the setpoint plus the hysteresis (heating), or the cool setpoint plus the
