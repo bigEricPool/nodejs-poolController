@@ -284,6 +284,16 @@
       }
     }
   },
+  "systemStatus": {
+    "enabled": true,
+    "sampleSeconds": 10,
+    "historyMinutes": 60,
+    "tempWarn": 70,
+    "logEnabled": true,
+    "logMinutes": 5,
+    "keepDays": 400,
+    "services": []
+  },
   "log": {
     "screenlogic": {
       "enabled": false,
