@@ -76,7 +76,22 @@ export interface WeatherStatus {
     // Rain is read as a running total for the day. This counts the days on which the total went down from one hour to the next, which should not happen.
     precipTotalDecreases: number;
 }
+// The station's latest report (observations/current). `lt` and `t` are as in WeatherHour.
+export interface WeatherCurrent {
+    t: number; lt: string;
+    temp?: number; heatIndex?: number; windChill?: number; dewpt?: number; humidity?: number;
+    windSpeed?: number; windGust?: number; windDir?: number; pressure?: number;
+    precipRate?: number; precipTotal?: number;
+    solarRad?: number; uv?: number;
+}
+// Today and yesterday (the station's local days) with the latest report, for a dashboard. Today's figures include the latest report.
+export interface WeatherSummary {
+    enabled: boolean; configured: boolean; stationId: string; units: string; stationUrl?: string; lastError?: string;
+    current?: WeatherCurrent; today?: WeatherDay; yesterday?: WeatherDay;
+    precip7Days?: number;       // rain over the last seven local days, today included
+}
 interface StatusFile { checked: string[]; lastRunAt?: string; lastSuccessAt?: string; lastError?: string; }
+const CURRENT_CACHE_MS = 10 * 60 * 1000;    // the latest report is asked for at most this often, and only while something is showing it
 
 const num = (v: any): number | undefined => typeof v === 'number' && isFinite(v) ? v : undefined;
 const ymd = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
@@ -118,6 +133,24 @@ export function parseObservation(o: any, units: 'e' | 'm'): WeatherHour | undefi
     };
     for (const k of Object.keys(h)) if (typeof h[k] === 'undefined') delete h[k];
     return h;
+}
+
+// The observation of observations/current as a WeatherCurrent; undefined when it has no usable time.
+export function parseCurrent(o: any, units: 'e' | 'm'): WeatherCurrent | undefined {
+    if (!o || typeof o !== 'object') return undefined;
+    const t = typeof o.epoch === 'number' && isFinite(o.epoch) ? o.epoch * 1000 : new Date(o.obsTimeUtc).getTime();
+    const lt = typeof o.obsTimeLocal === 'string' ? o.obsTimeLocal.trim().replace(' ', 'T').slice(0, 19) : '';
+    if (isNaN(t) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(lt)) return undefined;
+    const u = o[units === 'm' ? 'metric' : 'imperial'] || {};
+    const c: WeatherCurrent = {
+        t: t, lt: lt,
+        temp: num(u.temp), heatIndex: num(u.heatIndex), windChill: num(u.windChill), dewpt: num(u.dewpt), humidity: num(o.humidity),
+        windSpeed: num(u.windSpeed), windGust: num(u.windGust), windDir: num(o.winddir), pressure: num(u.pressure),
+        precipRate: num(u.precipRate), precipTotal: num(u.precipTotal),
+        solarRad: num(o.solarRadiation), uv: num(o.uv)
+    };
+    for (const k of Object.keys(c)) if (typeof c[k] === 'undefined') delete c[k];
+    return c;
 }
 
 // The days (station local time) summarized from their hours, oldest first.
@@ -325,6 +358,58 @@ export class WeatherHistory {
         if (!inRange.length) return [];
         const firstDate = inRange[0].lt.slice(0, 10), lastDate = inRange[inRange.length - 1].lt.slice(0, 10);
         return summarizeDays(this.hours(cfg, from - DAY_MS, to + DAY_MS).filter(h => h.lt.slice(0, 10) >= firstDate && h.lt.slice(0, 10) <= lastDate));
+    }
+    private currentObs: { key: string; at: number; value?: WeatherCurrent } | undefined;
+    // The station's latest report, asked for at most every ten minutes. Undefined when the station has reported nothing in the last hour or the
+    // request failed (the reason is not kept: the hourly run reports a key or a station that does not work).
+    public async current(cfg: any, now: number = Date.now()): Promise<WeatherCurrent | undefined> {
+        const s = normalizeWeatherSettings(cfg);
+        if (!s.enabled || !s.stationId || !s.apiKey) return undefined;
+        const key = `${s.stationId}_${s.units}`;
+        if (this.currentObs && this.currentObs.key === key && now - this.currentObs.at < CURRENT_CACHE_MS) return this.currentObs.value;
+        const had = this.currentObs && this.currentObs.key === key ? this.currentObs.value : undefined;
+        // Recorded before the request so that requests arriving together make one call.
+        this.currentObs = { key: key, at: now, value: had };
+        try {
+            const obs = await this.fetch(s, 'observations/current');
+            this.currentObs = { key: key, at: now, value: obs.length ? parseCurrent(obs[0], s.units) : undefined };
+        }
+        catch (err) { logger.verbose(`Weather: could not read the latest report of station ${s.stationId}: ${err.message}`); }
+        return this.currentObs.value;
+    }
+    public async summary(cfg: any, now: number = Date.now()): Promise<WeatherSummary> {
+        const s = normalizeWeatherSettings(cfg);
+        const out: WeatherSummary = { enabled: s.enabled, configured: !!(s.stationId && s.apiKey), stationId: s.stationId, units: s.units };
+        if (!s.stationId) return out;
+        out.stationUrl = `https://www.wunderground.com/dashboard/pws/${s.stationId}`;
+        this.load(s);
+        out.lastError = this.status.lastError;
+        let cur = await this.current(cfg, now);
+        const hours = this.hours(cfg, now - 9 * DAY_MS, now + DAY_MS);
+        // The station's local date now, from the difference between its local and UTC times in the newest thing it reported.
+        const newest: { t: number; lt: string } | undefined = cur || hours[hours.length - 1];
+        if (!newest) return out;
+        const offset = Math.round((new Date(`${newest.lt}Z`).getTime() - newest.t) / 900000) * 900000;
+        const today = ymd(now + offset), yesterday = ymd(now + offset - DAY_MS), weekAgo = ymd(now + offset - 6 * DAY_MS);
+        // A latest report from an earlier day says nothing about today.
+        if (cur && cur.lt.slice(0, 10) !== today) cur = undefined;
+        out.current = cur;
+        const days = summarizeDays(hours);
+        out.today = days.find(d => d.date === today);
+        out.yesterday = days.find(d => d.date === yesterday);
+        if (cur) {
+            const t: WeatherDay = out.today || { date: today, hours: 0, qcFailed: 0 };
+            const hi = (a: number | undefined, b: number | undefined) => typeof b !== 'number' ? a : typeof a !== 'number' ? b : Math.max(a, b);
+            const lo = (a: number | undefined, b: number | undefined) => typeof b !== 'number' ? a : typeof a !== 'number' ? b : Math.min(a, b);
+            t.tempHigh = hi(t.tempHigh, cur.temp); t.tempLow = lo(t.tempLow, cur.temp);
+            t.precipTotal = hi(t.precipTotal, cur.precipTotal); t.precipRateHigh = hi(t.precipRateHigh, cur.precipRate);
+            t.uvHigh = hi(t.uvHigh, cur.uv); t.solarRadHigh = hi(t.solarRadHigh, cur.solarRad); t.windGustHigh = hi(t.windGustHigh, cur.windGust);
+            for (const k of Object.keys(t)) if (typeof t[k] === 'undefined') delete t[k];
+            out.today = t;
+        }
+        const week = days.filter(d => d.date >= weekAgo && d.date <= today && d.date !== today).concat(out.today ? [out.today] : []).filter(d => typeof d.precipTotal === 'number');
+        if (week.length) out.precip7Days = round(week.reduce((a, d) => a + d.precipTotal, 0), 2);
+        return out;
     }
     public getStatus(cfg: any, now: number = Date.now()): WeatherStatus {
         const s = normalizeWeatherSettings(cfg);
