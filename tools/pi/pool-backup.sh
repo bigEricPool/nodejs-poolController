@@ -14,11 +14,13 @@
 #   REMOTE=user@host:/folder/        where --daily also copies the newest archive (scp, with a key and no password prompt)
 #   INCLUDE_LOGS=0                   leaves the njsPC and REM logs folders out of every backup (the default, 1, includes them)
 #   KEEP_DAILY=14                    how many --daily archives to keep on the Pi
+#   BACKUP_NAME=backyard             the name offered for a full backup; without it, the PoolMath pool name set in AutoSwg, or "mypool"
 set -u
 MODE=full
 REMOTE=""
 INCLUDE_LOGS=1
 KEEP_DAILY=14
+BACKUP_NAME=""
 [ -r "$HOME/.pool-backup.conf" ] && . "$HOME/.pool-backup.conf"
 for arg in "$@"; do
   case "$arg" in
@@ -28,15 +30,29 @@ for arg in "$@"; do
   esac
 done
 
+# The PoolMath pool name set in AutoSwg, when there is one (njsPC data/poolConfig.json, autoSwgConfig.poolName).
+poolmath_name() {
+  python3 - "$HOME/nodejs-poolController/data/poolConfig.json" 2>/dev/null <<'PY'
+import json, sys
+try:
+    print((json.load(open(sys.argv[1])).get("autoSwgConfig") or {}).get("poolName") or "")
+except Exception:
+    pass
+PY
+}
+
 DEST="$HOME/pool-backups"
 mkdir -p "$DEST" && chmod 700 "$DEST"
 STAMP=$(date +%Y-%m-%d_%H-%M-%S)
 if [ "$MODE" = "daily" ]; then
   NAME=daily
 else
-  read -r -p "Backup name (the date and time are added after it): " NAME
+  DEFAULT_NAME="${BACKUP_NAME:-$(poolmath_name)}"
+  DEFAULT_NAME=$(printf '%s' "$DEFAULT_NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
+  [ -z "$DEFAULT_NAME" ] && DEFAULT_NAME="mypool"
+  read -r -p "Backup name (the date and time are added after it) [$DEFAULT_NAME]: " NAME
   NAME=$(printf '%s' "$NAME" | sed 's/[^A-Za-z0-9._-]/_/g')
-  [ -z "$NAME" ] && NAME="poolpi"
+  [ -z "$NAME" ] && NAME="$DEFAULT_NAME"
 fi
 OUT="$DEST/${NAME}_${STAMP}.tar.gz"
 
