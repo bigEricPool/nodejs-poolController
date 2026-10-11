@@ -16,23 +16,23 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `fix/solar-restart` | fix | Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset. | none | tagyoureit/nodejs-poolController#1248 (open) |
 | `fix/chlorinator-poll-stall` | fix | Nixie chlorinator polling restarts when the serial port reopens; a poll cycle is limited. | none | tagyoureit/nodejs-poolController#1255 (open) |
 | `fix/nonblocking-state-save` | fix | poolState and poolConfig are saved without blocking the process, so slow storage cannot stop relay refreshes. | none | follows upstream #1240; not yet reported |
-| `fix/heater-command-inflight` | fix | One command at a time per Nixie heater. To be re-cut on 10.0.2. | none | related: relayEquipmentManager#126 |
-| `feature/temp-average-24h` | feature | 24 hour average water temperature for each body. To be re-cut on current master. | none | none |
+| `fix/heater-command-inflight` | fix | One command at a time per Nixie heater. | none | related: relayEquipmentManager#126 |
+| `feature/chlorinator-rs485-diag` | feature | RS485 diagnostic view of chlorinator messages in both directions, with the Details popup. | none | tagyoureit/nodejs-poolController#1250 (closed) |
+| `feature/temp-average-24h` | feature | 24 hour average water temperature for each body. | none | none |
 | `feature/pump-status-log` | feature | At log level verbose, why and when a relay pump's status changes. | none | none |
 | `feature/pump-priming` | feature | Priming for relay driven pumps (two speed, relay switched variable speed); off by default. | none | none |
 | `feature/pws-weather` | feature | Hourly weather log from a personal weather station, and a Weather panel. | none | none |
 | `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls. To be re-cut on top of fix/solar-restart. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
+| `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
+| `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
 ## Planned (not created yet)
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
 | `pool-next` | integration | The rebuild of pool from this manifest; replaces pool once its content matches and the build check passes. | all module and fix branches | none |
-| `feature/chlorinator-rs485-diag` | feature | RS485 diagnostic view of chlorinator messages in both directions, with the Details popup. | none | tagyoureit/nodejs-poolController#1250 (closed) |
 | `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
 | `feature/swg-assist` | feature | feature/auto-swg plus the rename to SWG Assist (user-facing text only). | feature/auto-swg | none |
-| `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
-| `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
 ## Being replaced
 
@@ -50,6 +50,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 |---|---|---|---|---|
 | `audit-fix-pi` | archive | Snapshot of an earlier install; fully contained in pool. | none | none |
 | `feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
+| `archive/2026-10-11/*` | archive | Tips of branches as they were before being re-cut on current master on 2026-10-11. | none | none |
 | `docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide and release notes. | none | none |
 
 The code in this fork and this page are written with the help of an AI assistant (Claude) and reviewed and run by the owner.
