@@ -12,7 +12,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 |---|---|---|---|---|
 | `master` | mirror | Untouched copy of the original project's master. Every module and fix branch is cut from it. | none | none |
 | `pool` | integration | Everything together; the branch the pool controller runs. To be built from the branches below, never edited directly. | all module and fix branches | none |
-| `pool-next` | integration | The rebuild of pool from the branches in this list; replaces pool once the remaining re-cut branches are in and it has been tested. | all module and fix branches | none |
+| `pool-next` | integration | pool rebuilt from the branches in this list, in a fixed order. It is replaced at every rebuild; pool takes it over after testing. | all module and fix branches | none |
 | `fix/schedule-restart` | fix | Sunrise/sunset schedules after a restart: relay re-trigger at boot, heat setpoint re-push, sunset window, failed window cache, heliotrope init. | none | tagyoureit/nodejs-poolController#1247 (open) |
 | `fix/solar-restart` | fix | Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset. | none | tagyoureit/nodejs-poolController#1248 (open) |
 | `fix/chlorinator-poll-stall` | fix | Nixie chlorinator polling restarts when the serial port reopens; a poll cycle is limited. | none | tagyoureit/nodejs-poolController#1255 (open) |
@@ -23,7 +23,9 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `feature/pump-status-log` | feature | At log level verbose, why and when a relay pump's status changes. | none | none |
 | `feature/pump-priming` | feature | Priming for relay driven pumps (two speed, relay switched variable speed); off by default. | none | none |
 | `feature/pws-weather` | feature | Hourly weather log from a personal weather station, and a Weather panel. | none | none |
-| `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls. To be re-cut on top of fix/solar-restart. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
+| `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls; in dashPanel also the Nocturnal Cooling toggle. Stacked on fix/solar-restart in njsPC. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
+| `feature/auto-swg` | feature | AutoSwg: a recommended SWG % from PoolMath readings, with Away protection. AutoSwg code only. The tagged releases autoswg-v0.1.x are the earlier form of this branch. | optional: fix/chlorinator-poll-stall | none |
+| `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
@@ -31,17 +33,15 @@ Base for new branches: master at 10.0.2 (34c324cd).
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
 | `feature/swg-assist` | feature | feature/auto-swg plus the rename to SWG Assist (user-facing text only). | feature/auto-swg | none |
 
 ## Being replaced
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `fix/schedule-defects` | fix | Older combined branch for #1247 and #1248; being split into fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
-| `feature/dashboard-enhancements` | feature | Older combined branch (RS485 diagnostic view; in dashPanel also sun times and the Nocturnal Cooling toggle); being split. | none | #1250 |
-| `feature/auto-swg` | feature | AutoSwg release branch as tagged (autoswg-v0.1.x): AutoSwg plus copies of the fixes. To become AutoSwg code only. | optional: fix/chlorinator-poll-stall | none |
-| `feature/auto-swg-clean` | feature | AutoSwg code only, except the chlorinator poll-stall change, which moves to fix/chlorinator-poll-stall. Source for the new feature/auto-swg. | none | none |
+| `fix/schedule-defects` | fix | Older combined branch; replaced by fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
+| `feature/dashboard-enhancements` | feature | Older combined branch; replaced by feature/chlorinator-rs485-diag and, in dashPanel, feature/dashboard-sun-times. | none | #1250 |
+| `feature/auto-swg-clean` | feature | Earlier AutoSwg-only branch; replaced by feature/auto-swg. | none | none |
 | `feature/auto-swg-automation` | feature | Former working branch (AutoSwg plus solar, average, tools). Kept for history; no new work. | none | none |
 
 ## Kept for history
