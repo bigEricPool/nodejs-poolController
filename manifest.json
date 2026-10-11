@@ -178,7 +178,7 @@
       "name": "feature/pi-status",
       "kind": "feature",
       "status": "active",
-      "purpose": "GET /state/system: the condition of the computer njsPC runs on (processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, whether other services answer, and how late njsPC itself runs), with a longer log. No dashPanel part yet.",
+      "purpose": "The condition of the computer njsPC runs on: processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, installed software, and how late njsPC itself runs, with a longer log (njsPC: GET /state/system). dashPanel: a System panel showing it.",
       "depends": [],
       "upstream": "",
       "build": true
