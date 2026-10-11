@@ -88,6 +88,11 @@ def reason_key(why):
     return why[:60]
 
 
+# The settle-delay line for the wait after the valve delay check turned a start down (the solar check period), and its name in the report.
+TURNED_DOWN = 'after the valve delay check turned the start down'
+CHECK_PERIOD = 'check period after a turned-down start'
+
+
 def fmt_dur(sec):
     sec = int(round(sec))
     h, rem = divmod(sec, 3600)
@@ -289,15 +294,35 @@ def analyze(events, timeline):
     reason_time = Counter()
     unexplained = 0.0
     stuck = []
+    # A hold on a start (a settle delay, or the check period after the valve delay check turned a start down) is logged once a minute while it
+    # lasts. The time it covers is the hold's, whatever "is not heating" line was logged last: during a check period the last such line can be an
+    # hour old and about the reading at the solar pump speed.
+    holds = []
+    for i, x in enumerate(settle):
+        if x['ended'] or x['what'].startswith('waiting to stop'):
+            continue
+        end = x['t'] + timedelta(seconds=min(90, int(x['left'])) if x['left'] else 90)
+        if i + 1 < len(settle) and settle[i + 1]['t'] < end:
+            end = settle[i + 1]['t']
+        holds.append((x['t'], end, CHECK_PERIOD if x['what'].startswith(TURNED_DOWN) else 'settle delay ' + x['what']))
+    # So is the valve delay check itself: from its start to the line that ends it.
+    for i, v in enumerate(vd):
+        if v['kind'] == 'start':
+            end = vd[i + 1]['t'] if i + 1 < len(vd) and vd[i + 1]['kind'] != 'start' else v['t'] + timedelta(seconds=600)
+            holds.append((v['t'], end, 'valve delay check (pump at its solar speed)'))
     for (s, e) in ends:
         evs = [n for n in notrun if s <= n['t'] <= e]
-        if not evs:
-            unexplained += (e - s).total_seconds()
-            continue
-        unexplained += (evs[0]['t'] - s).total_seconds()
-        for i, n in enumerate(evs):
-            until = evs[i + 1]['t'] if i + 1 < len(evs) else e
-            sec = (until - n['t']).total_seconds()
+        cuts = sorted(set([s, e] + [n['t'] for n in evs] + [t for h in holds for t in h[:2] if s < t < e]))
+        for a, b in zip(cuts, cuts[1:]):
+            sec = (b - a).total_seconds()
+            hold = next((h for h in holds if h[0] <= a < h[1]), None)
+            if hold is not None:
+                reason_time[hold[2]] += sec
+                continue
+            n = next((n for n in reversed(evs) if n['t'] <= a), None)
+            if n is None:
+                unexplained += sec
+                continue
             reason_time[n['key']] += sec
             if n['key'].startswith('reheat') and n['solar'] - n['water'] >= 10 and n['water'] < n['setpoint']:
                 stuck.append((n, sec))
@@ -355,9 +380,14 @@ def analyze(events, timeline):
         if 0 < dt <= 90 and abs(wb - wa) >= 1.0:
             jumps.append((ta, tb, wa, wb))
     if jumps:
-        P('%d jump(s) of 1 degree or more within 90 seconds (warm or cool water standing in the pipes reaching the sensor):' % len(jumps))
+        # The water reading moves when the pump changes speed (the valve delay check, a solar start or stop), and stays there.
+        speed = [r[0] for r in relay] + [v['t'] for v in vd]
+        at_speed = lambda ta, tb: any(-90 <= (t - ta).total_seconds() and (t - tb).total_seconds() <= 90 for t in speed)
+        n_speed = sum(1 for j in jumps if at_speed(j[0], j[1]))
+        P('%d jump(s) of 1 degree or more within 90 seconds: %d at a pump speed change (the reading differs with the pump speed), %d not (warm or cool water standing in the pipes reaching the sensor):' % (
+            len(jumps), n_speed, len(jumps) - n_speed))
         for ta, tb, wa, wb in sorted(jumps, key=lambda j: -abs(j[3] - j[2]))[:8]:
-            P('  %s -> %s: %.2f -> %.2f (%+.2f)' % (fmt_t(ta), fmt_t(tb), wa, wb, wb - wa))
+            P('  %s -> %s: %.2f -> %.2f (%+.2f)%s' % (fmt_t(ta), fmt_t(tb), wa, wb, wb - wa, ', pump speed change' if at_speed(ta, tb) else ''))
     else:
         P('None of 1 degree or more within 90 seconds.')
     if samples:
@@ -370,7 +400,7 @@ def analyze(events, timeline):
     if not settle:
         P('No settle delay lines (they need log.solar.explain on and controller.solar.settleMinutes above 0).')
     else:
-        held = [s for s in settle if not s['ended']]
+        held = [s for s in settle if not s['ended'] and not s['what'].startswith(TURNED_DOWN)]
         kinds = Counter(s['what'] for s in held)
         P('%d delay line(s): %s' % (len(held), '; '.join('%s x%d' % (k, v) for k, v in kinds.items())))
         flips = 0
@@ -380,8 +410,12 @@ def analyze(events, timeline):
                 flips += 1       # without the delay solar would have stopped
         starts = sum(1 for s in held if not s['what'].startswith('waiting to stop') and 'solar would be on' in s['text'])
         P('  held a start that the readings called for: %d line(s); held a stop that the readings called for: %d line(s).' % (starts, flips))
+        if any(s['what'].startswith(TURNED_DOWN) for s in settle):
+            P('  The waits after a turned-down start (the check period) are under Valve delay.')
         if timeline:
             for s in settle:
+                if s['what'].startswith(TURNED_DOWN):
+                    continue
                 P('  %s %s: water %.2f, collector %.1f, collector minus water %.1f%s' % (
                     fmt_t(s['t']), s['what'] + (' ended' if s['ended'] else ''), s['water'], s['solar'], s['diff'],
                     '' if s['ended'] else ', %s s left' % s['left']))
@@ -408,6 +442,11 @@ def analyze(events, timeline):
         why = Counter(v['why'] for v in down)
         if why:
             P('  turned down because: ' + '; '.join('%s x%d' % (k, n) for k, n in why.most_common()))
+        waits = [s for s in settle if s['what'].startswith(TURNED_DOWN) and not s['ended']]
+        if waits:
+            called = sum(1 for s in waits if 'solar would be on' in s['text'])
+            P('  Check period after a turned-down start: %s in all; for %d of %d minute(s) logged the readings at the normal pump speed called for a start.' % (
+                fmt_dur(reason_time[CHECK_PERIOD]), called, len(waits)))
         if vstarts:
             followed = sum(1 for v in vstarts if any(r[1] == 'on' and 0 <= (r[0] - v['t']).total_seconds() <= 15 for r in relay))
             P('  Pump relay 2 came on within 15 s of %d of %d check start(s)%s' % (
