@@ -1,0 +1,55 @@
+# nodejs-poolController (bigEricPool fork)
+
+This fork of [tagyoureit/nodejs-poolController](https://github.com/tagyoureit/nodejs-poolController) holds one branch per feature and one per bug fix, each cut from the original project's `master` so it can be offered upstream on its own. The branch `pool` contains all of them together. The companion fork is [bigEricPool/nodejs-poolController-dashPanel](https://github.com/bigEricPool/nodejs-poolController-dashPanel).
+
+This page is the list of branches. `manifest.json` holds the same list for the build check, which runs `npm ci` and `npm run build` on every branch marked to build.
+
+Base for new branches: master at 10.0.2 (34c324cd).
+
+## In use
+
+| Branch | Kind | Purpose | Depends on | Related report |
+|---|---|---|---|---|
+| `master` | mirror | Untouched copy of the original project's master. Every module and fix branch is cut from it. | none | none |
+| `pool` | integration | Everything together; the branch the pool controller runs. To be built from the branches below, never edited directly. | all module and fix branches | none |
+| `fix/chlorinator-poll-stall` | fix | Nixie chlorinator polling restarts when the serial port reopens; a poll cycle is limited. | none | tagyoureit/nodejs-poolController#1255 (open) |
+| `fix/nonblocking-state-save` | fix | poolState and poolConfig are saved without blocking the process, so slow storage cannot stop relay refreshes. | none | follows upstream #1240; not yet reported |
+| `fix/heater-command-inflight` | fix | One command at a time per Nixie heater. To be re-cut on 10.0.2. | none | related: relayEquipmentManager#126 |
+| `feature/temp-average-24h` | feature | 24 hour average water temperature for each body. To be re-cut on current master. | none | none |
+| `feature/pump-status-log` | feature | At log level verbose, why and when a relay pump's status changes. | none | none |
+| `feature/pump-priming` | feature | Priming for relay driven pumps (two speed, relay switched variable speed); off by default. | none | none |
+| `feature/pws-weather` | feature | Hourly weather log from a personal weather station, and a Weather panel. | none | none |
+| `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls. To be re-cut on top of fix/solar-restart. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
+
+## Planned (not created yet)
+
+| Branch | Kind | Purpose | Depends on | Related report |
+|---|---|---|---|---|
+| `pool-next` | integration | The rebuild of pool from this manifest; replaces pool once its content matches and the build check passes. | all module and fix branches | none |
+| `fix/schedule-restart` | fix | Sunrise/sunset schedules after a restart: relay re-trigger at boot, heat setpoint re-push, sunset window, failed window cache, heliotrope init. | none | tagyoureit/nodejs-poolController#1247 (open) |
+| `fix/solar-restart` | fix | Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset. | none | tagyoureit/nodejs-poolController#1248 (open) |
+| `feature/chlorinator-rs485-diag` | feature | RS485 diagnostic view of chlorinator messages in both directions, with the Details popup. | none | tagyoureit/nodejs-poolController#1250 (closed) |
+| `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
+| `feature/swg-assist` | feature | feature/auto-swg plus the rename to SWG Assist (user-facing text only). | feature/auto-swg | none |
+| `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
+| `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
+
+## Being replaced
+
+| Branch | Kind | Purpose | Depends on | Related report |
+|---|---|---|---|---|
+| `fix/schedule-defects` | fix | Older combined branch for #1247 and #1248; being split into fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
+| `feature/dashboard-enhancements` | feature | Older combined branch (RS485 diagnostic view; in dashPanel also sun times and the Nocturnal Cooling toggle); being split. | none | #1250 |
+| `feature/auto-swg` | feature | AutoSwg release branch as tagged (autoswg-v0.1.x): AutoSwg plus copies of the fixes. To become AutoSwg code only. | optional: fix/chlorinator-poll-stall | none |
+| `feature/auto-swg-clean` | feature | AutoSwg code only, except the chlorinator poll-stall change, which moves to fix/chlorinator-poll-stall. Source for the new feature/auto-swg. | none | none |
+| `feature/auto-swg-automation` | feature | Former working branch (AutoSwg plus solar, average, tools). Kept for history; no new work. | none | none |
+
+## Kept for history
+
+| Branch | Kind | Purpose | Depends on | Related report |
+|---|---|---|---|---|
+| `audit-fix-pi` | archive | Snapshot of an earlier install; fully contained in pool. | none | none |
+| `feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
+| `docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide and release notes. | none | none |
+
+The code in this fork and this page are written with the help of an AI assistant (Claude) and reviewed and run by the owner.

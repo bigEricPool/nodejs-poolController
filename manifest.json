@@ -1,0 +1,262 @@
+{
+  "repository": "bigEricPool/nodejs-poolController",
+  "upstream": "tagyoureit/nodejs-poolController",
+  "base": "master at 10.0.2 (34c324cd)",
+  "companion": "bigEricPool/nodejs-poolController-dashPanel",
+  "statuses": {
+    "active": "in use",
+    "legacy": "exists, being replaced by the planned branches",
+    "planned": "not created yet",
+    "archive": "kept for history"
+  },
+  "branches": [
+    {
+      "name": "master",
+      "kind": "mirror",
+      "status": "active",
+      "purpose": "Untouched copy of the original project's master. Every module and fix branch is cut from it.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "pool",
+      "kind": "integration",
+      "status": "active",
+      "purpose": "Everything together; the branch the pool controller runs. To be built from the branches below, never edited directly.",
+      "depends": [
+        "all module and fix branches"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "pool-next",
+      "kind": "integration",
+      "status": "planned",
+      "purpose": "The rebuild of pool from this manifest; replaces pool once its content matches and the build check passes.",
+      "depends": [
+        "all module and fix branches"
+      ],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "fix/schedule-restart",
+      "kind": "fix",
+      "status": "planned",
+      "purpose": "Sunrise/sunset schedules after a restart: relay re-trigger at boot, heat setpoint re-push, sunset window, failed window cache, heliotrope init.",
+      "depends": [],
+      "upstream": "tagyoureit/nodejs-poolController#1247 (open)",
+      "build": false
+    },
+    {
+      "name": "fix/solar-restart",
+      "kind": "fix",
+      "status": "planned",
+      "purpose": "Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset.",
+      "depends": [],
+      "upstream": "tagyoureit/nodejs-poolController#1248 (open)",
+      "build": false
+    },
+    {
+      "name": "fix/schedule-defects",
+      "kind": "fix",
+      "status": "legacy",
+      "purpose": "Older combined branch for #1247 and #1248; being split into fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2.",
+      "depends": [],
+      "upstream": "#1247, #1248, #1249",
+      "build": true
+    },
+    {
+      "name": "fix/chlorinator-poll-stall",
+      "kind": "fix",
+      "status": "active",
+      "purpose": "Nixie chlorinator polling restarts when the serial port reopens; a poll cycle is limited.",
+      "depends": [],
+      "upstream": "tagyoureit/nodejs-poolController#1255 (open)",
+      "build": true
+    },
+    {
+      "name": "fix/nonblocking-state-save",
+      "kind": "fix",
+      "status": "active",
+      "purpose": "poolState and poolConfig are saved without blocking the process, so slow storage cannot stop relay refreshes.",
+      "depends": [],
+      "upstream": "follows upstream #1240; not yet reported",
+      "build": true
+    },
+    {
+      "name": "fix/heater-command-inflight",
+      "kind": "fix",
+      "status": "active",
+      "purpose": "One command at a time per Nixie heater. To be re-cut on 10.0.2.",
+      "depends": [],
+      "upstream": "related: relayEquipmentManager#126",
+      "build": true
+    },
+    {
+      "name": "feature/chlorinator-rs485-diag",
+      "kind": "feature",
+      "status": "planned",
+      "purpose": "RS485 diagnostic view of chlorinator messages in both directions, with the Details popup.",
+      "depends": [],
+      "upstream": "tagyoureit/nodejs-poolController#1250 (closed)",
+      "build": false
+    },
+    {
+      "name": "feature/dashboard-enhancements",
+      "kind": "feature",
+      "status": "legacy",
+      "purpose": "Older combined branch (RS485 diagnostic view; in dashPanel also sun times and the Nocturnal Cooling toggle); being split.",
+      "depends": [],
+      "upstream": "#1250",
+      "build": true
+    },
+    {
+      "name": "feature/temp-average-24h",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "24 hour average water temperature for each body. To be re-cut on current master.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/pump-status-log",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "At log level verbose, why and when a relay pump's status changes.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/pump-priming",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Priming for relay driven pumps (two speed, relay switched variable speed); off by default.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/pws-weather",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Hourly weather log from a personal weather station, and a Weather panel.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/solar-enhancements",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls. To be re-cut on top of fix/solar-restart.",
+      "depends": [
+        "fix/solar-restart",
+        "optional: feature/pump-priming",
+        "optional: fix/heater-command-inflight"
+      ],
+      "upstream": "#1248",
+      "build": true
+    },
+    {
+      "name": "feature/auto-swg",
+      "kind": "feature",
+      "status": "legacy",
+      "purpose": "AutoSwg release branch as tagged (autoswg-v0.1.x): AutoSwg plus copies of the fixes. To become AutoSwg code only.",
+      "depends": [
+        "optional: fix/chlorinator-poll-stall"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/auto-swg-clean",
+      "kind": "feature",
+      "status": "legacy",
+      "purpose": "AutoSwg code only, except the chlorinator poll-stall change, which moves to fix/chlorinator-poll-stall. Source for the new feature/auto-swg.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/auto-swg-automation",
+      "kind": "feature",
+      "status": "legacy",
+      "purpose": "Former working branch (AutoSwg plus solar, average, tools). Kept for history; no new work.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/auto-swg-tools",
+      "kind": "feature",
+      "status": "planned",
+      "purpose": "tools/autoswg-check and the AutoSwg documents.",
+      "depends": [
+        "feature/auto-swg"
+      ],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "feature/swg-assist",
+      "kind": "feature",
+      "status": "planned",
+      "purpose": "feature/auto-swg plus the rename to SWG Assist (user-facing text only).",
+      "depends": [
+        "feature/auto-swg"
+      ],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "local/pi-tools",
+      "kind": "local",
+      "status": "planned",
+      "purpose": "Backup, log trim and post-boot check scripts for the controller. Not for upstream.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "local/npm",
+      "kind": "local",
+      "status": "planned",
+      "purpose": "package.json allowScripts and the audit-fix lock file. Not for upstream.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "audit-fix-pi",
+      "kind": "archive",
+      "status": "archive",
+      "purpose": "Snapshot of an earlier install; fully contained in pool.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "feature/solar-log",
+      "kind": "archive",
+      "status": "archive",
+      "purpose": "Old name of feature/solar-enhancements; contained in it.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "docs/autoswg-drafts",
+      "kind": "archive",
+      "status": "archive",
+      "purpose": "Drafts of the AutoSwg guide and release notes.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    }
+  ]
+}

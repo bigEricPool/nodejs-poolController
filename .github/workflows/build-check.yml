@@ -1,0 +1,46 @@
+name: Build check
+
+# Builds every branch that manifest.json marks with "build": true.
+# Scheduled and manual runs need this file on the repository's default branch.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 */6 * * *'
+  push:
+    branches: [meta]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-check
+  cancel-in-progress: true
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      branches: ${{ steps.set.outputs.branches }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: set
+        run: echo "branches=$(jq -c '[.branches[] | select(.build) | .name]' manifest.json)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: list
+    runs-on: ubuntu-latest
+    name: ${{ matrix.branch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ${{ fromJson(needs.list.outputs.branches) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
