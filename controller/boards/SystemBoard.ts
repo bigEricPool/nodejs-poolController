@@ -4622,6 +4622,20 @@ export class HeaterCommands extends BoardCommands {
                                                 && waterTemp > (cfgBody.coolSetpoint + heater.stopTempDelta - hysteresis)
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
                                                 && (waterTemp - state.temps.solar) > heater.stopTempDelta;
+                                            // Nocturnal cooling needs the water warm enough, and the water reads higher at the solar pump speed. A reading that is too cool at the normal
+                                            // speed can be warm enough at the speed cooling runs at, and a check that waited for the normal-speed reading to qualify would never be made.
+                                            // So for one question only, whether a check is worth making, the rise seen at the last check (HeaterState.solarSpeedRise) is added to the water.
+                                            // The check itself judges on what it reads, and a check that is turned down waits the solar check period like any other. Heating has no such
+                                            // gap: its water test is passed more easily at the normal speed, where the reading is lower.
+                                            const speedRise = (valveMs > 0 && !hState.isOn && typeof hState.solarSpeedRise === 'number' && hState.solarSpeedRise > 0) ? hState.solarSpeedRise : 0;
+                                            const waterAtSpeed = waterTemp + speedRise;
+                                            const coolProbe = speedRise > 0 && !coolOk && heater.coolingEnabled
+                                                && state.heliotrope.isNight
+                                                && state.temps.solar < waterAtSpeed
+                                                && waterAtSpeed > (cfgBody.coolSetpoint + heater.stopTempDelta)
+                                                && (hState.targetStop !== 'cooling' || waterAtSpeed > (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis))
+                                                && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
+                                                && (waterAtSpeed - state.temps.solar) > heater.stopTempDelta;
                                             // The valve delay (controller.solar.valveDelaySeconds): a start that looks worthwhile first runs the pump at its solar speed with the valve
                                             // relay off, is checked again with the readings taken at that speed, and only then is the valve relay switched on. The conditions above
                                             // are evaluated on every pass, so the second check is the same decision made with the pump at the speed solar runs at. It is made when the
@@ -4644,14 +4658,14 @@ export class HeaterCommands extends BoardCommands {
                                                     solarValveTrial.delete(heater.id);
                                                     solarValveFailed.delete(heater.id);
                                                 }
-                                                else if (!blockStart && (typeof trial !== 'undefined' || heatOk || coolOk)) {
+                                                else if (!blockStart && (typeof trial !== 'undefined' || heatOk || coolOk || coolProbe)) {
                                                     // Before the pump speeds up the start is judged by the start rules; once it is at its solar speed, by the rules above.
                                                     const ok = typeof trial === 'undefined' ? (heatOk || coolOk) : (heatAtSpeed || coolAtSpeed);
                                                     const t = typeof trial === 'undefined' ? { at: nowMs, bodyId: body.id, pass: solarPass, done: false, water: body.temp, solar: state.temps.solar, noteAt: nowMs, shown: typeof carried !== 'undefined' ? { temp: carried.temp, at: carried.at, star: true } : solarRunReading.has(heater.id) ? { temp: Math.round(solarRunReading.get(heater.id).temp * 10) / 10, at: solarRunReading.get(heater.id).at, star: true } : { temp: Math.round(body.temp * 10) / 10, at: nowMs, star: false } } : trial;
                                                     t.pass = solarPass;
                                                     if (typeof trial === 'undefined') {
                                                         solarValveTrial.set(heater.id, t);
-                                                        logger.solar(`Solar ${heater.name} (${body.name}): a start looks worthwhile at the slow pump speed, so the pump runs at its solar speed for ${Math.round(valveMs / 1000)} s with the valve relay off, then the start is checked again: ${lead}. The solar circuit turns on with it; the pump speed change follows in the log.`);
+                                                        logger.solar(`Solar ${heater.name} (${body.name}): a start looks worthwhile ${(heatOk || coolOk) ? 'at the slow pump speed' : `for nocturnal cooling once the pump is at its solar speed (the water read ${Math.round(speedRise * 100) / 100} higher there at the last check)`}, so the pump runs at its solar speed for ${Math.round(valveMs / 1000)} s with the valve relay off, then the start is checked again: ${lead}. The solar circuit turns on with it; the pump speed change follows in the log.`);
                                                     }
                                                     const leftMs = valveMs - (nowMs - t.at);
                                                     const since = `water ${chg(t.water, body.temp)}, collector ${chg(t.solar, state.temps.solar)} since the pump sped up`;
@@ -4674,6 +4688,7 @@ export class HeaterCommands extends BoardCommands {
                                                         if (t.done) committed = t.cool === true ? 'cool' : 'heat';   // the valve relay is already being switched on
                                                         else {
                                                             t.done = true;
+                                                            hState.solarSpeedRise = (typeof t.water === 'number' && typeof body.temp === 'number' && isFinite(body.temp - t.water)) ? Math.round(Math.min(5, Math.max(0, body.temp - t.water)) * 100) / 100 : hState.solarSpeedRise;
                                                             t.cool = !heatAtSpeed && coolAtSpeed;
                                                             committed = t.cool === true ? 'cool' : 'heat';
                                                             const secs = Math.round((nowMs - t.at) / 1000);
@@ -4683,6 +4698,7 @@ export class HeaterCommands extends BoardCommands {
                                                     else {
                                                         solarValveTrial.delete(heater.id);
                                                         solarValveFailed.set(heater.id, { at: nowMs, water: body.temp, heatSet: cfgBody.heatSetpoint, coolSet: cfgBody.coolSetpoint });
+                                                        hState.solarSpeedRise = (typeof t.water === 'number' && typeof body.temp === 'number' && isFinite(body.temp - t.water)) ? Math.round(Math.min(5, Math.max(0, body.temp - t.water)) * 100) / 100 : hState.solarSpeedRise;
                                                         solarRunReading.delete(heater.id);
                                                         solarCheckTemp = Math.round(body.temp * 10) / 10;
                                                         solarCheckTime = new Date(nowMs).toISOString();

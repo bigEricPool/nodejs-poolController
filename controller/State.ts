@@ -2013,6 +2013,15 @@ export class HeaterState extends EqState {
             this.hasChanged = true;
         }
     }
+    // How much higher the water read at the solar pump speed than at the normal speed, at the end of the last solar valve delay check (0 when it
+    // read no higher). Kept so that a nocturnal cooling check is made when the water would be warm enough at the solar pump speed.
+    public get solarSpeedRise(): number { return this.data.solarSpeedRise; }
+    public set solarSpeedRise(val: number) {
+        if (this.solarSpeedRise !== val) {
+            this.data.solarSpeedRise = val;
+            if (typeof val === 'undefined') delete this.data.solarSpeedRise;
+        }
+    }
     public get prevHeaterOffTemp(): number { return this.data.prevHeaterOffTemp; }
     public set prevHeaterOffTemp(val: number) {
         if (this.prevHeaterOffTemp !== val) {

@@ -108,6 +108,13 @@ Nocturnal cooling follows the same rules with the directions reversed: it runs a
 collector must be cooler than the water, and the stop level is the cool setpoint plus the run
 delta minus the hysteresis.
 
+One difference in when a cooling check is made. Cooling needs the water warm enough, and the
+water reads higher at the solar pump speed, so a reading that is too cool at the normal speed can
+be warm enough at the speed cooling runs at. To decide whether a check is worth making, the rise
+seen at the last check is added to the normal-speed reading. The check itself judges on what it
+reads, and a turned-down check waits the check period. Until a first check has measured the rise
+(any heating check does), a cooling check waits for the normal-speed reading to qualify.
+
 ## 7. What the dashboard shows as the pool temperature
 
 The aim is that the number shown is the one solar is working from, and that it does not jump
