@@ -39,8 +39,8 @@
     },
     "solar": {
       "settleMinutes": 5,
-      "hysteresis": 1,
-      "valveDelaySeconds": 120,
+      "hysteresis": 0.5,
+      "valveDelaySeconds": 0,
       "checkPeriodMinutes": 60,
       "returnSensor": ""
     },

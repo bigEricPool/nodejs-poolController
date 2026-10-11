@@ -35,12 +35,23 @@ Solar Controls. A change takes effect on the next pass; no restart is needed.
 | Setting | Default | What it does |
 |---|---|---|
 | `settleMinutes` | 5 | No start for this long after the pump starts or after solar turns off. A stop for the water waits this long too. 0 turns it off. |
-| `hysteresis` | 1 | Solar stops at the setpoint plus this, and after such a stop restarts at the setpoint minus this. 0 turns it off. |
-| `valveDelaySeconds` | 120 | How long the pump runs at its solar speed, valve closed, before a start is judged (the check). 0 turns the check off. |
+| `hysteresis` | 0.5 | Solar stops at the setpoint plus this, and after such a stop restarts at the setpoint minus this. 0 turns it off. |
+| `valveDelaySeconds` | 0 (off) | How long the pump runs at its solar speed, valve closed, before a start is judged (the check). 120 is a value to start with. |
 | `checkPeriodMinutes` | 60 | After the check turns a start down, how long before the next check. |
-| `returnSensor` | none | The temperature input on the pipe coming back from the panels. Shown and logged only. |
+| `returnSensor` | none | The temperature input on the pipe coming back from the panels. Shown and logged only. One-body systems only. |
 
 The start delta and the run delta are the heater's own settings (6 and 3 on this pool).
+
+**Does a pool need the valve delay?** With solar off and the valve closed, note the water reading
+at the normal pump speed. Switch the pump to the speed solar uses, wait two minutes, and note it
+again. If the two differ by more than the hysteresis, turn the valve delay on: 120 seconds is a
+value to start with, or the time the reading took to stop moving. If they do not differ, leave it
+at 0. A pool whose pump does not change speed for solar does not need it.
+
+**When to raise the hysteresis to 1.** Half a degree suits a reading that is steady to a few
+tenths. Use 1 if solar still switches off and on around the setpoint within an hour, if the
+reading moves by more than half a degree when the pump changes speed and the valve delay is not
+in use, or if the sensor reports whole degrees.
 
 ## 3. When a start is considered
 
@@ -120,7 +131,7 @@ or "Solar waiting: the collector must reach 94.9".
 ## 8. Pump priming
 
 Priming (the `feature/pump-priming` branch) runs a relay pump at its high speed for a few minutes
-when it starts. While a pump's status is "priming":
+when it starts. While the status of a pump that serves the body is "priming":
 
 - the solar settle delay does not count; it starts when priming ends;
 - so no check begins during priming, and the readings a check goes by are never priming readings.
@@ -131,11 +142,17 @@ about 8 minutes after the start.
 Priming is off unless it is turned on for the pump. The solar branch does not need the priming
 branch: without it no pump reports "priming" and the rule above does nothing.
 
+A pump serves the body when one of its circuits is the body's circuit, or, for a pump with no
+circuits, when the body it is set to is that body.
+
 ## 9. The return sensor
 
 If `returnSensor` names an input, its reading is shown on the body card as Solar Return, and
 while solar runs the gain over the water going in is shown and logged. A reading of exactly 0, or
 one more than 60 degrees from the water, counts as no sensor. It takes no part in the decision.
+
+The setting is offered only on a system with one body. With more bodies, solar sensors 2 to 4
+are the collector sensors of the other bodies.
 
 ## 10. The same scenarios, as they look in the solar log
 

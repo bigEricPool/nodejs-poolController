@@ -3988,18 +3988,21 @@ function solarSettleMs(): number {
     } catch (err) { /* the default applies */ }
     return mins * 60000;
 }
-// controller.solar.hysteresis in config.json (default 1, 0 turns it off): the band around the target the water must cross before solar changes state.
+// controller.solar.hysteresis in config.json (default 0.5, 0 turns it off): the band around the target the water must cross before solar changes state.
+// Half a degree suits a water reading that is steady to a few tenths. A whole degree is the value to try when solar still switches off and on around
+// the setpoint, when the reading moves more than half a degree as the pump changes speed and the valve delay is not used, or when the sensor reports
+// whole degrees.
 // Solar stops when the water is that many degrees past the target (above the setpoint when heating) for the whole settle delay, and after a stop at
 // the target it starts again only when the water is that many degrees back the other side, so it does not cycle on and off around the setpoint.
 function solarHysteresis(): number {
-    let deg = 1;
+    let deg = 0.5;
     try {
         const c = config.getSection('controller.solar');
         if (typeof c.hysteresis !== 'undefined') { const v = parseFloat(c.hysteresis); if (isFinite(v) && v >= 0) deg = v; }
     } catch (err) { /* the default applies */ }
     return deg;
 }
-// controller.solar.valveDelaySeconds in config.json (default 120, 0 turns it off): when solar should start, the body's pump first runs at its solar speed
+// controller.solar.valveDelaySeconds in config.json (default 0, which turns it off; 120 is a value to start with): when solar should start, the body's pump first runs at its solar speed
 // (the virtual solar circuit is turned on, so a pump speed tied to it applies) for this long with the valve relay still off, and the start is checked again
 // with the readings taken at that speed. The water reading runs high while the pump is faster (warm water standing in the pipes), so a start that was
 // worthwhile at the slow speed may not be at the speed solar runs at. Only if it still is does the valve relay turn on.
@@ -4007,7 +4010,7 @@ function solarHysteresis(): number {
 // plumbing where the temperature is sensed. It is configurable because how big that change is, and how long it takes to settle, depends on the
 // plumbing: where the sensor sits, and what the pump draws from (a main drain and a skimmer can supply a different mix at a different speed).
 function solarValveDelayMs(): number {
-    let secs = 120;
+    let secs = 0;
     try {
         const c = config.getSection('controller.solar');
         if (typeof c.valveDelaySeconds !== 'undefined') { const v = parseFloat(c.valveDelaySeconds); if (isFinite(v) && v >= 0) secs = v; }
@@ -4030,8 +4033,10 @@ const SOLAR_START_WATCH_MS = 10 * 60 * 1000;
 // controller.solar.returnSensor in config.json ('' by default; 'solarSensor2', 'solarSensor3' or 'solarSensor4'): the temperature input that sits on
 // the pipe coming back from the solar collector. The collector sensor is usually in the air beside the panels; the return sensor reads what solar
 // is actually delivering. For now it is shown and logged, with its gain over the water going in, and takes no part in the decision.
+// It is offered only where there is one body: with more, solar sensors 2 to 4 are the collector sensors of the other bodies.
 const SOLAR_RETURN_SENSORS = ['solarSensor2', 'solarSensor3', 'solarSensor4'];
 function solarReturnSensor(): string {
+    if (sys.equipment.maxBodies > 1) return undefined;
     try {
         const slot = config.getSection('controller.solar').returnSensor;
         return SOLAR_RETURN_SENSORS.indexOf(slot) >= 0 ? slot : undefined;
@@ -4423,11 +4428,25 @@ export class HeaterCommands extends BoardCommands {
                 let solarReturn: number = undefined, solarGain: number = undefined;
                 if (!body.isOn) solarBodyOnAt.delete(body.id);
                 else if (!solarBodyOnAt.has(body.id)) solarBodyOnAt.set(body.id, new Date().getTime());
-                // While a pump is priming (its status says so) the readings are not the ones solar runs on, so the settle delay starts when priming is over.
+                // While a pump that serves this body is priming (its status says so) the readings are not the ones solar runs on, so the settle delay starts
+                // when priming is over. A pump serves the body when one of its circuits is the body's circuit or, for a pump with no circuits, when the body it
+                // is set to is this one; a pump that says neither is taken to serve it.
                 else {
                     for (let p = 0; p < state.pumps.length; p++) {
-                        const pstatus = state.pumps.getItemByIndex(p).status;
-                        if (pstatus > 0 && sys.board.valueMaps.pumpStatus.transform(pstatus).name === 'priming') { solarBodyOnAt.set(body.id, new Date().getTime()); break; }
+                        const pst = state.pumps.getItemByIndex(p);
+                        const pstatus = pst.status;
+                        if (!(pstatus > 0) || sys.board.valueMaps.pumpStatus.transform(pstatus).name !== 'priming') continue;
+                        const pcfg = sys.pumps.getItemById(pst.id);
+                        let serves = true;
+                        if (pcfg.circuits.length > 0) {
+                            serves = false;
+                            for (let c = 0; c < pcfg.circuits.length; c++) if (pcfg.circuits.getItemByIndex(c).circuit === cfgBody.circuit) { serves = true; break; }
+                        }
+                        else if (typeof pcfg.body !== 'undefined' && pcfg.body !== null) {
+                            const assoc = sys.board.valueMaps.bodies.transform(pcfg.body).name;
+                            if (typeof assoc === 'string' && assoc !== 'poolspa') serves = assoc === `body${body.id}` || (assoc === 'pool' && body.id === 1) || (assoc === 'spa' && body.id === 2);
+                        }
+                        if (serves) { solarBodyOnAt.set(body.id, new Date().getTime()); break; }
                     }
                 }
                 if (body.isOn) {
