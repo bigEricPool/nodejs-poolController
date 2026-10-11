@@ -44,20 +44,20 @@
     {
       "name": "fix/schedule-restart",
       "kind": "fix",
-      "status": "planned",
+      "status": "active",
       "purpose": "Sunrise/sunset schedules after a restart: relay re-trigger at boot, heat setpoint re-push, sunset window, failed window cache, heliotrope init.",
       "depends": [],
       "upstream": "tagyoureit/nodejs-poolController#1247 (open)",
-      "build": false
+      "build": true
     },
     {
       "name": "fix/solar-restart",
       "kind": "fix",
-      "status": "planned",
+      "status": "active",
       "purpose": "Solar after a restart and near the setpoint: reheat guard cleared at boot, water temperature truncation, virtual-circuit boot reset.",
       "depends": [],
       "upstream": "tagyoureit/nodejs-poolController#1248 (open)",
-      "build": false
+      "build": true
     },
     {
       "name": "fix/schedule-defects",
