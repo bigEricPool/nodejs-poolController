@@ -497,8 +497,9 @@ export class SystemStatus {
         return new Promise<number | undefined>(resolve => {
             execFile('vcgencmd', ['get_throttled'], { timeout: 5000 }, (err, stdout) => {
                 if (err) {
-                    // Not a Raspberry Pi, or njsPC may not ask the firmware: do not try again.
-                    this.noVcgencmd = true;
+                    // Not a Raspberry Pi, or njsPC may not ask the firmware: do not try again. Any other failure (a slow start, for one) is tried again.
+                    const code = (err as any).code;
+                    if (code === 'ENOENT' || code === 'EACCES') this.noVcgencmd = true;
                     return resolve(undefined);
                 }
                 const m = /throttled=(0x[0-9a-fA-F]+)/.exec(String(stdout));
