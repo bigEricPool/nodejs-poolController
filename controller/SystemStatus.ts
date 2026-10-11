@@ -28,12 +28,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // rewritten: a row every logMinutes with the averages and maxima of that period, and an event each time one of a Raspberry Pi's power or heat
 // flags comes on or goes off, so the periods the processor was slowed can be listed. Files older than keepDays are removed.
 //
+// The same record says which software was installed when: for njsPC's own folder and each folder listed in `repos`, the version in
+// package.json, the fork (the owner and name of the repository the branch follows), the branch, the commit and its date and first line, and
+// the number of files changed locally. A line is written when njsPC starts and whenever a folder's branch or commit changes. This is what is
+// in the folder; a program that was not restarted after its folder changed still runs the older code, which is why njsPC's line also has the
+// commit it started on.
+//
 // It also measures how late njsPC itself runs: a timer that should fire every second records how late it fired. A long delay means njsPC was
 // not running its work for that time (for example while a synchronous write waited on slow storage), which matters to anything that relies on
 // njsPC refreshing it regularly.
 //
 // The settings are the `systemStatus` section of config.json: enabled, sampleSeconds, historyMinutes, tempWarn (degrees C), logEnabled,
-// logMinutes, keepDays and services, a list of other services to look for, each { "name": "...", "port": 8080 } (optionally with "host") or { "name": "...", "process": "name" }.
+// logMinutes, keepDays, repos, a list of other software folders to record, each { "name": "...", "path": "/folder" }, and services, a list of
+// other services to look for, each { "name": "...", "port": 8080 } (optionally with "host") or { "name": "...", "process": "name" }.
 
 import * as fs from 'fs';
 import * as net from 'net';
@@ -59,13 +66,24 @@ const EVENTS_KEPT = 50;                     // flag events kept in memory for th
 const LOG_RAW_DAYS = 3;                     // a request for up to this many days returns the rows as logged ...
 const LOG_HOURLY_DAYS = 60;                 // ... up to this many, one row an hour; beyond that, one a day
 const FLAG_NAMES = ['underVoltage', 'frequencyCapped', 'throttled', 'softTempLimit'];
+const GIT_TIMEOUT_MS = 10 * 1000;
+const SUBJECT_MAX = 120;
 
 export interface SystemServiceCheck { name: string; host?: string; port?: number; process?: string; }
 export interface SystemStatusSettings {
     enabled: boolean; sampleSeconds: number; historyMinutes: number; tempWarn: number;
     logEnabled: boolean; logMinutes: number; keepDays: number;
-    services: SystemServiceCheck[];
+    services: SystemServiceCheck[]; repos: SystemRepo[];
 }
+export interface SystemRepo { name: string; path: string; }
+// What is installed in one folder. `fork` is owner/name of the repository the branch follows, `date` and `subject` are the commit's, `changed`
+// is the number of files that differ from the commit. `runningCommit` (njsPC only) is the commit njsPC started on.
+export interface SystemSoftware {
+    name: string; version?: string; fork?: string; branch?: string; commit?: string; date?: string; subject?: string; changed?: number;
+    runningCommit?: string;
+}
+// A line of the log for one folder: `v` is its name and `start` marks the line written when njsPC started.
+export interface SystemSoftwareRecord extends SystemSoftware { t: number; v: string; start?: boolean; }
 // A row of the log: the period starting at `t` (epoch ms) of `n` samples. temp, cpu and mem are averages, lag is the longest delay of njsPC in
 // ms, and thr has a bit for each flag that was on at some time in the period (1 under-voltage, 2 frequency capped, 4 throttled, 8 soft
 // temperature limit).
@@ -75,7 +93,7 @@ export interface SystemLogRow { t: number; n: number; temp?: number; tempMax?: n
 export interface SystemFlagEvent { t: number; e: string; on: boolean; brief?: boolean; temp?: number; }
 // A period one flag was on. `end` is missing while it is still on, or when njsPC or the computer restarted before it went off.
 export interface SystemFlagPeriod { e: string; start: number; end?: number; brief?: boolean; tempStart?: number; tempEnd?: number; }
-export interface SystemLogReport { days: number; rowMinutes: number; rows: SystemLogRow[]; events: SystemFlagEvent[]; periods: SystemFlagPeriod[]; }
+export interface SystemLogReport { days: number; rowMinutes: number; rows: SystemLogRow[]; events: SystemFlagEvent[]; periods: SystemFlagPeriod[]; software: SystemSoftwareRecord[]; }
 export interface SystemServiceState { name: string; isUp: boolean; port?: number; process?: string; since?: number; }
 export interface SystemWarning { code: string; level: 'warn' | 'alert'; message: string; }
 // The power and heat flags a Raspberry Pi keeps: `now` is happening at the moment, `sinceBoot` has happened since the computer started.
@@ -97,6 +115,7 @@ export interface SystemStatusReport {
     wifi?: { iface: string; signal?: number; quality?: number };
     throttled?: { raw: number; now: SystemThrottleFlags; sinceBoot: SystemThrottleFlags };
     services?: SystemServiceState[];
+    software?: SystemSoftware[];
     day?: { hours: number; tempMax?: number; tempMaxAt?: number; lagMax: number; lagMaxAt?: number };
     warnings?: SystemWarning[];
     events?: SystemFlagEvent[];                     // the latest flag events since njsPC started
@@ -131,8 +150,13 @@ export function normalizeSystemStatusSettings(cfg: any): SystemStatusSettings {
         if (!isNaN(port) && port > 0 && port < 65536) services.push({ name: s.name.trim(), host: typeof s.host === 'string' && s.host.trim() !== '' ? s.host.trim() : '127.0.0.1', port: port });
         else if (proc !== '') services.push({ name: s.name.trim(), process: proc });
     }
+    const repos: SystemRepo[] = [];
+    for (const r of Array.isArray(cfg.repos) ? cfg.repos : []) {
+        if (!r || typeof r.name !== 'string' || r.name.trim() === '' || typeof r.path !== 'string' || r.path.trim() === '') continue;
+        repos.push({ name: r.name.trim(), path: r.path.trim() });
+    }
     return { enabled: cfg.enabled !== false && cfg.enabled !== 'false', sampleSeconds: sampleSeconds, historyMinutes: historyMinutes, tempWarn: tempWarn,
-        logEnabled: cfg.logEnabled !== false && cfg.logEnabled !== 'false', logMinutes: logMinutes, keepDays: keepDays, services: services
+        logEnabled: cfg.logEnabled !== false && cfg.logEnabled !== 'false', logMinutes: logMinutes, keepDays: keepDays, services: services, repos: repos
     };
 }
 
@@ -156,6 +180,27 @@ export function parseWireless(txt: string): { iface: string; signal?: number; qu
         return { iface: m[1], quality: isNaN(quality) ? undefined : quality, signal: !isNaN(level) && level < 0 ? level : undefined };
     }
     return undefined;
+}
+
+// owner/name from a git remote's address ("https://host/owner/name.git", "git@host:owner/name.git"). Anything before the host, such as a
+// user name or an access token, is never part of the result.
+export function forkOfUrl(url: string): string | undefined {
+    const m = /[:\/]([^\/:@]+)\/([^\/:@]+?)(?:\.git)?\/?$/.exec((url || '').trim());
+    return m ? `${m[1]}/${m[2]}` : undefined;
+}
+// The remotes' addresses and the remote each branch follows, from a git config file.
+export function parseGitConfig(txt: string): { remotes: { [name: string]: string }; branches: { [name: string]: string } } {
+    const cfg = { remotes: {} as { [name: string]: string }, branches: {} as { [name: string]: string } };
+    let kind = '', name = '';
+    for (const line of (txt || '').split('\n')) {
+        const sec = /^\s*\[\s*(\w+)(?:\s+"(.*)")?\s*\]\s*$/.exec(line);
+        if (sec) { kind = sec[1].toLowerCase(); name = sec[2] || ''; continue; }
+        const kv = /^\s*(\w+)\s*=\s*(.*?)\s*$/.exec(line);
+        if (!kv || name === '') continue;
+        if (kind === 'remote' && kv[1].toLowerCase() === 'url') cfg.remotes[name] = kv[2];
+        else if (kind === 'branch' && kv[1].toLowerCase() === 'remote') cfg.branches[name] = kv[2];
+    }
+    return cfg;
 }
 
 // The periods each flag was on, from its events in time order.
@@ -239,6 +284,10 @@ export class SystemStatus {
     private writing: Promise<void> = Promise.resolve();
     private trimmedAt = 0;
     private logDir = path.join(process.cwd(), 'data', 'systemStatus');
+    private software: SystemSoftware[] = [];
+    private softwareKeys: { [name: string]: string } = {};
+    private startCommit: string | undefined;
+    private startCommitRead = false;
 
     // Starts the sampling. `getSettings` returns the systemStatus section of config.json; it is read again at each sample, so a change of the
     // settings applies without a restart. The timers do not keep the process running.
@@ -416,7 +465,7 @@ export class SystemStatus {
         if (days > s.keepDays) days = s.keepDays;
         const now = Date.now(), from = now - days * DAY_MS;
         await this.writing;
-        const rows: SystemLogRow[] = [], events: SystemFlagEvent[] = [];
+        const rows: SystemLogRow[] = [], events: SystemFlagEvent[] = [], software: SystemSoftwareRecord[] = [];
         const d = new Date(from);
         let y = d.getUTCFullYear(), mo = d.getUTCMonth();
         while (Date.UTC(y, mo, 1) <= now) {
@@ -427,7 +476,8 @@ export class SystemStatus {
                     let o: any;
                     try { o = JSON.parse(line); } catch (err) { continue; }     // a line cut short by a power loss
                     if (!o || typeof o.t !== 'number' || o.t < from) continue;
-                    if (typeof o.e === 'string') events.push(o);
+                    if (typeof o.v === 'string') software.push(o);
+                    else if (typeof o.e === 'string') events.push(o);
                     else rows.push(o);
                 }
                 await new Promise<void>(resolve => setImmediate(resolve));
@@ -436,10 +486,11 @@ export class SystemStatus {
         }
         rows.sort((a, b) => a.t - b.t);
         events.sort((a, b) => a.t - b.t);
+        software.sort((a, b) => a.t - b.t);
         let rowMinutes = s.logMinutes, out = rows;
         if (days > LOG_HOURLY_DAYS) { rowMinutes = 24 * 60; out = combineRows(rows, DAY_MS); }
         else if (days > LOG_RAW_DAYS) { rowMinutes = 60; out = combineRows(rows, HOUR_MS); }
-        return { days: days, rowMinutes: rowMinutes, rows: out, events: events, periods: flagPeriods(events) };
+        return { days: days, rowMinutes: rowMinutes, rows: out, events: events, periods: flagPeriods(events), software: software };
     }
 
     // What changes slowly, or costs more to read.
@@ -463,6 +514,81 @@ export class SystemStatus {
             next.push({ name: svc.name, isUp: isUp, port: svc.port, process: svc.process, since: typeof prev !== 'undefined' && prev.isUp === isUp ? prev.since : now });
         }
         this.services = next;
+        await this.checkSoftware(s, now);
+    }
+
+    // The folder's git data: where it is, the branch and the commit. Read from git's own files, so nothing is started to look.
+    private async readRepoHead(dir: string): Promise<{ gitDir: string; branch?: string; commit?: string } | undefined> {
+        let gitDir = path.join(dir, '.git');
+        // In a linked worktree .git is a file that names the folder.
+        const dot = await readText(gitDir);
+        if (typeof dot !== 'undefined') {
+            const m = /^gitdir:\s*(.+)$/m.exec(dot);
+            if (m) gitDir = path.resolve(dir, m[1].trim());
+        }
+        const head = await readText(path.join(gitDir, 'HEAD'));
+        if (typeof head === 'undefined') return undefined;
+        let common = gitDir;
+        const cd = await readText(path.join(gitDir, 'commondir'));
+        if (typeof cd !== 'undefined') common = path.resolve(gitDir, cd.trim());
+        const m = /^ref:\s*(\S+)/.exec(head.trim());
+        if (!m) return { gitDir: common, commit: head.trim() };
+        const ref = m[1];
+        let commit = await readText(path.join(common, ref));
+        if (typeof commit === 'undefined') {
+            for (const line of (await readText(path.join(common, 'packed-refs')) || '').split('\n')) {
+                const parts = line.trim().split(' ');
+                if (parts.length === 2 && parts[1] === ref) { commit = parts[0]; break; }
+            }
+        }
+        return { gitDir: common, branch: ref.replace(/^refs\/heads\//, ''), commit: typeof commit === 'undefined' ? undefined : commit.trim() };
+    }
+    private runGit(dir: string, args: string[]): Promise<string | undefined> {
+        return new Promise<string | undefined>(resolve => {
+            execFile('git', ['-C', dir].concat(args), { timeout: GIT_TIMEOUT_MS }, (err, stdout) => resolve(err ? undefined : String(stdout)));
+        });
+    }
+    // Looks at njsPC's folder and each listed folder; when a branch or commit is not the one last recorded, reads the details and records them.
+    private async checkSoftware(s: SystemStatusSettings, now: number) {
+        const repos: SystemRepo[] = [{ name: 'njsPC', path: process.cwd() }].concat(s.repos.filter(r => r.name !== 'njsPC'));
+        const list: SystemSoftware[] = [];
+        for (const r of repos) {
+            const head = await this.readRepoHead(r.path);
+            if (r.name === 'njsPC' && !this.startCommitRead) { this.startCommitRead = true; this.startCommit = typeof head !== 'undefined' ? head.commit : undefined; }
+            const key = typeof head === 'undefined' ? 'none' : `${head.branch || ''}|${head.commit || ''}`;
+            const prev = this.software.find(x => x.name === r.name);
+            if (typeof prev !== 'undefined' && this.softwareKeys[r.name] === key) { list.push(prev); continue; }
+            const isStart = typeof this.softwareKeys[r.name] === 'undefined';
+            this.softwareKeys[r.name] = key;
+            const sw: SystemSoftware = { name: r.name };
+            try { sw.version = JSON.parse(await readText(path.join(r.path, 'package.json')) || '{}').version; } catch (err) { }
+            if (typeof head !== 'undefined') {
+                sw.branch = head.branch;
+                sw.commit = head.commit;
+                const cfg = parseGitConfig(await readText(path.join(head.gitDir, 'config')) || '');
+                const names = Object.keys(cfg.remotes);
+                const remote = typeof head.branch !== 'undefined' && typeof cfg.branches[head.branch] !== 'undefined' ? cfg.branches[head.branch] : names.indexOf('origin') !== -1 ? 'origin' : names[0];
+                if (typeof remote !== 'undefined' && typeof cfg.remotes[remote] !== 'undefined') sw.fork = forkOfUrl(cfg.remotes[remote]);
+                // The commit's date and first line, and the files changed locally, need git itself; without it they are left out.
+                const log = await this.runGit(r.path, ['log', '-1', '--format=%cI%x1f%s']);
+                if (typeof log !== 'undefined') {
+                    const parts = log.trim().split('\x1f');
+                    sw.date = parts[0] || undefined;
+                    if (parts.length > 1) sw.subject = parts[1].length > SUBJECT_MAX ? parts[1].substring(0, SUBJECT_MAX) : parts[1];
+                }
+                const status = await this.runGit(r.path, ['status', '--porcelain']);
+                if (typeof status !== 'undefined') sw.changed = status.split('\n').filter(x => x.trim() !== '').length;
+            }
+            if (r.name === 'njsPC') sw.runningCommit = this.startCommit;
+            list.push(sw);
+            if (s.logEnabled) {
+                const rec: SystemSoftwareRecord = Object.assign({ t: now, v: r.name }, sw);
+                if (isStart) rec.start = true;
+                this.append(now, rec);
+            }
+            if (!isStart) logger.info(`System: ${r.name} is now at ${sw.branch || ''} ${typeof sw.commit !== 'undefined' ? sw.commit.substring(0, 8) : ''}.`);
+        }
+        this.software = list;
     }
 
     private async readInfo(): Promise<SystemInfo> {
@@ -553,6 +679,9 @@ export class SystemStatus {
         if (typeof rep.cpuTemp !== 'undefined' && rep.cpuTemp >= this.tempWarn) w.push({ code: 'tempHigh', level: 'alert', message: `The processor is at ${rep.cpuTemp} C.` });
         if (typeof rep.storage !== 'undefined' && rep.storage.use >= STORAGE_WARN_PCT) w.push({ code: 'storageFull', level: 'warn', message: `Storage is ${Math.round(rep.storage.use)}% full.` });
         if (typeof rep.day !== 'undefined' && rep.day.lagMax >= LAG_WARN_MS) w.push({ code: 'stalled', level: 'warn', message: `njsPC did not run for ${round(rep.day.lagMax / 1000, 1)} s at one point in the last ${rep.day.hours} h.` });
+        for (const sw of rep.software || []) {
+            if (typeof sw.runningCommit !== 'undefined' && typeof sw.commit !== 'undefined' && sw.runningCommit !== sw.commit) w.push({ code: 'notRestarted', level: 'warn', message: `${sw.name} is running ${sw.runningCommit.substring(0, 8)} but its folder is at ${sw.commit.substring(0, 8)}: it has not been restarted since the folder changed.` });
+        }
         for (const svc of rep.services || []) if (!svc.isUp) w.push({ code: 'serviceDown', level: 'alert', message: `${svc.name} is not answering.` });
         return w;
     }
@@ -574,6 +703,7 @@ export class SystemStatus {
         rep.wifi = this.wifi;
         if (typeof this.throttledRaw !== 'undefined') rep.throttled = parseThrottled(this.throttledRaw);
         rep.services = this.services;
+        rep.software = this.software;
         if (this.hours.length > 0) {
             const day: SystemStatusReport['day'] = { hours: this.hours.length, lagMax: 0 };
             for (const h of this.hours) {
