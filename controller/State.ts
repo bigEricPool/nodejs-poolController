@@ -81,14 +81,25 @@ export class State implements IState {
             if (this._isDirty) this._timerDirty = setTimeout(function () { self.persist(); }, 3000);
         }
     }
+    // The save in progress, if there is one, and whether the state changed again while it was being written.
+    private _saving: Promise<void>;
+    private _saveAgain = false;
+    // The state is saved without holding up the process (see utils.writeFileAtomicAsync), one save at a time: when the state changes while a save
+    // is still being written, one more save with the latest state follows it. A save that takes 2 seconds or more is reported, because slow storage
+    // is worth knowing about.
     public persist() {
         this._isDirty = false;
+        if (typeof this._saving !== 'undefined') { this._saveAgain = true; return; }
         var self = this;
-        Promise.resolve()
-            .then(() => {
-                utils.writeFileAtomicSync(self.statePath, JSON.stringify(self.data, undefined, 2));
-            })
-            .catch(function (err) { if (err) logger.error('Error writing pool state %s %s', err, self.statePath); });
+        const started = new Date().getTime();
+        this._saving = utils.writeFileAtomicAsync(self.statePath, JSON.stringify(self.data, undefined, 2))
+            .catch(function (err) { if (err) logger.error('Error writing pool state %s %s', err, self.statePath); })
+            .then(function () {
+                self._saving = undefined;
+                const secs = (new Date().getTime() - started) / 1000;
+                if (secs >= 2) logger.warn(`Saving the pool state took ${secs.toFixed(1)} seconds. The storage is slow; njsPC kept running while it waited.`);
+                if (self._saveAgain) { self._saveAgain = false; self.persist(); }
+            });
     }
     public async readLogFile(logFile: string): Promise<string[]> {
         try {
@@ -163,6 +174,8 @@ export class State implements IState {
         try {
             if (this._timerDirty) clearTimeout(this._timerDirty);
             this.persist();
+            // Wait for the save, and for one queued behind it, so that the file holds the latest state when the process exits.
+            while (typeof this._saving !== 'undefined') await this._saving;
 /*             if (sys.controllerType === ControllerType.Virtual) {
                 for (let i = 0; i < state.temps.bodies.length; i++) {
                     state.temps.bodies.getItemByIndex(i).isOn = false;
