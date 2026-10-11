@@ -30,7 +30,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 // The same record says which software was installed when: for njsPC's own folder and each folder listed in `repos`, the version in
 // package.json, the fork (the owner and name of the repository the branch follows), the branch, the commit and its date and first line, and
-// the number of files changed locally. A line is written when njsPC starts and whenever a folder's branch or commit changes. This is what is
+// the number of files that differ from the commit and of files git does not track. A line is written when njsPC starts and whenever a folder's branch or commit changes. This is what is
 // in the folder; a program that was not restarted after its folder changed still runs the older code, which is why njsPC's line also has the
 // commit it started on.
 //
@@ -76,10 +76,13 @@ export interface SystemStatusSettings {
     services: SystemServiceCheck[]; repos: SystemRepo[];
 }
 export interface SystemRepo { name: string; path: string; }
-// What is installed in one folder. `fork` is owner/name of the repository the branch follows, `date` and `subject` are the commit's, `changed`
-// is the number of files that differ from the commit. `runningCommit` (njsPC only) is the commit njsPC started on.
+// What is installed in one folder. `fork` is owner/name of the repository the branch follows, `date` and `subject` are the commit's, `modified`
+// is the number of tracked files that differ from the commit (so the code is not exactly that commit) and `untracked` the number of files
+// in the folder that git does not track, such as backups. `runningCommit` (njsPC only) is the commit njsPC started on. Lines logged by the
+// first version have `changed` instead, the two counted together.
 export interface SystemSoftware {
-    name: string; version?: string; fork?: string; branch?: string; commit?: string; date?: string; subject?: string; changed?: number;
+    name: string; version?: string; fork?: string; branch?: string; commit?: string; date?: string; subject?: string;
+    modified?: number; untracked?: number; changed?: number;
     runningCommit?: string;
 }
 // A line of the log for one folder: `v` is its name and `start` marks the line written when njsPC started.
@@ -569,7 +572,7 @@ export class SystemStatus {
                 const names = Object.keys(cfg.remotes);
                 const remote = typeof head.branch !== 'undefined' && typeof cfg.branches[head.branch] !== 'undefined' ? cfg.branches[head.branch] : names.indexOf('origin') !== -1 ? 'origin' : names[0];
                 if (typeof remote !== 'undefined' && typeof cfg.remotes[remote] !== 'undefined') sw.fork = forkOfUrl(cfg.remotes[remote]);
-                // The commit's date and first line, and the files changed locally, need git itself; without it they are left out.
+                // The commit's date and first line, and the counts of files, need git itself; without it they are left out.
                 const log = await this.runGit(r.path, ['log', '-1', '--format=%cI%x1f%s']);
                 if (typeof log !== 'undefined') {
                     const parts = log.trim().split('\x1f');
@@ -577,7 +580,11 @@ export class SystemStatus {
                     if (parts.length > 1) sw.subject = parts[1].length > SUBJECT_MAX ? parts[1].substring(0, SUBJECT_MAX) : parts[1];
                 }
                 const status = await this.runGit(r.path, ['status', '--porcelain']);
-                if (typeof status !== 'undefined') sw.changed = status.split('\n').filter(x => x.trim() !== '').length;
+                if (typeof status !== 'undefined') {
+                    const lines = status.split('\n').filter(x => x.trim() !== '');
+                    sw.untracked = lines.filter(x => x.startsWith('??')).length;
+                    sw.modified = lines.length - sw.untracked;
+                }
             }
             if (r.name === 'njsPC') sw.runningCommit = this.startCommit;
             list.push(sw);
