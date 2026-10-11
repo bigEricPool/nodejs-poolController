@@ -1620,8 +1620,9 @@ export class Pump extends EqItem {
     public set maxFlow(val: number) { this.setDataVal('maxFlow', val); }
     public get primingTime(): number { return this.data.primingTime; }
     public set primingTime(val: number) { this.setDataVal('primingTime', val); }
-    // Priming for relay pumps, which have no priming of their own (see NixiePump.startPrimingAsync). When a schedule starts the pump it also
-    // runs at the priming relay's speed, with the priming circuit on, for this many minutes. 0 minutes turns it off.
+    // Priming for relay pumps, which have no priming of their own (see NixiePump.startPrimingAsync). When a schedule starts the pump, or the pump
+    // stopped because its relays timed out, it also runs at the priming relay's speed, with the priming circuit on, for this many minutes. 0 minutes
+    // turns it off. Not set, it is 3 minutes, and a two speed pump primes at its high speed (NixiePump.primingSettings).
     public get primingMinutes(): number { return this.data.primingMinutes; }
     public set primingMinutes(val: number) { this.setDataVal('primingMinutes', val); }
     public get primingRelay(): number { return this.data.primingRelay; }
