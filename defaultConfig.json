@@ -277,6 +277,7 @@
     "logEnabled": true,
     "logMinutes": 5,
     "keepDays": 400,
+    "repos": [],
     "services": []
   },
   "log": {
