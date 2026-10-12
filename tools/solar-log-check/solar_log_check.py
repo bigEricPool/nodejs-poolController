@@ -73,6 +73,8 @@ def reason_key(why):
         return 'collector not warmer than water'
     if 'above the water and needs' in w:
         return 'collector lead under the run delta'
+    if 'expected to read' in w:
+        return 'collector lead not enough at the solar pump speed'
     if 'last turned off' in w and 'risen' in w:
         return 'reheat guard (collector must climb)'
     if 'daytime' in w:

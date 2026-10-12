@@ -92,6 +92,27 @@ A change of setpoint is checked at once. A restart of njsPC forgets a turned-dow
 Solar is not on a timer. The check runs only when a start is called for by the readings at the
 normal speed. When the water is well above the setpoint there are no checks at all.
 
+### The reading expected at the solar pump speed
+
+Each check that runs its full time records the difference between the two speeds: the reading at
+the end of the check minus the reading when it began (about +1.5 on this pool). Two rules use it,
+by adding it to the reading at the normal speed to get the reading expected at the solar speed.
+
+- **When a check begins.** For heating, the start conditions of section 3 must hold, and with the
+  expected reading the collector must still lead the water by more than the run delta and the
+  water must still be below the stop level. Without this, a check began the moment the lead passed
+  the run delta at the normal speed, was turned down at the solar speed, and the check period
+  then kept solar off for an hour of good sun. For cooling, the start conditions must hold with
+  the expected reading, so a reading that is too cool at the normal speed but warm enough at the
+  solar speed does get its check.
+- **Checking again before the check period is over.** After a turned-down start, the next check
+  is allowed early when the expected reading passes with the hysteresis to spare and the settle
+  delay has gone by since the pump slowed down. The difference used is the one the turned-down
+  check itself measured.
+
+Until a first check has measured the difference it is taken as 0. With the valve delay in use,
+solar is started by a check and by nothing else.
+
 ## 6. While solar runs, and when it stops
 
 - **Water at the target.** Solar stops when the water has stayed at or above the setpoint plus
