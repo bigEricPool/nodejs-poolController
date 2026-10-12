@@ -11,7 +11,7 @@ analyze a different file.
     python3 tools/solar-log-check/solar_log_check.py /some/where/other.log
     python3 tools/solar-log-check/solar_log_check.py --list                the solar logs found
     python3 tools/solar-log-check/solar_log_check.py --timeline            add every run and off period
-    python3 tools/solar-log-check/solar_log_check.py --since 13:00         only lines from 13:00 on
+    python3 tools/solar-log-check/solar_log_check.py --since 13:00         only lines from the last 13:00 on
 
 It reads the lines njsPC writes with log.solar.logToFile on (and, for the "why not running" and
 settle delay lines, log.solar.explain on), and reports:
@@ -153,9 +153,15 @@ def parse(path, since):
             if not m:
                 continue
             t = datetime.strptime(m.group(1), '%d/%m/%Y, %H:%M:%S')
-            if since is not None and t.time() < since and t.date() == (events[0]['t'].date() if events else t.date()):
-                continue
             events.append({'t': t, 'level': m.group(2), 'msg': m.group(3)})
+    # --since HH:MM is the most recent time the clock read HH:MM: on the day of the last line, or the day before when the log ends earlier
+    # in the day than that. A log runs from one restart to the next, so it often covers more than one day.
+    if since is not None and events:
+        last = events[-1]['t']
+        cutoff = datetime.combine(last.date(), since)
+        if cutoff > last:
+            cutoff -= timedelta(days=1)
+        events = [e for e in events if e['t'] >= cutoff]
     return events
 
 
@@ -485,7 +491,7 @@ def main():
     ap.add_argument('--logs-dir', help="njsPC's logs folder (default: ../../logs from this script, ./logs, or $NJSPC_LOGS)")
     ap.add_argument('--list', action='store_true', help='list the solar logs found and stop')
     ap.add_argument('--timeline', action='store_true', help='also list every run, off period and settle delay line')
-    ap.add_argument('--since', help='only lines at or after HH:MM (of the first day in the log)')
+    ap.add_argument('--since', help='only lines from the most recent HH:MM on (today, or yesterday when the log ends before that time of day)')
     args = ap.parse_args()
     d = logs_dir(args.logs_dir)
     if args.list:

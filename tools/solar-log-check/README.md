@@ -9,7 +9,7 @@ python3 tools/solar-log-check/solar_log_check.py 2026-10-03_12-32-48   # a log, 
 python3 tools/solar-log-check/solar_log_check.py /path/to/other.log    # or by path
 python3 tools/solar-log-check/solar_log_check.py --list                # the solar logs found
 python3 tools/solar-log-check/solar_log_check.py --timeline            # also list every run and off period
-python3 tools/solar-log-check/solar_log_check.py --since 13:00         # only lines from 13:00 on
+python3 tools/solar-log-check/solar_log_check.py --since 13:00         # only lines from the last 13:00 on
 ```
 
 It looks for the logs in `<njsPC>/logs` (or `./logs`, or `--logs-dir`, or `$NJSPC_LOGS`).
