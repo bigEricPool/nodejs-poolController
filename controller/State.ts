@@ -2013,6 +2013,15 @@ export class HeaterState extends EqState {
             this.hasChanged = true;
         }
     }
+    // The water reading at the solar pump speed minus the reading at the normal speed, as the last solar valve delay check saw it (positive when the
+    // faster speed reads higher). The solar decision adds it to the reading at the normal speed to tell whether a check is worth making.
+    public get solarSpeedOffset(): number { return this.data.solarSpeedOffset; }
+    public set solarSpeedOffset(val: number) {
+        if (this.solarSpeedOffset !== val) {
+            this.data.solarSpeedOffset = val;
+            if (typeof val === 'undefined') delete this.data.solarSpeedOffset;
+        }
+    }
     public get prevHeaterOffTemp(): number { return this.data.prevHeaterOffTemp; }
     public set prevHeaterOffTemp(val: number) {
         if (this.prevHeaterOffTemp !== val) {
