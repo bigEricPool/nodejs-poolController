@@ -4805,8 +4805,11 @@ export class HeaterCommands extends BoardCommands {
                                                         else if (!((solarT - waterT) > heater.stopTempDelta)) { key = 'run-delta'; why = `the collector is only ${r1(solarT - waterT)} above the water and needs to be more than ${heater.stopTempDelta} (the run delta)`; }
                                                         else if (typeof prevOff !== 'undefined' && !((solarT - prevOff) > heater.startTempDelta)) { key = 'reheat'; why = `the collector (${r1(solarT)}) has only risen ${r1(solarT - prevOff)} above where it was when solar last turned off (${r1(prevOff)}); it must rise more than ${heater.startTempDelta} (the start delta), to above ${r1(prevOff + heater.startTempDelta)}`; }
                                                     }
-                                                    else if (heater.coolingEnabled && waterT > cfgBody.coolSetpoint) {
-                                                        kind = 'nocturnal cooling';
+                                                    // At night a collector that cannot heat is the ordinary state of things. When nocturnal cooling is enabled and the water is above the cool
+                                                    // setpoint, cooling is what is being waited for, so that is what is explained (the water can be below the heat setpoint at the same time).
+                                                    const coolWanted = heater.coolingEnabled && waterT > cfgBody.coolSetpoint;
+                                                    if (coolWanted && (!(waterT < cfgBody.heatSetpoint) || (night && (key === 'collector-not-warmer' || key === 'run-delta')))) {
+                                                        kind = 'nocturnal cooling'; key = ''; why = '';
                                                         if (!night) { key = 'cool-daytime'; why = 'it is daytime (nocturnal cooling runs only at night)'; }
                                                         else if (!(solarT < waterT)) { key = 'cool-collector-not-cooler'; why = `the collector (${r1(solarT)}) is not cooler than the water (${r1(waterT)})`; }
                                                         else if (!((waterT - solarT) > heater.stopTempDelta)) { key = 'cool-run-delta'; why = `the water is only ${r1(waterT - solarT)} warmer than the collector and needs to be more than ${heater.stopTempDelta} (the run delta)`; }
@@ -4814,13 +4817,16 @@ export class HeaterCommands extends BoardCommands {
                                                         else if (hState.targetStop === 'cooling' && !(waterT > (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis))) { key = 'cool-hysteresis'; why = `cooling stopped at its target and restarts only when the water (${r1(waterT)}) is above ${cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis}: the cool setpoint plus the run delta plus the ${hysteresis} degree hysteresis`; }
                                                         else if (typeof prevOff !== 'undefined' && !((prevOff - solarT) > heater.startTempDelta)) { key = 'cool-reheat'; why = `the collector (${r1(solarT)}) has only dropped ${r1(prevOff - solarT)} below where it was when solar last turned off (${r1(prevOff)}); it must drop more than ${heater.startTempDelta} (the start delta), to below ${r1(prevOff - heater.startTempDelta)}`; }
                                                     }
-                                                    else { key = 'at-target'; repeat = false; kind = 'heating'; why = `the water (${r1(waterT)}) is not below the setpoint ${cfgBody.heatSetpoint}${heater.coolingEnabled ? ' and not above the cool setpoint ' + cfgBody.coolSetpoint : ''}`; }
+                                                    else if (!(waterT < cfgBody.heatSetpoint)) { key = 'at-target'; repeat = false; kind = 'heating'; why = `the water (${r1(waterT)}) is not below the setpoint ${cfgBody.heatSetpoint}${heater.coolingEnabled ? ' and not above the cool setpoint ' + cfgBody.coolSetpoint : ''}`; }
                                                     if (key !== '' && typeof heatNote === 'undefined') {
                                                         // A hold above (a delay, a stop wait) takes precedence; these are the waits worth showing.
                                                         if (key === 'hysteresis') heatNote = `Solar waiting: the water must fall below ${cfgBody.heatSetpoint - hysteresis} to restart`;
                                                         else if (key === 'reheat') heatNote = `Solar waiting: the collector must reach ${r1(prevOff + heater.startTempDelta)} (now ${r1(solarT)})`;
                                                         else if (key === 'run-delta') heatNote = `Solar waiting: the collector needs to be more than ${heater.stopTempDelta} above the water`;
                                                         else if (key === 'collector-not-warmer') heatNote = 'Solar waiting: the collector is not warmer than the water';
+                                                        else if (key === 'cool-margin') heatNote = `Cooling waiting: the water must be above ${cfgBody.coolSetpoint + heater.stopTempDelta} (the Cool Point plus ${heater.stopTempDelta})`;
+                                                        else if (key === 'cool-run-delta') heatNote = `Cooling waiting: the water needs to be more than ${heater.stopTempDelta} above the collector`;
+                                                        else if (key === 'cool-collector-not-cooler') heatNote = 'Cooling waiting: the collector is not cooler than the water';
                                                         else if (key === 'cool-hysteresis') heatNote = `Cooling waiting: the water must rise above ${cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis} to restart`;
                                                         else if (key === 'cool-reheat') heatNote = `Cooling waiting: the collector must fall below ${r1(prevOff - heater.startTempDelta)} (now ${r1(solarT)})`;
                                                     }
