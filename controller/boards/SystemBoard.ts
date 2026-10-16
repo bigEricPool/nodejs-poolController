@@ -3977,6 +3977,12 @@ const solarSettleLog: Map<number, { key: string; at: number }> = new Map<number,
 const solarStopSince: Map<number, number> = new Map<number, number>();
 // Heaters whose stop has been explained in the log, so repeated status passes while the relay manager answers do not log it again.
 const solarOffNoted: Set<number> = new Set<number>();
+// When the reheat guard was set, per heater, and whether it was night on the heater's last pass. The guard is there for a cloud or a dip in the
+// sun, a matter of minutes. A guard left from an evening stop held solar off the next morning until the collector passed that evening's
+// temperature plus the start delta, so it is cleared at sunset, and when the body's pump has started since it was set (the body was off, or a
+// pump primed after a stop).
+const solarGuardAt: Map<number, number> = new Map<number, number>();
+const solarWasNight: Map<number, boolean> = new Map<number, boolean>();
 // controller.solar.settleMinutes in config.json (default 5; 0 turns the delay off): how long the solar decision waits for the water and collector
 // readings to settle. Solar is not started that long after the body's pump starts or after solar turns off, and the water must stay past the
 // stop level that long before solar stops for it.
@@ -4529,6 +4535,22 @@ export class HeaterCommands extends BoardCommands {
                                             // 6.  When the heater turns off, note the solar collector temp. Collector reheats quickly in the sun. (#1212)
                                             let hState: HeaterState =
                                             state.heaters.getItemById(heater.id);
+                                            {
+                                                const nightNow = state.heliotrope.isNight;
+                                                if (typeof hState.prevHeaterOffTemp !== 'undefined') {
+                                                    const guardSetAt = solarGuardAt.get(heater.id);
+                                                    const bodyPumpAt = solarBodyOnAt.get(body.id);
+                                                    let clearWhy = '';
+                                                    if (solarWasNight.get(heater.id) === false && nightNow === true) clearWhy = 'the sun has set';
+                                                    else if (typeof guardSetAt === 'number' && typeof bodyPumpAt === 'number' && bodyPumpAt > guardSetAt) clearWhy = 'the pump has started again since it was set';
+                                                    if (clearWhy !== '') {
+                                                        logger.solar(`Solar ${heater.name} (${body.name}): reheat guard cleared (the collector had to rise ${heater.startTempDelta} above ${Math.round(hState.prevHeaterOffTemp * 10) / 10}): ${clearWhy}.`);
+                                                        hState.prevHeaterOffTemp = undefined;
+                                                        solarGuardAt.delete(heater.id);
+                                                    }
+                                                }
+                                                if (typeof nightNow === 'boolean') solarWasNight.set(heater.id, nightNow);
+                                            }
                                             // The water temperature is compared as it reads. It used to be truncated to a whole degree (#1248) so that solar would not stop or restart on
                                             // a reading that had only just touched the setpoint; the hysteresis and the settle delay below do that job, and allow a fractional hysteresis.
                                             const waterTemp = body.temp;
@@ -4801,6 +4823,7 @@ export class HeaterCommands extends BoardCommands {
                                                     : (!(solarT > waterTemp) || !((solarT - waterTemp) > heater.stopTempDelta));
                                                 const firstOffPass = !solarOffNoted.has(heater.id);
                                                 if (firstOffPass) hState.prevHeaterOffTemp = collectorStop ? solarT : undefined;
+                                                if (firstOffPass) { if (collectorStop) solarGuardAt.set(heater.id, nowMs); else solarGuardAt.delete(heater.id); }
                                                 // A stop because the water stayed past the stop level waits for the hysteresis on the other side before the next start.
                                                 if (firstOffPass) hState.targetStop = (!collectorStop && stopNow) ? (hState.isCooling ? 'cooling' : 'heating') : undefined;
                                                 const restartAt = hState.isCooling ? (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
