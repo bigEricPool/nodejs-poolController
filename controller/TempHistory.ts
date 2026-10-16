@@ -33,7 +33,9 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 const SAMPLE_MS = 60 * 1000;
 const SAVE_MS = 5 * 60 * 1000;
 
-interface TempSample { t: number; v: number; }
+// t: when, v: the temperature shown, l: the live reading, kept only when it differs from v (the solar enhancements can show a reading
+// taken at the solar pump speed for a while; the live one is kept beside it so a chart can show both).
+interface TempSample { t: number; v: number; l?: number; }
 
 class TempHistory {
     private samples: { [bodyId: number]: TempSample[] } = {};
@@ -77,14 +79,17 @@ class TempHistory {
         this.timer = setInterval(sampler, SAMPLE_MS);
         this.timer.unref();
     }
-    // Adds a reading for a body (at most one a minute is kept) and drops anything older than 24 hours.
-    public record(bodyId: number, temp: number, now: number = Date.now()) {
+    // Adds a reading for a body (at most one a minute is kept) and drops anything older than 24 hours. `live` is the sensor's own
+    // reading when the temperature shown is a different one.
+    public record(bodyId: number, temp: number, live?: number, now: number = Date.now()) {
         if (!this.loaded) this.load();
         const arr = this.samples[bodyId] || (this.samples[bodyId] = []);
         const last = arr[arr.length - 1];
         if (typeof last === 'undefined') logger.info(`Temperature history: first reading for body ${bodyId} since the last 24 hours of data; saving to ${this.file()}`);
         if (typeof last === 'undefined' || now - last.t >= SAMPLE_MS - 5000) {
-            arr.push({ t: now, v: temp });
+            const s: TempSample = { t: now, v: temp };
+            if (typeof live === 'number' && isFinite(live) && Math.abs(live - temp) >= 0.05) s.l = live;
+            arr.push(s);
             const cutoff = now - WINDOW_MS;
             while (arr.length > 0 && arr[0].t < cutoff) arr.shift();
             this.dirty = true;
@@ -99,6 +104,19 @@ class TempHistory {
         let sum = 0, count = 0;
         for (let i = 0; i < arr.length; i++) if (arr[i].t >= cutoff) { sum += arr[i].v; count++; }
         return count > 0 ? Math.round((sum / count) * 10) / 10 : undefined;
+    }
+    // The readings of the last 24 hours, oldest first, as three lists (time, shown, live or null), for a chart.
+    public series(bodyId: number, now: number = Date.now()): { t: number[], v: number[], l: number[] } {
+        const out = { t: [], v: [], l: [] };
+        const arr = this.samples[bodyId];
+        if (typeof arr === 'undefined') return out;
+        const cutoff = now - WINDOW_MS;
+        for (let i = 0; i < arr.length; i++) {
+            const s = arr[i];
+            if (s.t < cutoff) continue;
+            out.t.push(s.t); out.v.push(s.v); out.l.push(typeof s.l === 'number' ? s.l : null);
+        }
+        return out;
     }
     // The highest and the lowest reading in the last 24 hours, with the time of each (the latest one when a value repeats),
     // or undefined when there are none.

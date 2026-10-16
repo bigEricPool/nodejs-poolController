@@ -528,7 +528,7 @@ export class State implements IState {
                 // The temperature the dashboard shows for the body. Where solar has published the reading taken at its pump speed
                 // (solarCheckTemp, present only with the solar enhancements), that is the one shown, so it is the one recorded.
                 const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
-                if (body.isOn && typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown);
+                if (body.isOn && typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown, body.temp);
                 body.avgTemp24h = tempHistory.average(body.id);
                 body.avgTempHours = tempHistory.hours(body.id);
                 const ext = tempHistory.extremes(body.id);
@@ -538,6 +538,23 @@ export class State implements IState {
                 body.minTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.low.t)) : undefined;
             }
         } catch (err) { logger.warn(`Could not update the temperature averages: ${err.message}`); }
+    }
+    // The last 24 hours of each body's temperature for the dashboard's Water panel (GET /state/temps/history): the readings, one a minute
+    // while the body was on, and the figures the body publishes. `held` says the temperature shown now is not the live reading (see sampleTemps).
+    public getTempHistory(): any {
+        const now = Date.now();
+        const bodies = [];
+        for (let i = 0; i < this.temps.bodies.length; i++) {
+            const body = this.temps.bodies.getItemByIndex(i);
+            const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+            const s = tempHistory.series(body.id, now);
+            bodies.push({
+                id: body.id, name: body.name, isOn: body.isOn, temp: shown, liveTemp: body.temp, held: shown !== body.temp,
+                avgTemp24h: body.avgTemp24h, avgTempHours: body.avgTempHours, maxTemp24h: body.maxTemp24h, maxTemp24hAt: body.maxTemp24hAt,
+                minTemp24h: body.minTemp24h, minTemp24hAt: body.minTemp24hAt, t: s.t, v: s.v, l: s.l
+            });
+        }
+        return { time: Timestamp.toISOLocal(new Date(now)), hours: 24, sampleSeconds: 60, bodies: bodies };
     }
     private sanitizeTransientLightGroupState(sdata: any) {
         if (!sdata || !Array.isArray(sdata.lightGroups)) return;
