@@ -457,14 +457,22 @@ export class State implements IState {
         tempHistory.start(() => this.sampleTemps());
     }
     // Once a minute: note the temperature of each body that is on (a body that is off keeps a stale temperature), then publish
-    // each body's 24 hour average.
+    // each body's 24 hour average, high and low. The 24 hours end now, so the figures move on as time passes.
     private sampleTemps() {
         try {
             for (let i = 0; i < this.temps.bodies.length; i++) {
                 const body = this.temps.bodies.getItemByIndex(i);
-                if (body.isOn && typeof body.temp === 'number' && isFinite(body.temp)) tempHistory.record(body.id, body.temp);
+                // The temperature the dashboard shows for the body. Where solar has published the reading taken at its pump speed
+                // (solarCheckTemp, present only with the solar enhancements), that is the one shown, so it is the one recorded.
+                const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+                if (body.isOn && typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown);
                 body.avgTemp24h = tempHistory.average(body.id);
                 body.avgTempHours = tempHistory.hours(body.id);
+                const ext = tempHistory.extremes(body.id);
+                body.maxTemp24h = typeof ext !== 'undefined' ? ext.high.v : undefined;
+                body.maxTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.high.t)) : undefined;
+                body.minTemp24h = typeof ext !== 'undefined' ? ext.low.v : undefined;
+                body.minTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.low.t)) : undefined;
             }
         } catch (err) { logger.warn(`Could not update the temperature averages: ${err.message}`); }
     }
@@ -1795,6 +1803,15 @@ export class BodyTempState extends EqState {
     public set avgTemp24h(val: number) { this.setDataVal('avgTemp24h', val); }
     public get avgTempHours(): number { return this.data.avgTempHours; }
     public set avgTempHours(val: number) { this.setDataVal('avgTempHours', val); }
+    // The highest and lowest reading of the same 24 hours, and when each was taken.
+    public get maxTemp24h(): number { return this.data.maxTemp24h; }
+    public set maxTemp24h(val: number) { this.setDataVal('maxTemp24h', val); }
+    public get maxTemp24hAt(): string { return this.data.maxTemp24hAt; }
+    public set maxTemp24hAt(val: string) { this.setDataVal('maxTemp24hAt', val); }
+    public get minTemp24h(): number { return this.data.minTemp24h; }
+    public set minTemp24h(val: number) { this.setDataVal('minTemp24h', val); }
+    public get minTemp24hAt(): string { return this.data.minTemp24hAt; }
+    public set minTemp24hAt(val: string) { this.setDataVal('minTemp24hAt', val); }
     public get type(): number { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : -1; }
     public set type(val: number) {
         if (this.type !== val) {
