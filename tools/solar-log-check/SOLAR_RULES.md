@@ -110,6 +110,12 @@ by adding it to the reading at the normal speed to get the reading expected at t
   delay has gone by since the pump slowed down. The difference used is the one the turned-down
   check itself measured.
 
+**The first check after the pump starts.** Once the collector side alone would pass (the
+collector more than the run delta warmer than the expected reading, or for nocturnal cooling, at
+night, that much cooler; and the reheat guard met), one check is made whatever the water side
+says. It gives the day a reading at the solar pump speed and re-measures the difference. If the
+water side passes too, solar starts; if not, the check period applies as usual.
+
 Until a first check has measured the difference it is taken as 0. With the valve delay in use,
 solar is started by a check and by nothing else.
 
