@@ -292,6 +292,7 @@ export class SystemStatus {
     private throttledAt = 0;
     private throttledViaExec = false;
     private events: SystemFlagEvent[] = [];
+    private eventsLoaded = false;
     // The period being gathered for the next row of the log.
     private acc: { start: number; n: number; tempS: number; tempN: number; tempMax?: number; cpuS: number; cpuN: number; cpuMax?: number; memS: number; memN: number; lag: number; thr?: number } | undefined;
     private writing: Promise<void> = Promise.resolve();
@@ -343,6 +344,11 @@ export class SystemStatus {
         this.tempWarn = s.tempWarn;
         this.settings = s;
         if (!s.enabled) { this.samples = []; this.hours = []; this.lagMax = 0; this.cpuLast = undefined; this.acc = undefined; return; }
+        // The flag events logged since the computer started, so a warning can say when a flag came on even after njsPC restarted.
+        if (!this.eventsLoaded) {
+            this.eventsLoaded = true;
+            await this.loadEvents();
+        }
         const now = Date.now();
         const smp: Sample = { t: now, lag: Math.max(0, Math.round(this.lagMax)) };
         this.lagMax = 0;
@@ -448,6 +454,42 @@ export class SystemStatus {
         if (smp.lag > a.lag) a.lag = smp.lag;
     }
 
+    private bootTime(): number { return Date.now() - os.uptime() * 1000; }
+    // Reads the flag events written since the computer started from this month's log and, when the computer started before this month,
+    // last month's.
+    private async loadEvents() {
+        const boot = this.bootTime() - 60 * 1000, now = Date.now();
+        const d = new Date(now);
+        const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+        const files = [this.logFile(now)];
+        if (boot < monthStart) files.unshift(this.logFile(monthStart - 1));
+        const found: SystemFlagEvent[] = [];
+        for (const f of files) {
+            const txt = await readText(f);
+            if (typeof txt === 'undefined') continue;
+            for (const line of txt.split('\n')) {
+                if (line.indexOf('"e":') === -1) continue;
+                try {
+                    const o = JSON.parse(line);
+                    if (o && typeof o.e === 'string' && typeof o.t === 'number' && o.t >= boot) found.push(o);
+                } catch (err) { }
+            }
+        }
+        found.sort((a, b) => a.t - b.t);
+        this.events = found.concat(this.events);
+        while (this.events.length > EVENTS_KEPT) this.events.shift();
+    }
+    // When one of `flags` last came on since the computer started, for a warning about a flag that is no longer on. Without a logged event,
+    // the flag came on while njsPC was not watching (before it started, or between a stop and a start).
+    private sinceBootText(flags: string[]): string {
+        const boot = this.bootTime() - 60 * 1000;
+        let last: SystemFlagEvent | undefined;
+        for (const ev of this.events) {
+            if (flags.indexOf(ev.e) !== -1 && (ev.on || ev.brief) && ev.t >= boot && (typeof last === 'undefined' || ev.t > last.t)) last = ev;
+        }
+        if (typeof last !== 'undefined') return `, last at ${whenText(last.t)}${typeof last.temp === 'number' ? ` (processor at ${last.temp} C)` : ''}`;
+        return ` while njsPC was not watching (the computer started at ${whenText(this.bootTime())})`;
+    }
     private logFile(t: number): string { return path.join(this.logDir, `${new Date(t).toISOString().slice(0, 7)}.jsonl`); }
     // Appends one line to the month's file. The writes are made one after another, and a failed one does not stop the next.
     private append(t: number, obj: any) {
@@ -743,11 +785,11 @@ export class SystemStatus {
         const t = rep.throttled;
         if (typeof t !== 'undefined') {
             if (t.now.underVoltage) w.push({ code: 'underVoltageNow', level: 'alert', message: 'The supply voltage is too low right now. Check the power supply and its cable.' });
-            else if (t.sinceBoot.underVoltage) w.push({ code: 'underVoltage', level: 'warn', message: 'The supply voltage was too low at some time since the computer started. Check the power supply and its cable.' });
+            else if (t.sinceBoot.underVoltage) w.push({ code: 'underVoltage', level: 'warn', message: `The supply voltage was too low after the computer started${this.sinceBootText(['underVoltage'])}. Check the power supply and its cable.` });
             if (t.now.throttled || t.now.frequencyCapped) w.push({ code: 'throttledNow', level: 'alert', message: 'The processor is being slowed down right now.' });
-            else if (t.sinceBoot.throttled || t.sinceBoot.frequencyCapped) w.push({ code: 'throttled', level: 'warn', message: 'The processor was slowed down at some time since the computer started.' });
+            else if (t.sinceBoot.throttled || t.sinceBoot.frequencyCapped) w.push({ code: 'throttled', level: 'warn', message: `The processor was slowed down after the computer started${this.sinceBootText(['throttled', 'frequencyCapped'])}.` });
             if (t.now.softTempLimit) w.push({ code: 'softTempLimitNow', level: 'alert', message: 'The processor is at its soft temperature limit and is being slowed to cool it.' });
-            else if (t.sinceBoot.softTempLimit) w.push({ code: 'softTempLimit', level: 'warn', message: 'The processor reached its soft temperature limit at some time since the computer started.' });
+            else if (t.sinceBoot.softTempLimit) w.push({ code: 'softTempLimit', level: 'warn', message: `The processor reached its soft temperature limit after the computer started${this.sinceBootText(['softTempLimit'])}.` });
         }
         if (typeof rep.cpuTemp !== 'undefined' && rep.cpuTemp >= this.tempWarn) w.push({ code: 'tempHigh', level: 'alert', message: `The processor is at ${rep.cpuTemp} C.` });
         if (typeof rep.storage !== 'undefined' && rep.storage.use >= STORAGE_WARN_PCT) w.push({ code: 'storageFull', level: 'warn', message: `Storage is ${Math.round(rep.storage.use)}% full.` });
