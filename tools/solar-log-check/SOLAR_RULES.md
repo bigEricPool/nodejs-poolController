@@ -124,6 +124,9 @@ solar is started by a check and by nothing else.
 - **A stop stands.** Once a stop is decided it is not judged again until the heater reports off.
   Before this rule, a new reading arriving while the relay switched could clear the reheat guard.
 - After any stop the settle delay runs before the next start is considered.
+- The reheat guard is for a cloud or a dip in the sun, so it does not outlast the day: it is
+  cleared at sunset, and when the pump has started again since it was set (the pool was off, or
+  the pump primed after a stop). An njsPC restart clears it too.
 
 Nocturnal cooling follows the same rules with the directions reversed: it runs at night, the
 collector must be cooler than the water, and the stop level is the cool setpoint plus the run
