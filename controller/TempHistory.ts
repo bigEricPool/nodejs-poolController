@@ -46,6 +46,8 @@ class TempHistory {
         process.on('exit', () => { try { this.save(Date.now()); } catch (err) { /* nothing more can be done at exit */ } });
     }
     private file(): string { return path.join(process.cwd(), 'data', 'tempHistory.json'); }
+    // Reads the saved record once. Every reader calls it, not only record(): after a restart while the body is off nothing is
+    // recorded, and the saved readings must still be shown.
     private load() {
         this.loaded = true;
         try {
@@ -98,6 +100,7 @@ class TempHistory {
     }
     // The mean of the readings in the last 24 hours, to a tenth of a degree, or undefined when there are none.
     public average(bodyId: number, now: number = Date.now()): number | undefined {
+        if (!this.loaded) this.load();
         const arr = this.samples[bodyId];
         if (typeof arr === 'undefined') return undefined;
         const cutoff = now - WINDOW_MS;
@@ -107,6 +110,7 @@ class TempHistory {
     }
     // The readings of the last 24 hours, oldest first, as three lists (time, shown, live or null), for a chart.
     public series(bodyId: number, now: number = Date.now()): { t: number[], v: number[], l: number[] } {
+        if (!this.loaded) this.load();
         const out = { t: [], v: [], l: [] };
         const arr = this.samples[bodyId];
         if (typeof arr === 'undefined') return out;
@@ -121,6 +125,7 @@ class TempHistory {
     // The highest and the lowest reading in the last 24 hours, with the time of each (the latest one when a value repeats),
     // or undefined when there are none.
     public extremes(bodyId: number, now: number = Date.now()): { high: TempSample, low: TempSample } | undefined {
+        if (!this.loaded) this.load();
         const arr = this.samples[bodyId];
         if (typeof arr === 'undefined') return undefined;
         const cutoff = now - WINDOW_MS;
@@ -135,6 +140,7 @@ class TempHistory {
     }
     // How many hours of readings the average covers (up to 24), to a tenth, so a short record is not mistaken for a full day.
     public hours(bodyId: number, now: number = Date.now()): number | undefined {
+        if (!this.loaded) this.load();
         const arr = this.samples[bodyId];
         if (typeof arr === 'undefined' || arr.length === 0) return undefined;
         const first = arr.find(s => s.t >= now - WINDOW_MS);
