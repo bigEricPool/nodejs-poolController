@@ -3987,6 +3987,9 @@ const solarGuardAt: Map<number, number> = new Map<number, number>();
 const solarWasNight: Map<number, boolean> = new Map<number, boolean>();
 // The pump start (solarBodyOnAt of the body) for which the first check has been made, per heater. See the first check in syncHeaterStates.
 const solarFirstCheck: Map<number, number> = new Map<number, number>();
+// Per body, the water reading at the end of a priming run and when priming ended, so that the reading a minute later at the normal speed can be
+// logged beside it: the difference priming shows between the speeds, for comparison with the one the solar checks measure.
+const solarPrimeWatch: Map<number, { high: number; endAt: number }> = new Map<number, { high: number; endAt: number }>();
 // controller.solar.settleMinutes in config.json (default 5; 0 turns the delay off): how long the solar decision waits for the water and collector
 // readings to settle. Solar is not started that long after the body's pump starts or after solar turns off, and the water must stay past the
 // stop level that long before solar stops for it.
@@ -4431,13 +4434,31 @@ export class HeaterCommands extends BoardCommands {
                 let heatNote: string = undefined;
                 let solarCheckTemp: number = undefined, solarCheckTime: string = undefined, solarChecking: boolean = undefined;
                 let solarReturn: number = undefined, solarGain: number = undefined;
+                let primingNow = false;
                 if (!body.isOn) solarBodyOnAt.delete(body.id);
                 else if (!solarBodyOnAt.has(body.id)) solarBodyOnAt.set(body.id, new Date().getTime());
                 // While a pump is priming (its status says so) the readings are not the ones solar runs on, so the settle delay starts when priming is over.
                 else {
                     for (let p = 0; p < state.pumps.length; p++) {
                         const pstatus = state.pumps.getItemByIndex(p).status;
-                        if (pstatus > 0 && sys.board.valueMaps.pumpStatus.transform(pstatus).name === 'priming') { solarBodyOnAt.set(body.id, new Date().getTime()); break; }
+                        if (pstatus > 0 && sys.board.valueMaps.pumpStatus.transform(pstatus).name === 'priming') { solarBodyOnAt.set(body.id, new Date().getTime()); primingNow = true; break; }
+                    }
+                }
+                // The difference priming shows between the speeds: the last reading while priming, and the reading a minute after it ended. Logged only.
+                {
+                    const nowP = new Date().getTime();
+                    const pw = solarPrimeWatch.get(body.id);
+                    if (!body.isOn) solarPrimeWatch.delete(body.id);
+                    else if (primingNow) { if (typeof body.temp === 'number') solarPrimeWatch.set(body.id, { high: body.temp, endAt: undefined }); }
+                    else if (typeof pw !== 'undefined') {
+                        if (typeof pw.endAt === 'undefined') pw.endAt = nowP;
+                        else if (nowP - pw.endAt >= 60000 && typeof body.temp === 'number') {
+                            let off: number = undefined;
+                            for (let h = 0; h < state.heaters.length; h++) { const hs = state.heaters.getItemByIndex(h); if (typeof hs.solarSpeedOffset === 'number') off = hs.solarSpeedOffset; }
+                            const d = Math.round((pw.high - body.temp) * 100) / 100;
+                            logger.solar(`Solar (${body.name}): after priming the water read ${Math.round(pw.high * 100) / 100} at the priming speed and ${Math.round(body.temp * 100) / 100} a minute later at the normal speed, a difference of ${d >= 0 ? '+' : ''}${d}${typeof off === 'number' ? ` (the last solar check measured ${off >= 0 ? '+' : ''}${off})` : ''}.`);
+                            solarPrimeWatch.delete(body.id);
+                        }
                     }
                 }
                 if (body.isOn) {
