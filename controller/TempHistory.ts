@@ -16,8 +16,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-// A rolling record of each body's water temperature for the last 24 hours, kept so the average can be shown on the
-// dashboard (BodyTempState.avgTemp24h). State samples each body that is on once a minute (see start), because a feed
+// A rolling record of each body's water temperature for the last 24 hours, kept so the average, the high and the low can
+// be shown on the dashboard (BodyTempState.avgTemp24h, maxTemp24h, minTemp24h). The 24 hours always end now: they move on
+// with every sample, they are not a calendar day. State samples each body that is on once a minute (see start), because a feed
 // from the relay manager sends a reading only when it changes, and the average has to count the time a temperature
 // stayed the same. One sample is kept per body per minute, and the record is saved to
 // data/tempHistory.json (next to poolConfig.json) at most every five minutes and when the process exits, so a restart
@@ -98,6 +99,21 @@ class TempHistory {
         let sum = 0, count = 0;
         for (let i = 0; i < arr.length; i++) if (arr[i].t >= cutoff) { sum += arr[i].v; count++; }
         return count > 0 ? Math.round((sum / count) * 10) / 10 : undefined;
+    }
+    // The highest and the lowest reading in the last 24 hours, with the time of each (the latest one when a value repeats),
+    // or undefined when there are none.
+    public extremes(bodyId: number, now: number = Date.now()): { high: TempSample, low: TempSample } | undefined {
+        const arr = this.samples[bodyId];
+        if (typeof arr === 'undefined') return undefined;
+        const cutoff = now - WINDOW_MS;
+        let high: TempSample, low: TempSample;
+        for (let i = 0; i < arr.length; i++) {
+            const s = arr[i];
+            if (s.t < cutoff) continue;
+            if (typeof high === 'undefined' || s.v >= high.v) high = s;
+            if (typeof low === 'undefined' || s.v <= low.v) low = s;
+        }
+        return typeof high === 'undefined' ? undefined : { high: high, low: low };
     }
     // How many hours of readings the average covers (up to 24), to a tenth, so a short record is not mistaken for a full day.
     public hours(bodyId: number, now: number = Date.now()): number | undefined {
