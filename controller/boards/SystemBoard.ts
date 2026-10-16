@@ -3970,6 +3970,8 @@ const solarLogged: Map<number, string> = new Map<number, string>();
 // What was last said about why solar is enabled but not running, per heater, so it is said when the reason changes and then
 // only every 15 minutes (see the 'warn-solar' log level).
 const solarWhyNot: Map<number, { key: string; at: number }> = new Map<number, { key: string; at: number }>();
+// A reason that differs from the one last logged, and since when it has held (it is logged once it has held for two minutes).
+const solarWhyNotPending: Map<number, { key: string; since: number }> = new Map<number, { key: string; since: number }>();
 // When each body's pump was first seen running by this process, and what was last logged about a solar settle delay, per heater.
 const solarBodyOnAt: Map<number, number> = new Map<number, number>();
 const solarSettleLog: Map<number, { key: string; at: number }> = new Map<number, { key: string; at: number }>();
@@ -4817,7 +4819,8 @@ export class HeaterCommands extends BoardCommands {
                                                 const r1 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
                                                 const r2 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : v;
                                                 const held = blockStart || waitStop;
-                                                        if (blockStart) heatNote = `Solar waiting to start: ${Math.ceil(holdLeftMs / 60000)} min left ${holdWhy}`;
+                                                        // A wait is shown only when a start is called for once it is over; otherwise the reason solar is off is the note (below).
+                                                        if (blockStart && (heatBegin || coolBegin)) heatNote = `Solar waiting to start: ${Math.ceil(holdLeftMs / 60000)} min left ${holdWhy}`;
                                                         else if (waitStop) heatNote = `Solar stops in ${Math.ceil(holdLeftMs / 60000)} min if the water stays ${hState.isCooling ? 'at or below' : 'at or above'} ${stopAt}`;
                                                 const prevNote = solarSettleLog.get(heater.id);
                                                 const readings = `water ${r2(body.temp)}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}, start delta ${heater.startTempDelta}), setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, hysteresis ${hysteresis}, night ${state.heliotrope.isNight}`;
@@ -4871,6 +4874,7 @@ export class HeaterCommands extends BoardCommands {
                                                         else if (key === 'reheat') heatNote = `Solar waiting: the collector must reach ${r1(prevOff + heater.startTempDelta)} (now ${r1(solarT)})`;
                                                         else if (key === 'at-speed') heatNote = `Solar waiting: the collector needs to be more than ${r1(heater.stopTempDelta + speedOffset)} above the water (${heater.stopTempDelta} at the solar pump speed, where the water reads ${r1(speedOffset)} higher)`;
                                                         else if (key === 'at-speed-water') heatNote = `Solar waiting: at the solar pump speed the water reads about ${r1(waterPred)}, not below ${cfgBody.heatSetpoint + hysteresis} where solar stops`;
+                                                        else if (key === 'at-target') heatNote = `Solar waiting: the water (${r1(body.temp)}) is not below the setpoint ${cfgBody.heatSetpoint}`;
                                                         else if (key === 'run-delta') heatNote = `Solar waiting: the collector needs to be more than ${heater.stopTempDelta} above the water`;
                                                         else if (key === 'collector-not-warmer') heatNote = 'Solar waiting: the collector is not warmer than the water';
                                                         else if (key === 'cool-margin') heatNote = `Cooling waiting: the water must be above ${cfgBody.coolSetpoint + heater.stopTempDelta} (the Cool Point plus ${heater.stopTempDelta})`;
@@ -4882,8 +4886,21 @@ export class HeaterCommands extends BoardCommands {
                                                     if (key !== '') {
                                                         const last = solarWhyNot.get(heater.id);
                                                         const now = new Date().getTime();
-                                                        if (logger.solarExplain && (typeof last === 'undefined' || last.key !== key || (repeat && now - last.at >= 15 * 60 * 1000))) {
+                                                        // A changed reason is logged once it has held for two minutes, so a reading hovering on a threshold does not log a pair of lines every
+                                                        // pass or two. The same reason is repeated every 15 minutes while it holds.
+                                                        let logIt = typeof last === 'undefined';
+                                                        if (!logIt && last.key !== key) {
+                                                            const pend = solarWhyNotPending.get(heater.id);
+                                                            if (typeof pend === 'undefined' || pend.key !== key) solarWhyNotPending.set(heater.id, { key: key, since: now });
+                                                            else if (now - pend.since >= 2 * 60 * 1000) logIt = true;
+                                                        }
+                                                        else if (!logIt) {
+                                                            solarWhyNotPending.delete(heater.id);
+                                                            if (repeat && now - last.at >= 15 * 60 * 1000) logIt = true;
+                                                        }
+                                                        if (logger.solarExplain && logIt) {
                                                             solarWhyNot.set(heater.id, { key: key, at: now });
+                                                            solarWhyNotPending.delete(heater.id);
                                                             logger.solar(`Solar ${heater.name} (${body.name}, mode ${mode}) is not ${kind}: ${why}. Water ${r1(body.temp)}, solar ${r1(solarT)}, setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, start/run delta ${heater.startTempDelta}/${heater.stopTempDelta}, night ${night}.`);
                                                         }
                                                     }
