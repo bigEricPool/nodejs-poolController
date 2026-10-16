@@ -3985,6 +3985,8 @@ const solarOffNoted: Set<number> = new Set<number>();
 // pump primed after a stop).
 const solarGuardAt: Map<number, number> = new Map<number, number>();
 const solarWasNight: Map<number, boolean> = new Map<number, boolean>();
+// The pump start (solarBodyOnAt of the body) for which the first check has been made, per heater. See the first check in syncHeaterStates.
+const solarFirstCheck: Map<number, number> = new Map<number, number>();
 // controller.solar.settleMinutes in config.json (default 5; 0 turns the delay off): how long the solar decision waits for the water and collector
 // readings to settle. Solar is not started that long after the body's pump starts or after solar turns off, and the water must stay past the
 // stop level that long before solar stops for it.
@@ -4671,6 +4673,17 @@ export class HeaterCommands extends BoardCommands {
                                                 && (waterPred - state.temps.solar) > (heater.stopTempDelta + margin);
                                             const heatBegin = valveMs > 0 ? (heatOk && heatPred(0)) : heatOk;
                                             const coolBegin = valveMs > 0 ? coolPred(0) : coolOk;
+                                            // The first check since the body's pump started: once the collector side alone would pass (the collector leads the expected reading by
+                                            // more than the run delta, warmer for heating or, at night with nocturnal cooling on, cooler for cooling; and the reheat guard is met), one
+                                            // check is made whatever the water side says. It gives the day a reading taken at the solar pump speed and measures the difference between
+                                            // the speeds afresh; if the water side passes too, solar starts as from any check. Any check made since the pump started counts as the first.
+                                            const pumpStartedAt = solarBodyOnAt.get(body.id);
+                                            const firstDue = valveMs > 0 && !hState.isOn && typeof pumpStartedAt === 'number' && solarFirstCheck.get(heater.id) !== pumpStartedAt;
+                                            const firstProbe = firstDue && !heatBegin && !coolBegin && (
+                                                (state.temps.solar > waterPred && (state.temps.solar - waterPred) > heater.stopTempDelta
+                                                    && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)))
+                                                || (heater.coolingEnabled && state.heliotrope.isNight && state.temps.solar < waterPred && (waterPred - state.temps.solar) > heater.stopTempDelta
+                                                    && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))));
                                             // With the valve delay in use a start is made by its check and by nothing else.
                                             const direct = !(valveMs > 0 && !hState.isOn);
                                             // After a turned-down start the check period need not be waited out when the readings have since moved far enough: the expected reading passes
@@ -4707,14 +4720,15 @@ export class HeaterCommands extends BoardCommands {
                                                     solarValveTrial.delete(heater.id);
                                                     solarValveFailed.delete(heater.id);
                                                 }
-                                                else if (!blockStart && (typeof trial !== 'undefined' || heatBegin || coolBegin)) {
+                                                else if (!blockStart && (typeof trial !== 'undefined' || heatBegin || coolBegin || firstProbe)) {
                                                     // Before the pump speeds up the start is judged by the start rules; once it is at its solar speed, by the rules above.
                                                     const ok = typeof trial === 'undefined' ? (heatBegin || coolBegin) : (heatAtSpeed || coolAtSpeed);
                                                     const t = typeof trial === 'undefined' ? { at: nowMs, bodyId: body.id, pass: solarPass, done: false, water: body.temp, solar: state.temps.solar, noteAt: nowMs, shown: typeof carried !== 'undefined' ? { temp: carried.temp, at: carried.at, star: true } : solarRunReading.has(heater.id) ? { temp: Math.round(solarRunReading.get(heater.id).temp * 10) / 10, at: solarRunReading.get(heater.id).at, star: true } : { temp: Math.round(body.temp * 10) / 10, at: nowMs, star: false } } : trial;
                                                     t.pass = solarPass;
                                                     if (typeof trial === 'undefined') {
                                                         solarValveTrial.set(heater.id, t);
-                                                        logger.solar(`Solar ${heater.name} (${body.name}): a start looks worthwhile at the slow pump speed${speedOffset !== 0 ? ` (the water is expected to read ${Math.round(waterPred * 100) / 100} at the solar pump speed, ${speedOffset > 0 ? '+' : ''}${Math.round(speedOffset * 100) / 100} as at the last check)` : ''}, so the pump runs at its solar speed for ${Math.round(valveMs / 1000)} s with the valve relay off, then the start is checked again: ${lead}. The solar circuit turns on with it; the pump speed change follows in the log.`);
+                                                        if (typeof pumpStartedAt === 'number') solarFirstCheck.set(heater.id, pumpStartedAt);
+                                                        logger.solar(`Solar ${heater.name} (${body.name}): a start looks worthwhile ${(heatBegin || coolBegin) ? 'at the slow pump speed' : 'to check: this is the first check since the pump started, made because the collector is far enough ' + (state.temps.solar > waterPred ? 'above' : 'below') + ' the water (the water side is judged by the check)'}${speedOffset !== 0 ? ` (the water is expected to read ${Math.round(waterPred * 100) / 100} at the solar pump speed, ${speedOffset > 0 ? '+' : ''}${Math.round(speedOffset * 100) / 100} as at the last check)` : ''}, so the pump runs at its solar speed for ${Math.round(valveMs / 1000)} s with the valve relay off, then the start is checked again: ${lead}. The solar circuit turns on with it; the pump speed change follows in the log.`);
                                                     }
                                                     const leftMs = valveMs - (nowMs - t.at);
                                                     const since = `water ${chg(t.water, body.temp)}, collector ${chg(t.solar, state.temps.solar)} since the pump sped up`;
