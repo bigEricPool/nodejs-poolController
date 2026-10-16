@@ -428,6 +428,11 @@ export class StateRoute {
             }
             catch (err){ next(err); }
         });
+        // The last 24 hours of each body's temperature, for the dashboard's Water panel (see State.getTempHistory).
+        app.get('/state/temps/history', (req, res, next) => {
+            try { return res.status(200).send(state.getTempHistory()); }
+            catch (err) { next(err); }
+        });
         app.put('/state/body/heatMode', async (req, res, next) => {
             // RKS: 06-24-20 -- Changed this so that users can send in the body id, circuit id, or the name.
             try {
