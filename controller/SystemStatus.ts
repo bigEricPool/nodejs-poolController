@@ -32,7 +32,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // package.json, the fork (the owner and name of the repository the branch follows), the branch, the commit and its date and first line, and
 // the number of files that differ from the commit and of files git does not track. A line is written when njsPC starts and whenever a folder's branch or commit changes. This is what is
 // in the folder; a program that was not restarted after its folder changed still runs the older code, which is why njsPC's line also has the
-// commit it started on.
+// commit it started on. A folder that is built (it has a dist folder) is also checked against its build: when a source file (.ts) is newer
+// than the newest file in dist, the source changed after the last build, as after a pull without a build. For njsPC a build newer than the
+// time njsPC started means it was built but not restarted.
 //
 // It also measures how late njsPC itself runs: a timer that should fire every second records how late it fired. A long delay means njsPC was
 // not running its work for that time (for example while a synchronous write waited on slow storage), which matters to anything that relies on
@@ -68,6 +70,11 @@ const LOG_HOURLY_DAYS = 60;                 // ... up to this many, one row an h
 const FLAG_NAMES = ['underVoltage', 'frequencyCapped', 'throttled', 'softTempLimit'];
 const GIT_TIMEOUT_MS = 10 * 1000;
 const SUBJECT_MAX = 120;
+const BUILD_SCAN_MS = 15 * 60 * 1000;      // the source and build times are read again this often, or when the build or the commit changes
+// Folders whose .ts files are not part of the program's build, or are too large to look through.
+const SOURCE_SKIP = ['node_modules', 'dist', 'test', 'tests', 'data', 'logs', 'backups', 'replay'];
+const pad2 = (n: number): string => (n < 10 ? '0' : '') + n;
+const whenText = (t: number): string => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
 
 export interface SystemServiceCheck { name: string; host?: string; port?: number; process?: string; }
 export interface SystemStatusSettings {
@@ -79,11 +86,14 @@ export interface SystemRepo { name: string; path: string; }
 // What is installed in one folder. `fork` is owner/name of the repository the branch follows, `date` and `subject` are the commit's, `modified`
 // is the number of tracked files that differ from the commit (so the code is not exactly that commit) and `untracked` the number of files
 // in the folder that git does not track, such as backups. `runningCommit` (njsPC only) is the commit njsPC started on. Lines logged by the
-// first version have `changed` instead, the two counted together.
+// first version have `changed` instead, the two counted together. `builtAt` is the time of the newest file in the folder's dist and `sourceAt`
+// that of the newest source file (epoch ms); `buildStale` is true when the source is newer than the build, and `builtAfterStart` (njsPC only)
+// when njsPC was built after it started.
 export interface SystemSoftware {
     name: string; version?: string; fork?: string; branch?: string; commit?: string; date?: string; subject?: string;
     modified?: number; untracked?: number; changed?: number;
     runningCommit?: string;
+    builtAt?: number; sourceAt?: number; buildStale?: boolean; builtAfterStart?: boolean;
 }
 // A line of the log for one folder: `v` is its name and `start` marks the line written when njsPC started.
 export interface SystemSoftwareRecord extends SystemSoftware { t: number; v: string; start?: boolean; }
@@ -291,6 +301,8 @@ export class SystemStatus {
     private softwareKeys: { [name: string]: string } = {};
     private startCommit: string | undefined;
     private startCommitRead = false;
+    private processStart = Date.now() - process.uptime() * 1000;
+    private builds: { [dir: string]: { probe?: number; commitKey: string; scannedAt: number; builtAt?: number; sourceAt?: number } } = {};
 
     // Starts the sampling. `getSettings` returns the systemStatus section of config.json; it is read again at each sample, so a change of the
     // settings applies without a restart. The timers do not keep the process running.
@@ -558,9 +570,18 @@ export class SystemStatus {
         for (const r of repos) {
             const head = await this.readRepoHead(r.path);
             if (r.name === 'njsPC' && !this.startCommitRead) { this.startCommitRead = true; this.startCommit = typeof head !== 'undefined' ? head.commit : undefined; }
-            const key = typeof head === 'undefined' ? 'none' : `${head.branch || ''}|${head.commit || ''}`;
+            const commitKey = typeof head === 'undefined' ? 'none' : `${head.branch || ''}|${head.commit || ''}`;
+            const build = await this.checkBuild(r.path, commitKey, now);
+            const buildStale = typeof build.builtAt === 'number' && typeof build.sourceAt === 'number' && build.sourceAt > build.builtAt + 1000;
+            const builtAfterStart = r.name === 'njsPC' && typeof build.builtAt === 'number' && build.builtAt > this.processStart + 5000;
+            const key = `${commitKey}|${buildStale ? 'stale' : ''}|${builtAfterStart ? 'rebuilt' : ''}`;
             const prev = this.software.find(x => x.name === r.name);
-            if (typeof prev !== 'undefined' && this.softwareKeys[r.name] === key) { list.push(prev); continue; }
+            if (typeof prev !== 'undefined' && this.softwareKeys[r.name] === key) {
+                prev.builtAt = build.builtAt;
+                prev.sourceAt = build.sourceAt;
+                list.push(prev);
+                continue;
+            }
             const isStart = typeof this.softwareKeys[r.name] === 'undefined';
             this.softwareKeys[r.name] = key;
             const sw: SystemSoftware = { name: r.name };
@@ -587,15 +608,60 @@ export class SystemStatus {
                 }
             }
             if (r.name === 'njsPC') sw.runningCommit = this.startCommit;
+            sw.builtAt = build.builtAt;
+            sw.sourceAt = build.sourceAt;
+            if (typeof build.builtAt === 'number') sw.buildStale = buildStale;
+            if (r.name === 'njsPC' && typeof build.builtAt === 'number') sw.builtAfterStart = builtAfterStart;
             list.push(sw);
             if (s.logEnabled) {
                 const rec: SystemSoftwareRecord = Object.assign({ t: now, v: r.name }, sw);
                 if (isStart) rec.start = true;
                 this.append(now, rec);
             }
-            if (!isStart) logger.info(`System: ${r.name} is now at ${sw.branch || ''} ${typeof sw.commit !== 'undefined' ? sw.commit.substring(0, 8) : ''}.`);
+            if (!isStart) logger.info(`System: ${r.name} is now at ${sw.branch || ''} ${typeof sw.commit !== 'undefined' ? sw.commit.substring(0, 8) : ''}${buildStale ? ', not built since its source changed' : ''}${builtAfterStart ? ', built after njsPC started' : ''}.`);
         }
         this.software = list;
+    }
+
+    // The newest build and source times of a folder. The folder is looked through again when its build or commit changed or after
+    // BUILD_SCAN_MS; otherwise the times found last are used.
+    private async checkBuild(dir: string, commitKey: string, now: number): Promise<{ builtAt?: number; sourceAt?: number }> {
+        let probe: number | undefined;
+        try { probe = Math.round((await fs.promises.stat(path.join(dir, 'dist', 'app.js'))).mtimeMs); } catch (err) { probe = undefined; }
+        let c = this.builds[dir];
+        if (typeof c === 'undefined' || c.probe !== probe || c.commitKey !== commitKey || now - c.scannedAt >= BUILD_SCAN_MS || now < c.scannedAt) {
+            c = { probe: probe, commitKey: commitKey, scannedAt: now };
+            if (typeof probe !== 'undefined') {
+                c.builtAt = await this.newestFile(path.join(dir, 'dist'), n => n.endsWith('.js'), ['node_modules']);
+                c.sourceAt = await this.newestFile(dir, n => n.endsWith('.ts') && !n.endsWith('.d.ts'), SOURCE_SKIP);
+            }
+            this.builds[dir] = c;
+        }
+        return c;
+    }
+    // The time of the newest file in a folder and the folders under it whose name passes `test`, leaving out the folders named in `skip`
+    // and anything whose name starts with a dot.
+    private async newestFile(dir: string, test: (name: string) => boolean, skip: string[]): Promise<number | undefined> {
+        let newest: number | undefined;
+        const walk = async (d: string, depth: number) => {
+            if (depth > 10) return;
+            let entries: fs.Dirent[];
+            try { entries = await fs.promises.readdir(d, { withFileTypes: true }); }
+            catch (err) { return; }
+            for (const e of entries) {
+                if (e.name.startsWith('.')) continue;
+                const full = path.join(d, e.name);
+                if (e.isDirectory()) { if (skip.indexOf(e.name) === -1) await walk(full, depth + 1); }
+                else if (e.isFile() && test(e.name)) {
+                    try {
+                        const t = Math.round((await fs.promises.stat(full)).mtimeMs);
+                        if (typeof newest === 'undefined' || t > newest) newest = t;
+                    } catch (err) { }
+                }
+            }
+        };
+        await walk(dir, 0);
+        return newest;
     }
 
     private async readInfo(): Promise<SystemInfo> {
@@ -687,6 +753,8 @@ export class SystemStatus {
         if (typeof rep.storage !== 'undefined' && rep.storage.use >= STORAGE_WARN_PCT) w.push({ code: 'storageFull', level: 'warn', message: `Storage is ${Math.round(rep.storage.use)}% full.` });
         if (typeof rep.day !== 'undefined' && rep.day.lagMax >= LAG_WARN_MS) w.push({ code: 'stalled', level: 'warn', message: `njsPC did not run for ${round(rep.day.lagMax / 1000, 1)} s at one point in the last ${rep.day.hours} h.` });
         for (const sw of rep.software || []) {
+            if (sw.buildStale) w.push({ code: 'notBuilt', level: 'warn', message: `${sw.name}: the source changed after the last build (built ${whenText(sw.builtAt)}, source ${whenText(sw.sourceAt)}). Build it in its folder (npm run build), then restart it.` });
+            if (sw.builtAfterStart) w.push({ code: 'builtNotRestarted', level: 'warn', message: `njsPC was built at ${whenText(sw.builtAt)}, after it started: restart it to run the new build.` });
             if (typeof sw.runningCommit !== 'undefined' && typeof sw.commit !== 'undefined' && sw.runningCommit !== sw.commit) w.push({ code: 'notRestarted', level: 'warn', message: `${sw.name} is running ${sw.runningCommit.substring(0, 8)} but its folder is at ${sw.commit.substring(0, 8)}: it has not been restarted since the folder changed.` });
         }
         for (const svc of rep.services || []) if (!svc.isUp) w.push({ code: 'serviceDown', level: 'alert', message: `${svc.name} is not answering.` });
