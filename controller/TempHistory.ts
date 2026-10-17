@@ -34,8 +34,10 @@ const SAMPLE_MS = 60 * 1000;
 const SAVE_MS = 5 * 60 * 1000;
 
 // t: when, v: the temperature shown, l: the live reading, kept only when it differs from v (the solar enhancements can show a reading
-// taken at the solar pump speed for a while; the live one is kept beside it so a chart can show both).
-interface TempSample { t: number; v: number; l?: number; }
+// taken at the solar pump speed for a while; the live one is kept beside it so a chart can show both), p: what a solar check would
+// read at the solar pump speed, kept only where the solar enhancements give a speed offset (see State.sampleTemps), s: the body's
+// setpoint, kept where a solar heater serves the body, so a chart can draw the levels solar works to as they were at each minute.
+interface TempSample { t: number; v: number; l?: number; p?: number; s?: number; }
 
 class TempHistory {
     private samples: { [bodyId: number]: TempSample[] } = {};
@@ -82,8 +84,9 @@ class TempHistory {
         this.timer.unref();
     }
     // Adds a reading for a body (at most one a minute is kept) and drops anything older than 24 hours. `live` is the sensor's own
-    // reading when the temperature shown is a different one.
-    public record(bodyId: number, temp: number, live?: number, now: number = Date.now()) {
+    // reading when the temperature shown is a different one, `projected` the reading expected at the solar pump speed and `setPoint`
+    // the body's setpoint at the time.
+    public record(bodyId: number, temp: number, live?: number, projected?: number, setPoint?: number, now: number = Date.now()) {
         if (!this.loaded) this.load();
         const arr = this.samples[bodyId] || (this.samples[bodyId] = []);
         const last = arr[arr.length - 1];
@@ -91,6 +94,8 @@ class TempHistory {
         if (typeof last === 'undefined' || now - last.t >= SAMPLE_MS - 5000) {
             const s: TempSample = { t: now, v: temp };
             if (typeof live === 'number' && isFinite(live) && Math.abs(live - temp) >= 0.05) s.l = live;
+            if (typeof projected === 'number' && isFinite(projected)) s.p = Math.round(projected * 100) / 100;
+            if (typeof setPoint === 'number' && isFinite(setPoint) && setPoint > 0) s.s = setPoint;
             arr.push(s);
             const cutoff = now - WINDOW_MS;
             while (arr.length > 0 && arr[0].t < cutoff) arr.shift();
@@ -108,17 +113,19 @@ class TempHistory {
         for (let i = 0; i < arr.length; i++) if (arr[i].t >= cutoff) { sum += arr[i].v; count++; }
         return count > 0 ? Math.round((sum / count) * 10) / 10 : undefined;
     }
-    // The readings of the last 24 hours, oldest first, as three lists (time, shown, live or null), for a chart.
-    public series(bodyId: number, now: number = Date.now()): { t: number[], v: number[], l: number[] } {
+    // The readings of the last 24 hours, oldest first, as five lists (time, shown, live, projected and setpoint, the last three null
+    // where not kept), for a chart.
+    public series(bodyId: number, now: number = Date.now()): { t: number[], v: number[], l: number[], p: number[], s: number[] } {
         if (!this.loaded) this.load();
-        const out = { t: [], v: [], l: [] };
+        const out = { t: [], v: [], l: [], p: [], s: [] };
         const arr = this.samples[bodyId];
         if (typeof arr === 'undefined') return out;
         const cutoff = now - WINDOW_MS;
         for (let i = 0; i < arr.length; i++) {
             const s = arr[i];
             if (s.t < cutoff) continue;
-            out.t.push(s.t); out.v.push(s.v); out.l.push(typeof s.l === 'number' ? s.l : null);
+            out.t.push(s.t); out.v.push(s.v); out.l.push(typeof s.l === 'number' ? s.l : null); out.p.push(typeof s.p === 'number' ? s.p : null);
+            out.s.push(typeof s.s === 'number' ? s.s : null);
         }
         return out;
     }
