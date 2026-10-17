@@ -408,6 +408,22 @@ export class State implements IState {
             if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') {
                 for (let i = 0; i < sdata.temps.bodies.length; i++) sdata.temps.bodies[i].isOn = false;
             }
+            // The virtual circuits (solar, heater, freeze ...) are worked out from the heaters and body states, so they start
+            // fresh too. A pump's circuit list can use one of them (for example the virtual solar circuit starting a pump speed),
+            // and a stale "solar: on" left over from before the restart would drive that pump speed for the few seconds before
+            // the first status pass recomputes it.
+            if (typeof sdata.virtualCircuits !== 'undefined') for (let i = 0; i < sdata.virtualCircuits.length; i++) sdata.virtualCircuits[i].isOn = false;
+        }
+        // Solar's "reheat above this temp before turning back on" guard (see SystemBoard.ts's
+        // syncHeaterStates()/clearPrevHeaterOffTemp(), #925) is only ever cleared reactively --
+        // when a body circuit turns off, or the user touches the heat mode/setpoint. A value left
+        // over from before a restart (e.g. a hot afternoon reading) survives here and silently
+        // blocks solar from ever turning back on, since syncHeaterStates() re-evaluates the same
+        // failing comparison on every status poll without anything to reset it. Clear it for every
+        // heater on every boot so solar gets a fresh start regardless of how the previous process
+        // exited.
+        if (typeof sdata.heaters !== 'undefined') {
+            for (let i = 0; i < sdata.heaters.length; i++) sdata.heaters[i].prevHeaterOffTemp = undefined;
         }
         var self = this;
         let pnlTime = typeof sdata.time !== 'undefined' && sdata.time !== '' ? new Date(sdata.time) : new Date();
