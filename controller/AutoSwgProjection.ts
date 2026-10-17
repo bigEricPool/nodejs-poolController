@@ -23,7 +23,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   before   the FC the PREVIOUS run expected at the time of the next apply, from only what it knew (the FC readings up to its time), so the step between
 //            `before` and `after` at the same time is what the refresh changed. `run` is the previous run's id.
 //   reading  the FC the previous run expected at the time of an FC test, so the test and the projection can be compared. `run` is the run that was current.
-// Points of one run, joined in time order, are that run's line: its `after`, then any `reading` points, then the `before` of the apply that replaced it.
+//   hourly   the FC the run in force expected at the top of each hour, so the line between applies is drawn hour by hour. `run` is that run.
+// Points of one run, joined in time order, are that run's line: its `after`, then its `hourly` and `reading` points, then the `before` of the apply that replaced it.
 // The points are worked out from the history of applies (data/autoSwgHistory.json), the PoolMath archive and the PoolMath page the last calculation read,
 // so nothing here contacts PoolMath. The work is done in the background after a calculation or an apply, a little at a time (updateProjectionPoints), and
 // changes no calculation.
@@ -39,12 +40,14 @@ const KEEP_MONTHS = 18;
 const PRUNE_EVERY_MS = 24 * 3600000;
 const LOOKBACK_DAYS = 45;              // how far back the points that need a calculation are filled in
 const HTML_MAX_AGE_MS = 24 * 3600000;  // the cached PoolMath page is used for the calculations while it is no older than this
+const THIN_AFTER_DAYS = 45;            // see read
 const PAUSE_MS = 40;                   // between two calculations, so the rest of njsPC (the serial ports above all) is never kept waiting
-const MAX_TASKS = 250;
+const HOURLY_DAYS = 7;                 // how far back the hourly points are filled in the first time; after that one is added every hour
+const MAX_TASKS = 400;
 
-export type ProjectionKind = 'after' | 'before' | 'reading';
+export type ProjectionKind = 'after' | 'before' | 'reading' | 'hourly';
 export interface ProjectionPoint { t: number; fc: number; kind: ProjectionKind; run: number; tf?: number; td?: number; }
-const KIND_ORDER = { before: 0, reading: 1, after: 2 };
+const KIND_ORDER = { before: 0, hourly: 1, reading: 2, after: 3 };
 
 function keyOf(kind: string, t: number, run: number): string { return kind === 'after' ? `after|${run}` : `${kind}|${t}`; }
 
@@ -104,11 +107,13 @@ class ProjectionLog {
         this.points = kept;
         this.keys = new Set(kept.map(p => keyOf(p.kind, p.t, p.run)));
     }
-    // The points of the last `days` days, oldest first; at one time a `before` comes first, then a `reading`, then an `after`.
+    // The points of the last `days` days, oldest first; at one time a `before` comes first, then an `hourly`, a `reading` and an `after`. Over more than
+    // THIN_AFTER_DAYS days only every sixth hourly point is returned, so a year does not send thousands of them.
     public read(days: number): ProjectionPoint[] {
         this.load();
         const from = Date.now() - days * 86400000;
-        return this.points.filter(p => p.t >= from).sort((a, b) => (a.t - b.t) || (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]));
+        const thin = days > THIN_AFTER_DAYS;
+        return this.points.filter(p => p.t >= from && (!thin || p.kind !== 'hourly' || Math.round(p.t / 3600000) % 6 === 0)).sort((a, b) => (a.t - b.t) || (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]));
     }
 }
 export const projectionLog = new ProjectionLog();
@@ -129,10 +134,12 @@ function runRecords(records: any[]): any[] {
 }
 
 // Brings the points up to date: the `after` of every apply (no calculation), then, for the last LOOKBACK_DAYS days, the `before` of every apply and a `reading`
-// for every FC test that has none yet. It is safe to call as often as you like (a call during a run makes the run go once more when it is done; it does nothing when the page has not been read), and it
-// never throws. `cfg` is the share code and pool name of the AutoSwg settings (this module does not read the equipment configuration itself).
-export async function updateProjectionPoints(cfg: { shareCode: string; poolName?: string }): Promise<void> {
-    if (busy) { again = true; return; }
+// for every FC test that has none yet, and an `hourly` for every hour of the last HOURLY_DAYS days that has none. It is safe to call as often as you like (a
+// call during a run makes the run go once more when it is done), and it never throws. Resolves true when it got as far as the calculations (false when a run
+// was going, or the PoolMath page has not been read since njsPC started). `cfg` is the share code and pool name of the AutoSwg settings (this module does
+// not read the equipment configuration itself).
+export async function updateProjectionPoints(cfg: { shareCode: string; poolName?: string }): Promise<boolean> {
+    if (busy) { again = true; return false; }
     busy = true;
     try {
         const history = readAutoSwgHistory();
@@ -146,7 +153,7 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             return point;
         }));
         const html = cachedPageHtml(HTML_MAX_AGE_MS);
-        if (!html || !cfg.shareCode) return;
+        if (!html || !cfg.shareCode) return false;
         const from = Date.now() - LOOKBACK_DAYS * 86400000;
         const base = { shareCode: cfg.shareCode, poolName: cfg.poolName || undefined, inFlight: undefined as any };
         const tasks: { kind: ProjectionKind; t: number; run: number; params: any }[] = [];
@@ -170,7 +177,20 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (projectionLog.has('reading', t, run) || failed.has(keyOf('reading', t, run))) continue;
             tasks.push({ kind: 'reading', t: t, run: run, params: Object.assign({}, current.inputs, base, { asOf: new Date(t - 60000) }) });
         }
-        if (tasks.length === 0) return;
+        // What the run in force expected at the top of each hour.
+        const lastHour = Math.floor(Date.now() / 3600000) * 3600000;
+        const firstRun = runs.length ? idOf(runs[0]) : Infinity;
+        for (let t = Math.max(Math.ceil((Date.now() - HOURLY_DAYS * 86400000) / 3600000) * 3600000, Math.ceil(firstRun / 3600000) * 3600000); t <= lastHour; t += 3600000) {
+            let current: any;
+            for (const r of runs) { if (idOf(r) <= t) current = r; else break; }
+            if (!current) continue;
+            const run = idOf(current);
+            if (projectionLog.has('hourly', t, run) || failed.has(keyOf('hourly', t, run))) continue;
+            const readingAt = new Date(current.outputs.mostRecentFc.ts);
+            if (isNaN(readingAt.getTime())) continue;
+            tasks.push({ kind: 'hourly', t: t, run: run, params: Object.assign({}, current.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+        }
+        if (tasks.length === 0) return true;
         const local = toLocalSwgEntries(history);
         const archive = { fc: archivedFcReadings(), swg: archivedSwgEvents(), cya: archivedCyaReadings(), chlorine: archivedChlorineAdditions(), temp: archivedWaterTemps() };
         let made = 0;
@@ -184,12 +204,23 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             await pause(PAUSE_MS);
         }
         if (made > 0) logger.verbose(`AutoSwg: ${made} projected FC point${made === 1 ? '' : 's'} added for the Water panel.`);
+        return true;
     }
     catch (err) {
         logger.warn(`AutoSwg: could not update the projected FC points: ${err && err.message}`);
+        return false;
     }
     finally {
         busy = false;
         if (again) { again = false; void updateProjectionPoints(cfg); }
     }
+}
+
+// Called every ten minutes (with the salt sample): once for each hour, brings the points up to date so the hourly point of the hour just begun is written.
+// It reads nothing until the hour changes, and tries again at the next call when the PoolMath page has not been read yet.
+let lastHourDone = 0;
+export async function updateHourlyProjection(cfg: { shareCode: string; poolName?: string }): Promise<void> {
+    const hour = Math.floor(Date.now() / 3600000) * 3600000;
+    if (hour === lastHourDone || busy || !cfg.shareCode) return;
+    if (await updateProjectionPoints(cfg)) lastHourDone = hour;
 }
