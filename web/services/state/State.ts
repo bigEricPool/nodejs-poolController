@@ -428,9 +428,10 @@ export class StateRoute {
             }
             catch (err){ next(err); }
         });
-        // The last 24 hours of each body's temperature, for the dashboard's Water panel (see State.getTempHistory).
+        // The last 24 hours of each body's temperature, for the dashboard's Water panel (see State.getTempHistory), or with
+        // ?range=week, month or year the hourly (daily for a month or a year) summary of that long.
         app.get('/state/temps/history', (req, res, next) => {
-            try { return res.status(200).send(state.getTempHistory()); }
+            try { return res.status(200).send(state.getTempHistory(typeof req.query.range === 'string' ? req.query.range : undefined)); }
             catch (err) { next(err); }
         });
         app.put('/state/body/heatMode', async (req, res, next) => {

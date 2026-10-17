@@ -526,9 +526,12 @@ export class State implements IState {
     // while the body was on, and the figures the body publishes. `held` says the temperature shown now is not the live reading (see sampleTemps).
     // With a solar heater for the body and the solar enhancements' settings, `hysteresis` with the setpoint of each minute (`s`) gives the
     // levels solar stops at (setpoint + hysteresis) and starts again at after reaching its target (setpoint - hysteresis); `setPoint` is
-    // the setpoint now.
-    public getTempHistory(): any {
+    // the setpoint now. With `range` week, month or year the lists are one row an hour (a day for a month or a year): the mean (v), the high (hi) and
+    // the low (lo), the mean projected reading (p) and the setpoint (s), and avg, high, low and hours give the figures for the whole range.
+    public getTempHistory(range?: string): any {
         const now = Date.now();
+        const days = range === 'week' ? 7 : range === 'month' ? 30 : range === 'year' ? 365 : 0;
+        if (days > 0) return this.getTempRange(range, days, now);
         const bodies = [];
         const settings = this.solarChartSettings();
         for (let i = 0; i < this.temps.bodies.length; i++) {
@@ -547,6 +550,29 @@ export class State implements IState {
             bodies.push(b);
         }
         return { time: Timestamp.toISOLocal(new Date(now)), hours: 24, sampleSeconds: 60, bodies: bodies };
+    }
+    private getTempRange(range: string, days: number, now: number): any {
+        const daily = days > 7;
+        const bodies = [];
+        const settings = this.solarChartSettings();
+        for (let i = 0; i < this.temps.bodies.length; i++) {
+            const body = this.temps.bodies.getItemByIndex(i);
+            const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+            const r = tempHistory.range(body.id, days, daily, now);
+            const b: any = {
+                id: body.id, name: body.name, isOn: body.isOn, temp: shown, liveTemp: body.temp, held: shown !== body.temp,
+                avgTemp: r.avg, hours: r.hours, maxTemp: r.high, minTemp: r.low,
+                maxTempAt: typeof r.highAt === 'number' ? Timestamp.toISOLocal(new Date(r.highAt)) : undefined,
+                minTempAt: typeof r.lowAt === 'number' ? Timestamp.toISOLocal(new Date(r.lowAt)) : undefined,
+                t: r.t, v: r.v, hi: r.hi, lo: r.lo, p: r.p, s: r.s
+            };
+            if (typeof settings !== 'undefined' && typeof this.solarHeaterFor(body.id) !== 'undefined' && typeof body.setPoint === 'number' && body.setPoint > 0) {
+                b.setPoint = body.setPoint;
+                b.hysteresis = settings.hysteresis;
+            }
+            bodies.push(b);
+        }
+        return { time: Timestamp.toISOLocal(new Date(now)), range: range, hours: days * 24, sampleSeconds: daily ? 86400 : 3600, bodies: bodies };
     }
     private sanitizeTransientLightGroupState(sdata: any) {
         if (!sdata || !Array.isArray(sdata.lightGroups)) return;
