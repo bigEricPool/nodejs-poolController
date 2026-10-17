@@ -37,6 +37,13 @@
         "messageTimeoutMs": 10000
       }
     },
+    "solar": {
+      "settleMinutes": 5,
+      "hysteresis": 0.5,
+      "valveDelaySeconds": 0,
+      "checkPeriodMinutes": 60,
+      "returnSensor": ""
+    },
     "txDelays": {
       "idleBeforeTxMs": 0,
       "interFrameDelayMs": 100,
@@ -372,6 +379,12 @@
       "level": "info",
       "captureForReplay": false,
       "logToFile": false
+    },
+    "solar": {
+      "logToFile": false,
+      "alwaysShow": false,
+      "explain": false,
+      "circuits": []
     }
   },
   "appVersion": "0.0.1"

@@ -438,8 +438,10 @@ export class State implements IState {
         // heater on every boot so solar gets a fresh start regardless of how the previous process
         // exited.
         if (typeof sdata.heaters !== 'undefined') {
-            for (let i = 0; i < sdata.heaters.length; i++) sdata.heaters[i].prevHeaterOffTemp = undefined;
+            for (let i = 0; i < sdata.heaters.length; i++) { sdata.heaters[i].prevHeaterOffTemp = undefined; sdata.heaters[i].targetStop = undefined; }
         }
+        // The note on why solar is waiting belongs to the process that wrote it.
+        if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') for (let i = 0; i < sdata.temps.bodies.length; i++) { sdata.temps.bodies[i].heatNote = undefined; sdata.temps.bodies[i].solarCheckTemp = undefined; sdata.temps.bodies[i].solarCheckTime = undefined; sdata.temps.bodies[i].solarChecking = undefined; sdata.temps.bodies[i].solarReturnTemp = undefined; sdata.temps.bodies[i].solarGain = undefined; }
         var self = this;
         let pnlTime = typeof sdata.time !== 'undefined' && sdata.time !== '' ? new Date(sdata.time) : new Date();
         if (isNaN(pnlTime.getTime())) pnlTime = new Date();
@@ -1972,7 +1974,13 @@ export class BodyTempState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
     public get temp(): number { return this.data.temp; }
-    public set temp(val: number) { this.setDataVal('temp', val); }
+    public set temp(val: number) {
+        this.setDataVal('temp', val);
+        // When the temperature was last fed, to the minute (so it changes, and is sent out, once a minute at most). A dashboard shows it as the
+        // time the reading is as of: a body that is off, or a feed that has stopped, keeps its old time.
+        if (typeof val === 'number' && !isNaN(val)) { const fed = new Date(); fed.setSeconds(0, 0); this.setDataVal('tempTime', fed.toISOString()); }
+    }
+    public get tempTime(): string { return this.data.tempTime; }
     // The average of the last 24 hours of readings while the body was on, and how many hours it covers (see TempHistory.ts and State.sampleTemps).
     public get avgTemp24h(): number { return this.data.avgTemp24h; }
     public set avgTemp24h(val: number) { this.setDataVal('avgTemp24h', val); }
@@ -1997,23 +2005,61 @@ export class BodyTempState extends EqState {
     public get heatMode(): number { return typeof (this.data.heatMode) !== 'undefined' ? this.data.heatMode.val : -1; }
     public set heatMode(val: number) {
         if (this.heatMode !== val) {
+            const was = this.heatMode;
             this.data.heatMode = sys.board.valueMaps.heatModes.transform(val);
             this.hasChanged = true;
+            solarBodyNote(`${this.name}: heat mode ${sys.board.valueMaps.heatModes.getName(was) || 'not set'} -> ${sys.board.valueMaps.heatModes.getName(val) || val}`);
         }
     }
+    // A short note on why solar heating is waiting (a delay, a guard, a hysteresis), shown on the dashboard. Set by HeaterCommands.syncHeaterStates().
+    public get heatNote(): string { return this.data.heatNote; }
+    public set heatNote(val: string) { this.setDataVal('heatNote', val === '' ? undefined : val); }
+    // What the water read at the solar pump speed when the valve delay check last turned a start down, and when that was, while the solar check
+    // period is running. The reading at the normal pump speed can be lower (the flow rate changes what reaches the sensor), so this is the
+    // temperature the solar decision went by. A dashboard shows it, marked and with its time, in place of the live reading. Both are undefined
+    // when no check period is running.
+    public get solarCheckTemp(): number { return this.data.solarCheckTemp; }
+    public set solarCheckTemp(val: number) { this.setDataVal('solarCheckTemp', val); }
+    public get solarCheckTime(): string { return this.data.solarCheckTime; }
+    public set solarCheckTime(val: string) { this.setDataVal('solarCheckTime', val); }
+    // True while the valve delay check itself is running (the pump is at its solar speed and the start has not been judged yet). solarCheckTemp is
+    // then the reading from just before the pump sped up, and solarCheckTime when that was, so the temperature shown does not jump about while
+    // the check is under way; it changes when the check is over.
+    public get solarChecking(): boolean { return this.data.solarChecking; }
+    public set solarChecking(val: boolean) { this.setDataVal('solarChecking', val); }
+    // The temperature of the water coming back from the solar collector (controller.solar.returnSensor names the input it is read from), and while
+    // solar is running how much warmer it is than the water going in. Both are undefined when there is no return sensor or it is not reading.
+    public get solarReturnTemp(): number { return this.data.solarReturnTemp; }
+    public set solarReturnTemp(val: number) { this.setDataVal('solarReturnTemp', val); }
+    public get solarGain(): number { return this.data.solarGain; }
+    public set solarGain(val: number) { this.setDataVal('solarGain', val); }
     public get heatStatus(): number { return typeof (this.data.heatStatus) !== 'undefined' ? this.data.heatStatus.val : -1; }
     public set heatStatus(val: number) {
         if (this.heatStatus !== val) {
+            const was = this.heatStatus;
             this.data.heatStatus = sys.board.valueMaps.heatStatus.transform(val);
             this.hasChanged = true;
+            solarBodyNote(`${this.name}: heat status ${sys.board.valueMaps.heatStatus.getName(was) || 'not set'} -> ${sys.board.valueMaps.heatStatus.getName(val) || val}`);
         }
     }
     public get setPoint(): number { return this.data.setPoint; }
-    public set setPoint(val: number) { this.setDataVal('setPoint', val); }
+    public set setPoint(val: number) {
+        const was = this.data.setPoint;
+        this.setDataVal('setPoint', val);
+        if (typeof was !== 'undefined' && was !== val) solarBodyNote(`${this.name}: heat setpoint ${was} -> ${val}`);
+    }
     public get heatSetpoint(): number { return this.data.setPoint; }
-    public set heatSetpoint(val: number) { this.setDataVal('setPoint', val); }
+    public set heatSetpoint(val: number) {
+        const was = this.data.setPoint;
+        this.setDataVal('setPoint', val);
+        if (typeof was !== 'undefined' && was !== val) solarBodyNote(`${this.name}: heat setpoint ${was} -> ${val}`);
+    }
     public get coolSetpoint(): number { return this.data.coolSetpoint; }
-    public set coolSetpoint(val: number) { this.setDataVal('coolSetpoint', val); }
+    public set coolSetpoint(val: number) {
+        const was = this.data.coolSetpoint;
+        this.setDataVal('coolSetpoint', val);
+        if (typeof was !== 'undefined' && was !== val) solarBodyNote(`${this.name}: cool setpoint ${was} -> ${val}`);
+    }
     public get isOn(): boolean { return this.data.isOn; }
     public set isOn(val: boolean) { this.setDataVal('isOn', val); }
     public get startDelay(): boolean { return this.data.startDelay; }
@@ -2162,11 +2208,29 @@ export class HeaterState extends EqState {
             this.hasChanged = true;
         }
     }
+    // The water reading at the solar pump speed minus the reading at the normal speed, as the last solar valve delay check saw it (positive when the
+    // faster speed reads higher). The solar decision adds it to the reading at the normal speed to tell whether a check is worth making.
+    public get solarSpeedOffset(): number { return this.data.solarSpeedOffset; }
+    public set solarSpeedOffset(val: number) {
+        if (this.solarSpeedOffset !== val) {
+            this.data.solarSpeedOffset = val;
+            if (typeof val === 'undefined') delete this.data.solarSpeedOffset;
+        }
+    }
     public get prevHeaterOffTemp(): number { return this.data.prevHeaterOffTemp; }
     public set prevHeaterOffTemp(val: number) {
         if (this.prevHeaterOffTemp !== val) {
             this.data.prevHeaterOffTemp = val;
             if (typeof val === 'undefined') delete this.data.prevHeaterOffTemp;
+        }
+    }
+    // Set to 'heating' or 'cooling' when solar stopped because the water reached its target, so the restart waits for the water to move
+    // controller.solar.restartHysteresis degrees back past it. Cleared when solar starts and wherever prevHeaterOffTemp is cleared.
+    public get targetStop(): string { return this.data.targetStop; }
+    public set targetStop(val: string) {
+        if (this.targetStop !== val) {
+            this.data.targetStop = val;
+            if (typeof val === 'undefined') delete this.data.targetStop;
         }
     }
     public get startupDelay(): boolean { return this.data.startupDelay; }
@@ -2252,7 +2316,20 @@ export class VirtualCircuitState extends EqState implements ICircuitState {
     public get nameId(): number { return this.data.nameId; }
     public set nameId(val: number) { this.setDataVal('nameId', val); }
     public get isOn(): boolean { return this.data.isOn; }
-    public set isOn(val: boolean) { this.setDataVal('isOn', val); }
+    public set isOn(val: boolean) {
+        const changed = utils.makeBool(this.data.isOn) !== val;
+        this.setDataVal('isOn', val);
+        // The solar and heater virtual circuits go in the solar log: a pump's circuit list can use them to start a pump speed
+        // when solar runs. So does any virtual circuit the user listed in log.solar.circuits.
+        if (changed) {
+            try {
+                const vname = sys.board.valueMaps.virtualCircuits.getName(this.id);
+                const listed = solarListed(this.id, this.name);
+                if (listed || ((vname === 'solar' || vname === 'heater') && solarInstalled()))
+                    logger.solar(`Solar-related virtual circuit ${this.name} (#${this.id}) turned ${val ? 'on' : 'off'}${listed ? ': listed in log.solar.circuits' : ''}`);
+            } catch (err) { /* only logging; never let it affect a circuit change */ }
+        }
+    }
     public get priority(): string { return 'manual' } // These are always manual priority
     public set priority(val: string) { ; }
     public get type() { return typeof this.data.type !== 'undefined' ? this.data.type.val : -1; }
@@ -2310,6 +2387,42 @@ export class CircuitStateCollection extends EqStateCollection<CircuitState> {
 
     }
 }
+// A body's heat mode, heat status or setpoint changing goes in the solar log (see logger.solar) when a solar heater is
+// installed: together they are what enables or disables solar heating and decides when it runs.
+function solarBodyNote(message: string) {
+    try { if (solarInstalled()) logger.solar(message); } catch (err) { /* only logging; never let it affect a body change */ }
+}
+// Whether a solar heater is installed.
+function solarInstalled(): boolean {
+    const solarType = sys.board.valueMaps.heaterTypes.getValue('solar');
+    return sys.heaters.toArray().some(h => h.isActive && h.type === solarType);
+}
+// Whether the user listed a circuit in log.solar.circuits: a number is a circuit id, text matches part of the circuit's name.
+function solarListed(circuitId: number, name: string): boolean {
+    const listed: any[] = logger.options && logger.options.solar && Array.isArray(logger.options.solar.circuits) ? logger.options.solar.circuits : [];
+    return listed.some(x => typeof x === 'number' ? x === circuitId : (typeof x === 'string' && x.length > 0 && (name || '').toLowerCase().indexOf(x.toLowerCase()) !== -1));
+}
+// Why a circuit counts as related to a solar heater for the solar log (see logger.solar), or undefined when it does not:
+// the user listed it, it has a solar circuit function, its name says solar, it is the circuit of a body on a system that has a
+// solar heater, it drives a higher speed of a pump on such a system, or it is a cleaner circuit that the cleaner solar delay
+// applies to.
+function solarCircuitRole(circuitId: number): string {
+    const circuit = sys.circuits.toArray().find(c => c.id === circuitId);
+    if (typeof circuit === 'undefined') return undefined;
+    const fname: string = sys.board.valueMaps.circuitFunctions.getName(circuit.type) || '';
+    if (solarListed(circuitId, circuit.name)) return 'listed in log.solar.circuits';
+    if (fname.indexOf('solar') === 0) return `solar circuit function '${fname}'`;
+    if (/solar/i.test(circuit.name || '')) return 'circuit named for solar';
+    if (!solarInstalled()) return undefined;
+    const bstate = state.temps.bodies.getBodyByCircuitId(circuitId);
+    if (typeof bstate !== 'undefined') return `circuit of ${bstate.name}, and a solar heater is installed`;
+    for (const pump of sys.pumps.toArray()) {
+        const pc = pump.circuits.get().find((c: any) => c.circuit === circuitId && c.relay >= 2);
+        if (typeof pc !== 'undefined') return `circuit that drives relay ${pc.relay} (a higher speed) of pump ${pump.name}, and a solar heater is installed`;
+    }
+    if (fname.indexOf('cleaner') !== -1 && sys.general.options.cleanerSolarDelay) return 'cleaner circuit that the cleaner solar delay applies to';
+    return undefined;
+}
 export class CircuitState extends EqState implements ICircuitState {
     public dataName = 'circuit';
     public initData() {
@@ -2336,9 +2449,17 @@ export class CircuitState extends EqState implements ICircuitState {
     public set showInFeatures(val: boolean) { this.setDataVal('showInFeatures', val); }
     public get isOn(): boolean { return this.data.isOn; }
     public set isOn(val: boolean) {
+        const changed = utils.makeBool(this.data.isOn) !== val;
         if (val && !this.data.isOn) this.startTime = new Timestamp();
         else if (!val) this.startTime = undefined;
         this.setDataVal('isOn', val);
+        // A circuit tied to a solar heater turning on or off goes in the solar log, with why it counts as solar related.
+        if (changed) {
+            try {
+                const role = solarCircuitRole(this.id);
+                if (typeof role !== 'undefined') logger.solar(`Solar-related circuit ${this.name} (#${this.id}) turned ${val ? 'on' : 'off'}: ${role}`);
+            } catch (err) { /* only logging; never let it affect a circuit change */ }
+        }
     }
     public get type() { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : -1; }
     public set type(val: number) {
