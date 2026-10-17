@@ -21,6 +21,7 @@ import * as extend from "extend";
 import { state, ICircuitState, LightGroupState, ICircuitGroupState, ChemicalDoseState } from "../../../controller/State";
 import { sys } from "../../../controller/Equipment";
 import { utils } from '../../../controller/Constants';
+import { systemStatus } from "../../../controller/SystemStatus";
 import { logger } from "../../../logger/Logger";
 import { DataLogger } from "../../../logger/DataLogger";
 import { conn } from "../../../controller/comms/Comms";
@@ -665,6 +666,17 @@ export class StateRoute {
                 else sys.board.system.setPanelModeAsync({ mode: 'auto' });
                 return res.status(200).send(state.controllerState);
             } catch (err) { next(err); }
+        });
+        // The condition of the computer njsPC runs on (see SystemStatus.ts). GET /state/system?history=false leaves the recent samples out;
+        // GET /state/system/log?days=7 is the longer record with the periods the power and heat flags were on.
+        systemStatus.start(() => config.getSection('systemStatus'));
+        app.get('/state/system', (req, res, next) => {
+            try { return res.status(200).send(systemStatus.get(req.query.history !== 'false')); }
+            catch (err) { next(err); }
+        });
+        app.get('/state/system/log', async (req, res, next) => {
+            try { return res.status(200).send(await systemStatus.readLog(parseFloat(req.query.days as string))); }
+            catch (err) { next(err); }
         });
         app.get('/state/emitAll', (req, res) => {
             res.status(200).send(state.emitAllEquipmentChanges());
