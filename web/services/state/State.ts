@@ -37,7 +37,7 @@ import { getAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
 import { outputLog } from "../../../controller/AutoSwgOutputLog";
-import { projectionLog, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
+import { projectionLog, updateHourlyProjection, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
@@ -1047,6 +1047,7 @@ function sampleAutoSwgOutput() {
 function sampleAutoSwgSalt() {
     try { state.autoSwg.heartbeatAt = new Date().toISOString(); } catch (err) { /* the heartbeat is best effort */ }
     sampleAutoSwgOutput();
+    void updateHourlyProjection({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName });
     watchAutoSwg();
     try {
         let cfg = sys.autoSwg;
