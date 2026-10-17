@@ -27,6 +27,10 @@ import { utils } from "../../../controller/Constants";
 import { ServiceProcessError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
+import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled } from '../state/State';
+import { markLastTuneApplied } from '../../../controller/AutoSwgTuneHistory';
+import { autoSwgGateInfo } from '../../../controller/AutoSwgReadiness';
+import { snapshotAutoSwgSettings, logAutoSwgSettingChanges } from '../../../controller/AutoSwgHistory';
 import { conn } from "../../../controller/comms/Comms";
 import { webApp, BackupFile, RestoreFile } from "../../Server";
 import { release } from "os";
@@ -1012,6 +1016,58 @@ export class ConfigRoute {
             try {
                 let chlor = await sys.board.chlorinator.deleteChlorAsync(req.body);
                 return res.status(200).send(chlor.get(true));
+            }
+            catch (err) { next(err); }
+        });
+        // AutoSwg: persisted settings for the PoolMath-driven SWG% recommendation
+        // feature. The computed recommendation itself is runtime state, exposed
+        // under /state/autoSwg/* (see web/services/state/State.ts).
+        app.get('/config/autoSwg', (req, res) => {
+            return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
+        });
+        app.put('/config/autoSwg', async (req, res, next) => {
+            try {
+                // Note when a tuning setting actually changes (saving the same values again doesn't count), so the
+                // accuracy report can show how the new settings do on readings they weren't tuned on.
+                let tuningKeys = ['windowDays', 'daytimeLossSharePct', 'creditChlorineAdditions', 'fcAnomalyTolerancePpm', 'projectionWeight', 'projectionTaperStartDays', 'projectionTaperEndDays', 'burnTempAdjust', 'nightBurnRatio'];
+                let before = tuningKeys.map(k => (sys.autoSwg as any)[k]);
+                let settingsBefore = snapshotAutoSwgSettings(sys.autoSwg);
+                let awayWasActive = sys.autoSwg.awayActive;
+                let awayWasOn = sys.autoSwg.awayEnabled, awayStartedBefore = sys.autoSwg.awayStartedAt;
+                const vacationTargetBefore = sys.autoSwg.awayTargetFc;
+                sys.autoSwg.set(req.body);
+                // Unchecking Away protection by hand: the plan goes back to the normal Target FC (the vacation target is left as it is for next time).
+                if (awayWasOn && !sys.autoSwg.awayEnabled) sys.autoSwg.noteAwayEnded(`Away protection was turned off.${vacationTargetBefore !== sys.autoSwg.targetFc ? ` The target in force went back from the vacation target of ${vacationTargetBefore} to the Target FC of ${sys.autoSwg.targetFc} ppm.` : ''}`);
+                // Keep a record of what changed (target, days to target, tuning ...) in the AutoSwg history, so the
+                // calculation's results can be lined up against the settings in force at the time. A failure here
+                // must not fail the save.
+                // Turning Away protection off by hand writes the summary of the period, as its ending by itself does.
+                try { logAutoSwgSettingChanges(settingsBefore, snapshotAutoSwgSettings(sys.autoSwg), req.body && req.body.tuneApplied === true ? 'tune' : undefined, awayWasOn && !sys.autoSwg.awayEnabled ? awaySummary(awayStartedBefore) : undefined); }
+                catch (err) { logger.warn(`AutoSwg: could not log the settings change: ${err.message}`); }
+                if (tuningKeys.some((k, i) => (sys.autoSwg as any)[k] !== before[i])) sys.autoSwg.tuningChangedAt = new Date().toISOString();
+                // The Tune dialog marks its own Apply, so a later Tune can tell its changes from ones made by hand.
+                if (req.body && req.body.tuneApplied === true) {
+                    sys.autoSwg.lastTuneAppliedAt = sys.autoSwg.lastTuneAt = new Date().toISOString();
+                    // Applying a Tune recommendation accepts the Tune: with enough history, automation can then be turned on.
+                    sys.autoSwg.tuneAcceptedAt = sys.autoSwg.lastTuneAppliedAt;
+                    try { markLastTuneApplied(sys.autoSwg.lastTuneAppliedAt, 'manual'); }
+                    catch (err) { logger.warn(`AutoSwg: could not mark the last Tune as applied: ${err.message}`); }
+                    // Auto tune may apply recommendations only after you have applied a number of them yourself (see AutoSwgAutoTune.ts).
+                    sys.autoSwg.tuneManualApplies = (typeof sys.autoSwg.tuneManualApplies === 'number' ? sys.autoSwg.tuneManualApplies : 0) + 1;
+                }
+                // Re-arm fully-automatic mode's periodic check against the just-saved config,
+                // so enabling it (or changing the interval) takes effect immediately rather
+                // than needing a restart.
+                // "Your settings look good" has nothing to apply: accepting that result is what counts as accepting the Tune.
+                if (req.body && req.body.tuneAccepted === true && sys.autoSwg.tuningAvailable) sys.autoSwg.tuneAcceptedAt = new Date().toISOString();
+                // Saving with Away protection newly on is what starts it: its first check runs a minute later, so the target just set takes effect.
+                // Turning Away protection on (or off, with the automatic check on) acts at once, as a Check Now with a new target and an apply would, so the calculation
+                // and the dashboard show it within seconds rather than at the next check.
+                if (awayWasActive !== sys.autoSwg.awayActive) noteAutoSwgAwayToggled(sys.autoSwg.awayActive);
+                armAutoSwgAutoCheck(0, (!awayWasActive && sys.autoSwg.awayActive) || (awayWasActive && !sys.autoSwg.awayActive) ? 3 * 1000 : undefined);
+                // If the share code or pool changed, pull its history soon (a no-op otherwise).
+                armAutoSwgArchiveSync(60 * 1000);
+                return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
             }
             catch (err) { next(err); }
         });
