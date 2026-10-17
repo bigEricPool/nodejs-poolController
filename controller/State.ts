@@ -163,17 +163,9 @@ export class State implements IState {
         try {
             if (this._timerDirty) clearTimeout(this._timerDirty);
             this.persist();
-/*             if (sys.controllerType === ControllerType.Virtual) {
-                for (let i = 0; i < state.temps.bodies.length; i++) {
-                    state.temps.bodies.getItemByIndex(i).isOn = false;
-                }
-                for (let i = 0; i < state.circuits.length; i++) {
-                    state.circuits.getItemByIndex(i).isOn = false;
-                }
-                for (let i = 0; i < state.features.length; i++) {
-                    state.features.getItemByIndex(i).isOn = false;
-                }
-            } */
+            // Circuit/feature/body isOn is reset on the next startup instead (see the Nixie
+            // controller block in init()) so it also covers an ungraceful restart/crash, not
+            // just a clean shutdown.
             logger.info('State process shut down');
         } catch (err) { logger.error(`Error shutting down state process: ${err.message}`); }
     }
@@ -383,10 +375,38 @@ export class State implements IState {
         EqStateCollection.removeNullIds(sdata.filters);
         // Initialize the schedules.
         if (typeof sdata.schedules !== 'undefined') {
+            let nowMs = new Date().getTime();
             for (let i = 0; i < sdata.schedules.length; i++) {
                 let ssched = sdata.schedules[i];
-                ssched.manualPriorityActive = ssched.isOn = ssched.triggered = false;
-                if (typeof ssched.scheduleTime !== 'undefined') ssched.scheduleTime.calculated = false;
+                let st = ssched.scheduleTime;
+                // A schedule already inside its last-calculated active window is resuming
+                // after a restart, not starting fresh -- preserve `triggered` so
+                // triggerSchedules() (see controller/nixie/schedules/Schedule.ts) only
+                // reasserts the relay on the next pass instead of also re-running the
+                // schedule's one-time heat mode/setpoint push, which would clobber whatever
+                // the user set manually since the schedule actually started. A schedule
+                // outside its window (or never calculated) still starts clean.
+                let withinWindow = st && typeof st.startTime === 'string' && st.startTime !== '' && typeof st.endTime === 'string' && st.endTime !== ''
+                    && new Date(st.startTime).getTime() <= nowMs && nowMs <= new Date(st.endTime).getTime();
+                ssched.manualPriorityActive = false;
+                ssched.isOn = false;
+                ssched.triggered = withinWindow;
+                if (typeof st !== 'undefined') st.calculated = false;
+            }
+        }
+        // On a Nixie (virtual) controller, circuit/feature/body "isOn" is our own bookkeeping --
+        // there is no physical board to report the real relay state back to us on reconnect like
+        // IntelliCenter/*Touch do. If a persisted "isOn: true" survives a restart, triggerSchedules()
+        // (see controller/nixie/schedules/Schedule.ts) sees the circuit as already on and never
+        // re-issues the command to actually energize the relay -- e.g. a sunrise-to-sunset SWG
+        // schedule restarted mid-day never re-triggers. Clearing isOn here (schedules are reset
+        // above, so shouldBeOn will re-trigger them) forces a real re-assertion of the relay state
+        // on every startup, regardless of whether the previous process exited cleanly.
+        if (sys.controllerType === ControllerType.Nixie) {
+            if (typeof sdata.circuits !== 'undefined') for (let i = 0; i < sdata.circuits.length; i++) sdata.circuits[i].isOn = false;
+            if (typeof sdata.features !== 'undefined') for (let i = 0; i < sdata.features.length; i++) sdata.features[i].isOn = false;
+            if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') {
+                for (let i = 0; i < sdata.temps.bodies.length; i++) sdata.temps.bodies[i].isOn = false;
             }
         }
         var self = this;
@@ -399,9 +419,7 @@ export class State implements IState {
         this.equipment.messages.clear();
 
         //this.onchange(state, function () { self.dirty = true; });
-        this._dt.emitter.on('change', function () {
-            self.data.time = self._dt.format();
-            self.hasChanged = true;
+        const syncHeliotrope = function () {
             self.heliotrope.date = self._dt.toDate();
             // Provide safe access & environment fallback for coordinates
             const loc = sys?.general?.location || {} as any;
@@ -429,6 +447,11 @@ export class State implements IState {
             self.data.nextSunset = times.isValid ? Timestamp.toISOLocal(times.nextSunset) : '';
             self.data.prevSunrise = times.isValid ? Timestamp.toISOLocal(times.prevSunrise) : '';
             self.data.prevSunset = times.isValid ? Timestamp.toISOLocal(times.prevSunset) : '';
+        };
+        this._dt.emitter.on('change', function () {
+            self.data.time = self._dt.format();
+            self.hasChanged = true;
+            syncHeliotrope();
             versionCheck.checkGitRemote();
         });
         this.status = 0; // Initializing
@@ -450,6 +473,9 @@ export class State implements IState {
         this.filters = new FilterStateCollection(this.data, 'filters');
         this.comms = new CommsState();
         this.heliotrope = new Heliotrope();
+        // The clock only emits 'change' when the minute rolls over, so without this the heliotrope
+        // (and the sunrise/sunset schedule windows that depend on it) isn't valid until then.
+        syncHeliotrope();
         this.appVersion = new AppVersionState(this.data, 'appVersion');
         this.data.startTime = Timestamp.toISOLocal(new Date());
         versionCheck.checkGitLocal();
@@ -1272,7 +1298,7 @@ export class ScheduleTime extends ChildEqState {
                     let ss = state.heliotrope.calcAdjustedTimes(sod.toDate(), 0, sched.endTimeOffset);
                     if (!ss.isValid) return times;
                     ytimes.endTime = ytimes.startTime >= ss.prevSunset ? ss.sunset : ss.prevSunset;
-                    ttimes.endTime = ttimes.startTime >= ss.sunset ? ss.nextSunset : ss.nextSunset;
+                    ttimes.endTime = ttimes.startTime >= ss.sunset ? ss.nextSunset : ss.sunset;
                     ntimes.endTime = ntimes.startTime >= ss.nextSunset ? new Timestamp(ss.nextSunset).addHours(24).toDate() : ss.nextSunset;
                     break;
                 }
@@ -1394,7 +1420,14 @@ export class ScheduleTime extends ChildEqState {
                 }
                 this.startTime = times.startTime;
                 this.endTime = times.endTime;
-                this.calculated = true;
+                // A failed calculation (e.g. heliotrope not ready yet) must not be cached as "calculated for
+                // today" -- with null times nothing else would ever trigger a recalculation until midnight, and
+                // the schedule would be dropped from getActiveSchedules() all day.  Retry on the next pass.
+                if (times.startTime && times.endTime) this.calculated = true;
+                else {
+                    this.calculated = false;
+                    logger.warn(`Schedule ${sched.id} window could not be calculated (heliotrope valid: ${state.heliotrope.isValid}); will retry.`);
+                }
             }
             return this.shouldBeOn;
         } catch (err) {
