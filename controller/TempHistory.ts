@@ -248,6 +248,8 @@ class TempHistory {
         const from = now - days * 24 * HOUR_MS;
         let rows = (this.hourly[bodyId] || []).filter(r => r.t + HOUR_MS > from).concat(this.pendingHours(bodyId, Infinity));
         if (rows.length === 0) return out;
+        // The hours covered are counted from the first hourly row, before a daily row would move that back to midnight.
+        const first = Math.max(from, rows[0].t);
         if (daily) rows = this.group(rows, t => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); });
         const all = this.group(rows, t => 0)[0];
         for (const r of rows) {
@@ -256,7 +258,7 @@ class TempHistory {
         }
         out.avg = Math.round(all.v * 10) / 10;
         out.high = all.hi; out.highAt = all.ht; out.low = all.lo; out.lowAt = all.lt;
-        out.hours = Math.round(Math.min(days * 24, (now - Math.max(from, rows[0].t)) / HOUR_MS) * 10) / 10;
+        out.hours = Math.round(Math.min(days * 24, (now - first) / HOUR_MS) * 10) / 10;
         return out;
     }
     // How many hours of readings the average covers (up to 24), to a tenth, so a short record is not mistaken for a full day.
