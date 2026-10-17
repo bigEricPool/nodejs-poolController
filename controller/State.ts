@@ -529,7 +529,14 @@ export class State implements IState {
                 // The temperature the dashboard shows for the body. Where solar has published the reading taken at its pump speed
                 // (solarCheckTemp, present only with the solar enhancements), that is the one shown, so it is the one recorded.
                 const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
-                if (body.isOn && typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown, body.temp, this.solarProjection(body), typeof this.solarHeaterFor(body.id) !== 'undefined' ? body.setPoint : undefined);
+                const setPoint = typeof this.solarHeaterFor(body.id) !== 'undefined' ? body.setPoint : undefined;
+                if (body.isOn) { if (typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown, body.temp, this.solarProjection(body), setPoint); }
+                else {
+                    // A body that is off keeps the temperature it had when it turned off, so the sensor's own reading is recorded, marked as
+                    // taken while off.
+                    const raw = this.offSensorTemp(body.id);
+                    if (typeof raw === 'number' && isFinite(raw)) tempHistory.record(body.id, raw, undefined, undefined, setPoint, true);
+                }
                 body.avgTemp24h = tempHistory.average(body.id);
                 body.avgTempHours = tempHistory.hours(body.id);
                 const ext = tempHistory.extremes(body.id);
@@ -539,6 +546,14 @@ export class State implements IState {
                 body.minTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.low.t)) : undefined;
             }
         } catch (err) { logger.warn(`Could not update the temperature averages: ${err.message}`); }
+    }
+    // The water sensor that reads a body while it is off: the first for the pool, and for the spa the second when the bodies have their own
+    // sensors, else the shared first. A shared sensor is not used while the other body is on, since it then reads that body's water.
+    private offSensorTemp(bodyId: number): number {
+        const other = (id: number) => { const b = this.temps.bodies.find(x => x.id === id); return typeof b !== 'undefined' && b.isOn; };
+        if (bodyId === 1) return sys.equipment.dual || !other(2) ? this.temps.waterSensor1 : undefined;
+        if (bodyId === 2) return sys.equipment.dual ? this.temps.waterSensor2 : (!other(1) ? this.temps.waterSensor1 : undefined);
+        return undefined;
     }
     // The active solar heater that serves a body, matched the way HeaterCommands.syncHeaterStates matches heaters to bodies, or undefined.
     private solarHeaterFor(bodyId: number): any {
@@ -604,7 +619,7 @@ export class State implements IState {
             const b: any = {
                 id: body.id, name: body.name, isOn: body.isOn, temp: shown, liveTemp: body.temp, held: shown !== body.temp,
                 avgTemp24h: body.avgTemp24h, avgTempHours: body.avgTempHours, maxTemp24h: body.maxTemp24h, maxTemp24hAt: body.maxTemp24hAt,
-                minTemp24h: body.minTemp24h, minTemp24hAt: body.minTemp24hAt, t: s.t, v: s.v, l: s.l, p: s.p, s: s.s
+                minTemp24h: body.minTemp24h, minTemp24hAt: body.minTemp24hAt, t: s.t, v: s.v, l: s.l, p: s.p, s: s.s, o: s.o
             };
             if (typeof settings !== 'undefined' && typeof this.solarHeaterFor(body.id) !== 'undefined' && typeof body.setPoint === 'number' && body.setPoint > 0) {
                 b.setPoint = body.setPoint;
@@ -627,7 +642,7 @@ export class State implements IState {
                 avgTemp: r.avg, hours: r.hours, maxTemp: r.high, minTemp: r.low,
                 maxTempAt: typeof r.highAt === 'number' ? Timestamp.toISOLocal(new Date(r.highAt)) : undefined,
                 minTempAt: typeof r.lowAt === 'number' ? Timestamp.toISOLocal(new Date(r.lowAt)) : undefined,
-                t: r.t, v: r.v, hi: r.hi, lo: r.lo, p: r.p, s: r.s
+                t: r.t, v: r.v, hi: r.hi, lo: r.lo, p: r.p, s: r.s, ov: r.ov
             };
             if (typeof settings !== 'undefined' && typeof this.solarHeaterFor(body.id) !== 'undefined' && typeof body.setPoint === 'number' && body.setPoint > 0) {
                 b.setPoint = body.setPoint;
