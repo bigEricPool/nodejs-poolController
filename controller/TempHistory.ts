@@ -24,6 +24,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // data/tempHistory.json (next to poolConfig.json) at most every five minutes and when the process exits, so a restart
 // does not start the average over. Readings in the file are in the units they were taken in, so the average is off
 // for up to a day after the temperature units are changed.
+//
+// For the week, month and year views each completed hour is also summarized in one row per body (see TempHour), kept for a
+// year in data/tempHistoryHourly.json. The rows are made from the minute readings, so the first ones cover the 24 hours
+// already recorded when this was installed. That file is saved when a row is added (once an hour), without blocking, and
+// when the process exits.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -32,22 +37,39 @@ import { logger } from '../logger/Logger';
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 const SAMPLE_MS = 60 * 1000;
 const SAVE_MS = 5 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const HOURS_KEPT_MS = 366 * 24 * HOUR_MS;
 
 // t: when, v: the temperature shown, l: the live reading, kept only when it differs from v (the solar enhancements can show a reading
 // taken at the solar pump speed for a while; the live one is kept beside it so a chart can show both), p: what a solar check would
 // read at the solar pump speed, kept only where the solar enhancements give a speed offset (see State.sampleTemps), s: the body's
 // setpoint, kept where a solar heater serves the body, so a chart can draw the levels solar works to as they were at each minute.
 interface TempSample { t: number; v: number; l?: number; p?: number; s?: number; }
+// One hour (or, for the year view, one day) of a body's readings: t, the start; n, how many minute readings; v, their mean; hi and lo,
+// the highest and the lowest, read at ht and lt; p, the mean of the projected readings (pn of them), and s, the last setpoint kept.
+export interface TempHour { t: number; n: number; v: number; hi: number; ht: number; lo: number; lt: number; p?: number; pn?: number; s?: number; }
+// A longer view of a body's readings for a chart: the rows as lists, and the figures for the whole view.
+export interface TempRange {
+    t: number[]; v: number[]; hi: number[]; lo: number[]; p: number[]; s: number[];
+    avg?: number; high?: number; highAt?: number; low?: number; lowAt?: number; hours?: number;
+}
 
 class TempHistory {
     private samples: { [bodyId: number]: TempSample[] } = {};
+    private hourly: { [bodyId: number]: TempHour[] } = {};
+    private hourlyDirty: boolean = false;
+    private hourlySaving: boolean = false;
     private loaded: boolean = false;
     private dirty: boolean = false;
     private lastSave: number = 0;
     constructor() {
-        process.on('exit', () => { try { this.save(Date.now()); } catch (err) { /* nothing more can be done at exit */ } });
+        process.on('exit', () => {
+            try { this.save(Date.now()); } catch (err) { /* nothing more can be done at exit */ }
+            try { if (this.hourlyDirty) fs.writeFileSync(this.hourlyFile(), JSON.stringify(this.hourly), 'utf8'); } catch (err) { /* as above */ }
+        });
     }
     private file(): string { return path.join(process.cwd(), 'data', 'tempHistory.json'); }
+    private hourlyFile(): string { return path.join(process.cwd(), 'data', 'tempHistoryHourly.json'); }
     // Reads the saved record once. Every reader calls it, not only record(): after a restart while the body is off nothing is
     // recorded, and the saved readings must still be shown.
     private load() {
@@ -62,6 +84,78 @@ class TempHistory {
                 this.samples[parseInt(id, 10)] = arr.filter(s => s && typeof s.t === 'number' && typeof s.v === 'number' && isFinite(s.v) && s.t >= cutoff);
             }
         } catch (err) { logger.warn(`Could not read the temperature history: ${err.message}`); }
+        try {
+            const f = this.hourlyFile();
+            if (fs.existsSync(f)) {
+                const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+                const cutoff = Date.now() - HOURS_KEPT_MS;
+                for (const id of Object.keys(data || {})) {
+                    const arr: any[] = Array.isArray(data[id]) ? data[id] : [];
+                    this.hourly[parseInt(id, 10)] = arr.filter(r => r && typeof r.t === 'number' && typeof r.v === 'number' && isFinite(r.v) && r.t >= cutoff);
+                }
+            }
+        } catch (err) { logger.warn(`Could not read the hourly temperature history: ${err.message}`); }
+        // The hours the minute readings cover that have no row yet (all of them the first time).
+        for (const id of Object.keys(this.samples)) this.rollUp(parseInt(id, 10), Date.now());
+    }
+    // Summarizes readings by period: one row for each period start that `key` gives, oldest first.
+    private group(rows: { t: number, n: number, v: number, hi: number, ht: number, lo: number, lt: number, p?: number, pn?: number, s?: number }[], key: (t: number) => number): TempHour[] {
+        const out: TempHour[] = [];
+        let cur: TempHour, vs = 0, ps = 0;
+        const close = () => {
+            if (typeof cur === 'undefined') return;
+            cur.v = Math.round((vs / cur.n) * 100) / 100;
+            if (cur.pn > 0) cur.p = Math.round((ps / cur.pn) * 100) / 100; else { delete cur.p; delete cur.pn; }
+            out.push(cur);
+        };
+        for (const r of rows) {
+            const k = key(r.t);
+            if (typeof cur === 'undefined' || cur.t !== k) {
+                close();
+                cur = { t: k, n: 0, v: 0, hi: r.hi, ht: r.ht, lo: r.lo, lt: r.lt, pn: 0 };
+                vs = 0; ps = 0;
+            }
+            cur.n += r.n; vs += r.v * r.n;
+            if (r.hi >= cur.hi) { cur.hi = r.hi; cur.ht = r.ht; }
+            if (r.lo <= cur.lo) { cur.lo = r.lo; cur.lt = r.lt; }
+            if (typeof r.p === 'number') { const pn = typeof r.pn === 'number' ? r.pn : r.n; cur.pn += pn; ps += r.p * pn; }
+            if (typeof r.s === 'number') cur.s = r.s;
+        }
+        close();
+        return out;
+    }
+    // Minute readings as rows of one reading each, for group().
+    private asRows(samples: TempSample[]) {
+        return samples.map(s => ({ t: s.t, n: 1, v: s.v, hi: s.v, ht: s.t, lo: s.v, lt: s.t, p: s.p, pn: typeof s.p === 'number' ? 1 : 0, s: s.s }));
+    }
+    // The minute readings after the last hourly row as hourly rows, up to (not including) the hour starting at `before`.
+    private pendingHours(bodyId: number, before: number): TempHour[] {
+        const rows = this.hourly[bodyId] || [];
+        const from = rows.length > 0 ? rows[rows.length - 1].t + HOUR_MS : -Infinity;
+        const arr = (this.samples[bodyId] || []).filter(s => s.t >= from && s.t < before);
+        return this.group(this.asRows(arr), t => Math.floor(t / HOUR_MS) * HOUR_MS);
+    }
+    // Adds a row for each completed hour that has none yet, drops rows older than a year, and saves the rows when any were added.
+    private rollUp(bodyId: number, now: number) {
+        const made = this.pendingHours(bodyId, Math.floor(now / HOUR_MS) * HOUR_MS);
+        const rows = this.hourly[bodyId] || (this.hourly[bodyId] = []);
+        const cutoff = now - HOURS_KEPT_MS;
+        let changed = made.length > 0;
+        for (const r of made) rows.push(r);
+        while (rows.length > 0 && rows[0].t < cutoff) { rows.shift(); changed = true; }
+        if (changed) { this.hourlyDirty = true; this.saveHourly(); }
+    }
+    // Writes the hourly rows without blocking (the file can be large); a write that fails is tried again with the next row.
+    private saveHourly() {
+        if (!this.hourlyDirty || this.hourlySaving) return;
+        this.hourlySaving = true;
+        this.hourlyDirty = false;
+        const f = this.hourlyFile();
+        const tmp = f + '.tmp';
+        fs.promises.writeFile(tmp, JSON.stringify(this.hourly), 'utf8')
+            .then(() => fs.promises.rename(tmp, f))
+            .then(() => { this.hourlySaving = false; },
+                (err) => { this.hourlySaving = false; this.hourlyDirty = true; logger.warn(`Could not save the hourly temperature history: ${err.message}`); });
     }
     private save(now: number) {
         if (!this.dirty) return;
@@ -100,6 +194,7 @@ class TempHistory {
             const cutoff = now - WINDOW_MS;
             while (arr.length > 0 && arr[0].t < cutoff) arr.shift();
             this.dirty = true;
+            this.rollUp(bodyId, now);
         }
         if (this.dirty && now - this.lastSave >= SAVE_MS) this.save(now);
     }
@@ -144,6 +239,25 @@ class TempHistory {
             if (typeof low === 'undefined' || s.v <= low.v) low = s;
         }
         return typeof high === 'undefined' ? undefined : { high: high, low: low };
+    }
+    // The last `days` days of a body's readings, one row an hour (or one a day with `daily`), oldest first, with the mean, the high and the
+    // low over them all and how many hours they cover. The hour under way is included from its minute readings.
+    public range(bodyId: number, days: number, daily: boolean, now: number = Date.now()): TempRange {
+        if (!this.loaded) this.load();
+        const out: TempRange = { t: [], v: [], hi: [], lo: [], p: [], s: [] };
+        const from = now - days * 24 * HOUR_MS;
+        let rows = (this.hourly[bodyId] || []).filter(r => r.t + HOUR_MS > from).concat(this.pendingHours(bodyId, Infinity));
+        if (rows.length === 0) return out;
+        if (daily) rows = this.group(rows, t => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); });
+        const all = this.group(rows, t => 0)[0];
+        for (const r of rows) {
+            out.t.push(r.t); out.v.push(r.v); out.hi.push(r.hi); out.lo.push(r.lo);
+            out.p.push(typeof r.p === 'number' ? r.p : null); out.s.push(typeof r.s === 'number' ? r.s : null);
+        }
+        out.avg = Math.round(all.v * 10) / 10;
+        out.high = all.hi; out.highAt = all.ht; out.low = all.lo; out.lowAt = all.lt;
+        out.hours = Math.round(Math.min(days * 24, (now - Math.max(from, rows[0].t)) / HOUR_MS) * 10) / 10;
+        return out;
     }
     // How many hours of readings the average covers (up to 24), to a tenth, so a short record is not mistaken for a full day.
     public hours(bodyId: number, now: number = Date.now()): number | undefined {
