@@ -144,6 +144,10 @@ export interface AutoSwgParams {
     // Run the calculation as of this moment instead of now, using only the data logged up to then
     // (see buildProjectionAccuracy). Omit for a normal calculation.
     asOf?: Date;
+    // What was KNOWN, kept apart from the moment calculated: with dataAsOf set, only the FC readings, CYA and water temperatures logged by then count, while the
+    // SWG record and the liquid chlorine additions still count up to the calculation time (asOf, or now). That gives what an earlier calculation expected the FC to be
+    // at a later time -- the projection before a refresh changed it (see AutoSwgProjection.ts). Omit for a normal calculation.
+    dataAsOf?: Date;
     // How many ppm of FC rise beyond what the SWG output and logged additions explain marks an
     // interval as suspect and leaves it out of the average (default 2; 0 = don't check).
     fcAnomalyTolerancePpm?: number;
@@ -784,6 +788,12 @@ let lastShareRequestAt = 0;
 export function noteShareRequest() { lastShareRequestAt = Date.now(); }
 export function msSinceLastShareRequest(): number { return Date.now() - lastShareRequestAt; }
 
+// The PoolMath page the last calculation read, kept so the projection points (AutoSwgProjection.ts) can be worked out from it without another request.
+let lastPage: { html: string; at: number } | undefined;
+export function cachedPageHtml(maxAgeMs: number): string | undefined {
+    return lastPage && Date.now() - lastPage.at <= maxAgeMs ? lastPage.html : undefined;
+}
+
 function fetchHtml(shareCodeOrUrl: string): Promise<string> {
     noteShareRequest();
     const url = shareCodeOrUrl.startsWith('http') ? shareCodeOrUrl : `https://api.poolmathapp.com/share/${shareCodeOrUrl}`;
@@ -893,14 +903,18 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     const swgHours = durationHours(swgStart, swgStop);
 
     const pageHtml = html || await fetchHtml(params.shareCode);
+    if (!html) lastPage = { html: pageHtml, at: Date.now() };
     const parsedCards = parseWithArchive(pageHtml, params.poolName, archive);
     // With `asOf`, only what had been logged by then counts.
     const asOfMs = params.asOf ? params.asOf.getTime() : undefined;
     const upTo = <T extends { ts: Date }>(list: T[]): T[] => typeof asOfMs === 'undefined' ? list : list.filter(e => e.ts.getTime() <= asOfMs);
-    const fcEvents = upTo(parsedCards.fcEvents);
+    let dataMs = asOfMs;
+    if (params.dataAsOf) dataMs = typeof asOfMs === 'undefined' ? params.dataAsOf.getTime() : Math.min(asOfMs, params.dataAsOf.getTime());
+    const upToData = <T extends { ts: Date }>(list: T[]): T[] => typeof dataMs === 'undefined' ? list : list.filter(e => e.ts.getTime() <= dataMs);
+    const fcEvents = upToData(parsedCards.fcEvents);
     const poolMathSwgEvents = upTo(parsedCards.swgEvents);
-    const cyaEvents = upTo(parsedCards.cyaEvents);
-    const tempEvents = upTo(parsedCards.tempEvents);
+    const cyaEvents = upToData(parsedCards.cyaEvents);
+    const tempEvents = upToData(parsedCards.tempEvents);
     if (typeof asOfMs !== 'undefined') localSwgEntries = localSwgEntries.filter(e => new Date(e.ts).getTime() <= asOfMs);
     if (onPageParsed) {
         try { onPageParsed(pageReadings(parsedCards)); }
@@ -1407,6 +1421,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     const inputsUsed: any = Object.assign({}, params, { targetFc: targetFc, targetDays: targetDays });
     delete inputsUsed.inFlight;
     delete inputsUsed.asOf;
+    delete inputsUsed.dataAsOf;
     delete inputsUsed.saltDrop;
     delete inputsUsed.storm;
 

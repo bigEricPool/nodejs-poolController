@@ -37,6 +37,7 @@ import { getAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
 import { outputLog } from "../../../controller/AutoSwgOutputLog";
+import { projectionLog, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
@@ -504,7 +505,14 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
     state.autoSwg.error = undefined;
     state.autoSwg.pending = true;
     state.autoSwg.emitEquipmentChange();
+    updateAutoSwgProjection();
     return undefined;
+}
+
+// The projected FC points for the Water panel's FC line (see AutoSwgProjection.ts): brought up to date in the background after a calculation and after an
+// apply. It reads no PoolMath page of its own and cannot fail either of them.
+function updateAutoSwgProjection() {
+    void updateProjectionPoints({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName });
 }
 
 // The calculation's inputs include the PoolMath share code and pool name. Keep them out of the history records so
@@ -644,6 +652,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
             inputs: withoutPrivateInputs(details.inputs),
             outputs: outputs,
         });
+        updateAutoSwgProjection();
     }
     catch (err) { logger.error(`AutoSwg: applied ${pct}% but could not write the history log: ${err.message}`); }
     state.autoSwg.pending = false;
@@ -1221,6 +1230,19 @@ export class StateRoute {
         armAutoSwgArchiveSync();
         armAutoSwgSaltLog();
         armAutoSwgArchiveTopUp();
+        // The FC line of the Water panel: the FC tests (from the local PoolMath archive) and the projected FC at each point a calculation was used (see
+        // AutoSwgProjection.ts), oldest first. It reads local files only and never contacts PoolMath: GET /state/autoSwg/fc?days=30
+        app.get('/state/autoSwg/fc', (req, res, next) => {
+            try {
+                if (!sys.autoSwg.shareCode) return res.status(404).send({ error: 'AutoSwg is not configured.' });
+                let days = parseInt(req.query.days as string, 10);
+                if (isNaN(days) || days < 1 || days > 365) days = 30;
+                let from = Date.now() - days * 86400000;
+                let tests = archivedFcReadings().filter(x => x.ts.getTime() >= from).map(x => ({ t: x.ts.getTime(), fc: x.value, source: 'poolmath' }));
+                return res.status(200).send({ units: 'ppm', days: days, tests: tests, projection: projectionLog.read(days) });
+            }
+            catch (err) { next(err); }
+        });
         // What the chlorinator actually did, hour by hour (see AutoSwgOutputLog.ts): GET /state/autoSwg/output?days=30
         app.get('/state/autoSwg/output', (req, res, next) => {
             try {
