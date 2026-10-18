@@ -59,7 +59,8 @@
     "apiKey": "",
     "units": "e",
     "backfillDays": 400,
-    "keepDays": 800
+    "keepDays": 800,
+    "clearnessMarginMinutes": 60
   },
   "web": {
     "servers": {

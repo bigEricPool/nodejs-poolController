@@ -24,6 +24,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // with a registered station (wunderground.com/member/api-keys); a key reads any station, so the station does not have to be yours. The settings
 // are the `weather` section of config.json: enabled, stationId, apiKey, units ('e' English or 'm' metric), backfillDays and keepDays.
 //
+// Clearness: a station reports sunlight (solar radiation) but not cloud. Each hour also gets `clearness`, the hour's highest solar radiation
+// divided by what a clear sky would give at the station in that hour (a standard clear-sky formula from the sun's height, which comes from
+// the station's latitude, longitude and the time). About 1 is a clear sky, lower is cloud; it can pass 1 a little when the sun shines
+// between bright clouds. Near sunrise and sunset the sensor and the formula are both unreliable, so it is given only for hours that lie
+// wholly from clearnessMarginMinutes after sunrise to clearnessMarginMinutes before sunset (default 60). The radiation is the hour's
+// highest reading, so a partly cloudy hour with sunny spells can still read close to 1.
+//
 // Two requests are used:
 //   * observations/hourly/7day, once an hour: the last seven days, which also fills a gap of up to a week after njsPC was not running;
 //   * history/hourly?date=YYYYMMDD, one past day per request: older days back to backfillDays, a limited number each hour so the key's limits
@@ -44,7 +51,7 @@ const BACKFILL_GAP_MS = 2500;               // ... this far apart
 const RECENT_DAYS = 7;                      // what observations/hourly/7day covers
 const SETTLED_MS = 2 * DAY_MS;              // a day this far in the past will get no more observations
 
-export interface WeatherSettings { enabled: boolean; stationId: string; apiKey: string; units: 'e' | 'm'; backfillDays: number; keepDays: number; }
+export interface WeatherSettings { enabled: boolean; stationId: string; apiKey: string; units: 'e' | 'm'; backfillDays: number; keepDays: number; clearnessMarginMinutes: number; }
 // One hour at the station. `lt` is the station's local time at the end of the hour ('YYYY-MM-DDTHH:MM:SS'), `t` the same instant in epoch ms.
 // Temperatures, wind, pressure and rain are in the units the record was requested in. `precipTotal` is the day's rain so far (it starts again at
 // the station's local midnight), `precipRate` the rate reported for the hour. `qc` is the station's quality control status: 1 passed, 0 failed,
@@ -57,6 +64,7 @@ export interface WeatherHour {
     pressureMax?: number; pressureMin?: number;
     precipRate?: number; precipTotal?: number;
     solarRad?: number; uv?: number;
+    clearness?: number;
     qc?: number;
 }
 export interface WeatherDay {
@@ -66,6 +74,7 @@ export interface WeatherDay {
     pressureMax?: number; pressureMin?: number;
     precipTotal?: number; precipRateHigh?: number;
     solarRadHigh?: number; uvHigh?: number;
+    clearnessAvg?: number;
     qcFailed: number;
 }
 export interface WeatherStatus {
@@ -90,7 +99,7 @@ export interface WeatherSummary {
     current?: WeatherCurrent; today?: WeatherDay; yesterday?: WeatherDay;
     precip7Days?: number;       // rain over the last seven local days, today included
 }
-interface StatusFile { checked: string[]; lastRunAt?: string; lastSuccessAt?: string; lastError?: string; }
+interface StatusFile { checked: string[]; lastRunAt?: string; lastSuccessAt?: string; lastError?: string; lat?: number; lon?: number; clearnessMargin?: number; }
 const CURRENT_CACHE_MS = 10 * 60 * 1000;    // the latest report is asked for at most this often, and only while something is showing it
 
 const num = (v: any): number | undefined => typeof v === 'number' && isFinite(v) ? v : undefined;
@@ -103,6 +112,8 @@ export function normalizeWeatherSettings(cfg: any): WeatherSettings {
     let backfillDays = parseInt(cfg.backfillDays, 10), keepDays = parseInt(cfg.keepDays, 10);
     if (isNaN(backfillDays) || backfillDays < 0) backfillDays = 400;
     if (isNaN(keepDays) || keepDays < 30) keepDays = 800;
+    let clearnessMarginMinutes = parseInt(cfg.clearnessMarginMinutes, 10);
+    if (isNaN(clearnessMarginMinutes) || clearnessMarginMinutes < 0) clearnessMarginMinutes = 60;
     return {
         enabled: cfg.enabled === true || cfg.enabled === 'true',
         // A station id is letters and digits only, which also keeps it safe as a folder name.
@@ -110,8 +121,65 @@ export function normalizeWeatherSettings(cfg: any): WeatherSettings {
         apiKey: (typeof cfg.apiKey === 'string' ? cfg.apiKey : '').trim(),
         units: cfg.units === 'm' ? 'm' : 'e',
         backfillDays: Math.min(backfillDays, keepDays),
-        keepDays: keepDays
+        keepDays: keepDays,
+        clearnessMarginMinutes: Math.min(clearnessMarginMinutes, 240)
     };
+}
+
+// The sun at a moment, by the usual NOAA approximation: declination and equation of time (minutes) for the day of the year.
+function sunAngles(t: number): { decl: number; eot: number } {
+    const d = new Date(t);
+    const start = Date.UTC(d.getUTCFullYear(), 0, 1);
+    const doy = Math.floor((t - start) / DAY_MS) + 1;
+    const g = 2 * Math.PI / 365 * (doy - 1 + (d.getUTCHours() - 12) / 24);
+    const eot = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
+    const decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g) + 0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+    return { decl: decl, eot: eot };
+}
+// The cosine of the sun's zenith angle at a moment and place (above 0 when the sun is up).
+export function cosZenith(t: number, lat: number, lon: number): number {
+    const { decl, eot } = sunAngles(t);
+    const d = new Date(t);
+    const minutes = d.getUTCHours() * 60 + d.getUTCMinutes() + d.getUTCSeconds() / 60;
+    const ha = ((minutes + eot + 4 * lon) / 4 - 180) * Math.PI / 180;
+    const phi = lat * Math.PI / 180;
+    return Math.sin(phi) * Math.sin(decl) + Math.cos(phi) * Math.cos(decl) * Math.cos(ha);
+}
+// Clear-sky global horizontal radiation (W/m2), Haurwitz's formula.
+export function clearSkyRadiation(t: number, lat: number, lon: number): number {
+    const cz = cosZenith(t, lat, lon);
+    return cz > 0 ? 1098 * cz * Math.exp(-0.057 / cz) : 0;
+}
+// Sunrise and sunset (epoch ms) of the UTC day that contains t, at the place; undefined in polar day or night.
+export function sunTimes(t: number, lat: number, lon: number): { rise: number; set: number } | undefined {
+    const d = new Date(t);
+    const day = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    const { decl, eot } = sunAngles(day + 12 * 3600000);
+    const phi = lat * Math.PI / 180;
+    const c = (Math.cos(90.833 * Math.PI / 180) - Math.sin(phi) * Math.sin(decl)) / (Math.cos(phi) * Math.cos(decl));
+    if (c < -1 || c > 1) return undefined;
+    const h0 = Math.acos(c) * 180 / Math.PI;
+    const noon = 720 - 4 * lon - eot;
+    return { rise: day + (noon - 4 * h0) * 60000, set: day + (noon + 4 * h0) * 60000 };
+}
+// The clearness of the hour that ends at tEnd: its highest solar radiation over the highest clear-sky radiation in the hour. Undefined unless
+// the whole hour lies at least marginMinutes after sunrise and before sunset, or when the clear sky would give too little to compare with.
+export function hourClearness(tEnd: number, lat: number, lon: number, solarRad: number, marginMinutes: number): number | undefined {
+    if (typeof solarRad !== 'number' || !isFinite(solarRad) || solarRad < 0 || !isFinite(lat) || !isFinite(lon)) return undefined;
+    const tStart = tEnd - 3600000;
+    const sun = sunTimes(tStart + 1800000, lat, lon);
+    if (typeof sun === 'undefined') return undefined;
+    // The UTC day of the hour can differ from the local one; the sunrise and sunset nearest the hour are the ones that matter.
+    for (const shift of [0, -DAY_MS, DAY_MS]) {
+        const rise = sun.rise + shift, set = sun.set + shift;
+        if (tStart >= rise + marginMinutes * 60000 && tEnd <= set - marginMinutes * 60000) {
+            let clear = 0;
+            for (let m = 0; m <= 60; m += 5) clear = Math.max(clear, clearSkyRadiation(tStart + m * 60000, lat, lon));
+            if (clear < 50) return undefined;
+            return round(Math.min(1.5, solarRad / clear), 2);
+        }
+    }
+    return undefined;
 }
 
 // One observation of the hourly endpoints as a WeatherHour; undefined when it has no usable time.
@@ -172,6 +240,7 @@ export function summarizeDays(hours: WeatherHour[]): WeatherDay[] {
             // The day's rain is the highest running total reported in it.
             precipTotal: max(vals(hs, 'precipTotal')), precipRateHigh: max(vals(hs, 'precipRate')),
             solarRadHigh: max(vals(hs, 'solarRad')), uvHigh: max(vals(hs, 'uv')),
+            clearnessAvg: avg(vals(hs, 'clearness'), 2),
             qcFailed: hs.filter(h => h.qc === 0).length
         };
         for (const k of Object.keys(day)) if (typeof day[k] === 'undefined') delete day[k];
@@ -232,7 +301,7 @@ export class WeatherHistory {
             const sf = path.join(dir, 'status.json');
             if (fs.existsSync(sf)) {
                 const st = JSON.parse(fs.readFileSync(sf, 'utf8'));
-                this.status = { checked: Array.isArray(st.checked) ? st.checked.filter(d => typeof d === 'string') : [], lastRunAt: st.lastRunAt, lastSuccessAt: st.lastSuccessAt, lastError: st.lastError };
+                this.status = { checked: Array.isArray(st.checked) ? st.checked.filter(d => typeof d === 'string') : [], lastRunAt: st.lastRunAt, lastSuccessAt: st.lastSuccessAt, lastError: st.lastError, lat: typeof st.lat === 'number' ? st.lat : undefined, lon: typeof st.lon === 'number' ? st.lon : undefined, clearnessMargin: typeof st.clearnessMargin === 'number' ? st.clearnessMargin : undefined };
             }
         } catch (err) { logger.warn(`Weather: could not read the weather history: ${err.message}`); }
     }
@@ -256,11 +325,17 @@ export class WeatherHistory {
         } catch (err) { logger.warn(`Weather: could not save the weather history: ${err.message}`); }
     }
     // Adds the observations, the newer copy of an hour replacing the older (the hour in progress is reported again when it is complete).
-    private merge(observations: any[], units: 'e' | 'm'): number {
+    private merge(observations: any[], s: WeatherSettings): number {
         let n = 0;
         for (const o of Array.isArray(observations) ? observations : []) {
-            const h = parseObservation(o, units);
+            const h = parseObservation(o, s.units);
             if (!h) continue;
+            // The station's place, for the clearness of this hour and of the hours already stored.
+            if (typeof o.lat === 'number' && typeof o.lon === 'number' && isFinite(o.lat) && isFinite(o.lon)) { this.status.lat = o.lat; this.status.lon = o.lon; }
+            if (typeof this.status.lat === 'number' && typeof this.status.lon === 'number') {
+                const c = hourClearness(h.t, this.status.lat, this.status.lon, h.solarRad, s.clearnessMarginMinutes);
+                if (typeof c === 'number') h.clearness = c;
+            }
             const month = h.lt.slice(0, 7), key = h.lt.slice(0, 13);
             if (!this.months.has(month)) this.months.set(month, new Map());
             const map = this.months.get(month), had = map.get(key);
@@ -269,6 +344,23 @@ export class WeatherHistory {
             this.dirtyMonths.add(month);
             n++;
         }
+        return n;
+    }
+    // The clearness of the hours stored before it existed, or made with another margin. Done once the station's place is known, and again
+    // whenever clearnessMarginMinutes changes; an hour outside the margin loses its value.
+    private fillClearness(s: WeatherSettings): number {
+        if (typeof this.status.lat !== 'number' || typeof this.status.lon !== 'number' || this.status.clearnessMargin === s.clearnessMarginMinutes) return 0;
+        let n = 0;
+        for (const [month, map] of this.months) {
+            for (const h of map.values()) {
+                const c = hourClearness(h.t, this.status.lat, this.status.lon, h.solarRad, s.clearnessMarginMinutes);
+                if (c === h.clearness) continue;
+                if (typeof c === 'number') h.clearness = c; else delete h.clearness;
+                this.dirtyMonths.add(month);
+                n++;
+            }
+        }
+        this.status.clearnessMargin = s.clearnessMarginMinutes;
         return n;
     }
     private prune(s: WeatherSettings, now: number) {
@@ -309,7 +401,7 @@ export class WeatherHistory {
             this.load(s);
             this.status.lastRunAt = new Date(now).toISOString();
             try {
-                changed += this.merge(await this.fetch(s, 'observations/hourly/7day'), s.units);
+                changed += this.merge(await this.fetch(s, 'observations/hourly/7day'), s);
                 // The days the seven day request fully covered and that are over need not be asked for again.
                 const checked = new Set(this.status.checked);
                 for (let i = 2; i < RECENT_DAYS - 1; i++) checked.add(ymd(now - i * DAY_MS));
@@ -321,7 +413,7 @@ export class WeatherHistory {
                     // A day the station has nothing for comes back as 204 or, for a day before it existed, 404; either way it is not asked for again.
                     try { obs = await this.fetch(s, 'history/hourly', `&date=${d.replace(/-/g, '')}`); }
                     catch (err) { if (/HTTP 404/.test(err.message)) obs = []; else throw err; }
-                    changed += this.merge(obs, s.units);
+                    changed += this.merge(obs, s);
                     if (now - new Date(`${d}T00:00:00Z`).getTime() >= SETTLED_MS) this.status.checked.push(d);
                 }
                 this.status.checked.sort();
@@ -333,6 +425,7 @@ export class WeatherHistory {
                 if (this.status.lastError !== err.message) logger.warn(`Weather: could not read station ${s.stationId}: ${err.message}`);
                 this.status.lastError = err.message;
             }
+            changed += this.fillClearness(s);
             this.prune(s, now);
             this.save(s);
         }
