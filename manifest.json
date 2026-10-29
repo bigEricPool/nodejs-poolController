@@ -226,13 +226,13 @@
     {
       "name": "feature/swg-assist",
       "kind": "feature",
-      "status": "planned",
-      "purpose": "feature/auto-swg plus the rename to SWG Assist (user-facing text only).",
+      "status": "active",
+      "purpose": "SWG Assist, the first AutoSwg release: feature/auto-swg plus the rename (user-facing text only) and the FC range control mode. Not yet in pool or pool-next.",
       "depends": [
         "feature/auto-swg"
       ],
       "upstream": "",
-      "build": false
+      "build": true
     },
     {
       "name": "local/pi-tools",
