@@ -45,8 +45,9 @@ export interface AutoSwgSettingChange { setting: string; from: any; to: any; }
 
 // Bump this when the calculation itself changes in a way that can change its numbers (not for settings or display), so
 // the history shows which version of the algorithm produced each apply. 1 = before the projection weighting and taper,
-// 2 = weighting and taper, the PoolMath archive and the liquid chlorine credit as they are now.
-export const AUTO_SWG_ALGORITHM_VERSION = 2;
+// 2 = weighting and taper, the PoolMath archive and the liquid chlorine credit, 3 = range control (SwgAssistBand.ts) in place of the single target
+// in normal operation (records written while the control mode is 'target' or Away protection is on are made by the same rules as version 2).
+export const AUTO_SWG_ALGORITHM_VERSION = 3;
 
 // The settings whose changes are logged. A change to the target, the days to reach it or the tuning options is what to
 // line up against the FC history when judging how the calculation did.
