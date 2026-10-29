@@ -324,7 +324,7 @@ function windowKeyTime(t: string): string {
 // calculation uses, whether typed in or taken from the selected SWG schedule, to the nearest 10
 // minutes: editing the schedule counts, the daily drift of a sunrise or sunset based window does not.
 // What the calculation says about Away protection: while it is on, the vacation target and what it goes back to; for three days after it ended, what ending it did.
-function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; endedNote?: string } {
+function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string } {
     if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText };
     const endedAt = cfg.awayEndedAt ? new Date(cfg.awayEndedAt).getTime() : NaN;
     if (cfg.awayEndedNote && !isNaN(endedAt) && Date.now() - endedAt < 3 * 86400000) return { active: false, endedNote: cfg.awayEndedNote };
