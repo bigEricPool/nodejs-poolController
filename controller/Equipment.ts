@@ -2548,6 +2548,8 @@ export class AutoSwg extends EqItem {
         if (typeof this.data.fcLow === 'undefined') this.data.fcLow = 7.5;
         if (typeof this.data.fcHigh === 'undefined') this.data.fcHigh = 10.5;
         if (typeof this.data.bandBiasPerDay === 'undefined') this.data.bandBiasPerDay = 0.05;
+        // How many run periods (run windows of SWG on-time, so about a day each) a boost takes to bring FC back to the middle of the range: 1 is a firm push, more is gentler.
+        if (typeof this.data.bandBoostPeriods === 'undefined') this.data.bandBoostPeriods = 1;
     }
     public get enabled(): boolean { return this.data.enabled; }
     public set enabled(val: boolean) { this.setDataVal('enabled', val); }
@@ -2614,6 +2616,8 @@ export class AutoSwg extends EqItem {
     public set fcLow(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcLow', isFinite(n) ? Math.min(30, Math.max(0, n)) : 7.5); }
     public get fcHigh(): number { return this.data.fcHigh; }
     public set fcHigh(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcHigh', isFinite(n) ? Math.min(30, Math.max(0, n)) : 10.5); }
+    public get bandBoostPeriods(): number { return this.data.bandBoostPeriods; }
+    public set bandBoostPeriods(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBoostPeriods', isFinite(n) ? Math.min(5, Math.max(0.5, n)) : 1); }
     public get bandBiasPerDay(): number { return this.data.bandBiasPerDay; }
     public set bandBiasPerDay(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBiasPerDay', isFinite(n) ? Math.min(0.3, Math.max(0, n)) : 0.05); }
     // Range control is in use: the mode is 'band' and Away protection is not on (it steers to its own vacation target).

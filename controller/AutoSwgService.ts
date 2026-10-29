@@ -131,7 +131,7 @@ export interface AutoSwgParams {
     away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
     // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
     // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
-    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; coasting?: boolean };
+    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean };
     // An already-committed target (a previous apply's FC and deadline) to stay on course
     // for instead of starting a new one, as long as the projected FC is within strayPpm of
     // targetFc. Infinity always stays on course (an explicit refresh); a finite value lets
@@ -1403,7 +1403,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     if (params.band && !(params.away && params.away.active) && swgHours > 0 && maxDailyPpmAtFull > 0) {
         try {
             const band = params.band;
-            const bandDeadline = deadlineAfterRunHours(rightNow, swgHours, swgStart, swgStop, params.timezone);
+            const boostPeriods = typeof band.boostPeriods === 'number' && band.boostPeriods >= 0.5 ? band.boostPeriods : 1;
+            const bandDeadline = deadlineAfterRunHours(rightNow, boostPeriods * swgHours, swgStart, swgStop, params.timezone);
             const bandEq = dayEquivalents(rightNow, bandDeadline);
             const bandRun = runWindowHoursBetween(rightNow, bandDeadline, swgStart, swgStop, params.timezone);
             const bandMargin = typeof params.overshootPpmPerDay === 'number' && params.overshootPpmPerDay > 0 ? Math.min(OVERSHOOT_MARGIN_CAP_PPM, params.overshootPpmPerDay * elapsedDays) : 0;
@@ -1411,7 +1412,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
                 projectedFc: projectedCurrentFc, avgPerDay: avgPerDay, elapsedDays: elapsedDays, low: band.low, high: band.high,
                 trim: typeof band.trim === 'number' ? band.trim : 0.2, biasPerDay: typeof band.biasPerDay === 'number' ? band.biasPerDay : 0.05,
                 guardPerDay: typeof band.guardPerDay === 'number' ? band.guardPerDay : 0.3, guardCap: typeof band.guardCap === 'number' ? band.guardCap : 2,
-                maintenancePct: recommendedPct, marginPpm: bandMargin, periodDayEq: bandEq, periodRunHours: bandRun,
+                maintenancePct: recommendedPct, marginPpm: bandMargin, periodDayEq: bandEq, periodRunHours: bandRun, boostPeriods: boostPeriods,
                 ppmPerHourAtFull: maxDailyPpmAtFull / swgHours, coasting: band.coasting === true
             });
             rationale.splice(rationaleMark);

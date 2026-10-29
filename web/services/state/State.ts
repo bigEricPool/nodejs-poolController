@@ -333,7 +333,7 @@ function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTa
 // Range control for the calculation (see SwgAssistBand.ts): only while the mode is 'band' and Away protection is off. The coasting state is the one the last apply left.
 function autoSwgBandParams(cfg: typeof sys.autoSwg): AutoSwgParams['band'] | undefined {
     if (!cfg.bandActive) return undefined;
-    return { low: cfg.fcLow, high: cfg.fcHigh, biasPerDay: cfg.bandBiasPerDay, coasting: state.autoSwg.bandCoasting };
+    return { low: cfg.fcLow, high: cfg.fcHigh, biasPerDay: cfg.bandBiasPerDay, boostPeriods: cfg.bandBoostPeriods, coasting: state.autoSwg.bandCoasting };
 }
 function autoSwgSettingsKey(): string {
     let cfg = sys.autoSwg;
@@ -341,7 +341,7 @@ function autoSwgSettingsKey(): string {
     try { const win = resolveAutoSwgRunWindow(cfg); start = win.swgStartTime; stop = win.swgStopTime; }
     catch (err) { /* the typed-in window is the fallback */ }
     return [
-        cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
+        cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.bandBoostPeriods, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
         cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus,
         cfg.shareCode, cfg.poolName, cfg.scheduleId, windowKeyTime(start), windowKeyTime(stop)
     ].join('|');
@@ -368,7 +368,8 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         // the pending step would keep naming the old target). Refine is the explicit "stay on the in-flight target" and keeps it.
         let lastTarget = state.autoSwg.lastAppliedTargetFc;
         let lastPeriods = state.autoSwg.lastAppliedPeriodsKey;
-        if (mode === 'auto' && typeof lastTarget === 'number' && Math.abs(cfg.effectiveTargetFc - lastTarget) > 1e-9) {
+        if (cfg.bandActive) { /* range control has no target or deadline to change, so there is nothing to say */ }
+        else if (mode === 'auto' && typeof lastTarget === 'number' && Math.abs(cfg.effectiveTargetFc - lastTarget) > 1e-9) {
             targetChangeNote = `The target in force changed from ${lastTarget} to ${cfg.effectiveTargetFc} ppm since the last apply${cfg.awayActive ? ' (the vacation target, with Away protection on)' : ''}, so this starts a new target instead of staying on course for the old one.`;
         }
         else if (mode === 'auto' && typeof lastPeriods === 'string' && lastPeriods !== `${cfg.targetPeriodsAbove}|${cfg.targetPeriodsBelow}`) {

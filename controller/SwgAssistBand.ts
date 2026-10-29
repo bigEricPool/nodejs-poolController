@@ -42,6 +42,7 @@ export interface BandInput {
     marginPpm: number;          // how far above the middle of the range to aim when boosting (grows with the age of the reading)
     periodDayEq: number;        // days of consumption in the period one run window ahead (daylight weighted)
     periodRunHours: number;     // hours the SWG is on in that period
+    boostPeriods?: number;      // how many run periods that is (for the note), 1 by default
     ppmPerHourAtFull: number;   // ppm the cell adds per run-window hour at 100%
     coasting: boolean;          // the state returned by the last decision that was applied
 }
@@ -76,7 +77,7 @@ export function bandDecision(i: BandInput): BandDecision {
         const need = mid + i.marginPpm - i.projectedFc + i.avgPerDay * i.periodDayEq;
         const raw = (need / (i.ppmPerHourAtFull * Math.max(i.periodRunHours, 0.1))) * 100;
         pct = clamp(raw, i.maintenancePct, 100); mode = 'boost';
-        note = `FC is projected at ${i.projectedFc.toFixed(2)} ppm${guard > 0.05 ? ` (${guard.toFixed(1)} ppm of allowance for a ${i.elapsedDays.toFixed(1)} day old reading)` : ''}, below the bottom of the range (${lo} ppm), so the SWG is raised to bring FC to ${mid.toFixed(1)} ppm over one run period.`;
+        note = `FC is projected at ${i.projectedFc.toFixed(2)} ppm${guard > 0.05 ? ` (${guard.toFixed(1)} ppm of allowance for a ${i.elapsedDays.toFixed(1)} day old reading)` : ''}, below the bottom of the range (${lo} ppm), so the SWG is raised to bring FC to ${mid.toFixed(1)} ppm over ${(i.boostPeriods || 1) === 1 ? 'one run period' : (i.boostPeriods + ' run periods')}.`;
     }
     else {
         let trim = clamp((i.projectedFc - mid) / half, -1, 1) * i.trim;
