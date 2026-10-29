@@ -42,6 +42,8 @@
       "hysteresis": 1,
       "valveDelaySeconds": 120,
       "checkPeriodMinutes": 60,
+      "startMargin": 2,
+      "minRunMinutes": 5,
       "returnSensor": ""
     },
     "txDelays": {

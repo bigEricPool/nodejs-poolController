@@ -4076,6 +4076,28 @@ function solarCheckPeriodMs(): number {
     } catch (err) { /* the default applies */ }
     return mins * 60000;
 }
+// controller.solar.startMargin in config.json (default 2, 0 to 10 degrees): a valve delay check begins, and passes, only when the collector leads
+// the water by more than the run delta plus this. A check that passed with the lead right at the run delta was undone by the next reading (on
+// 20 October 2026 the valve opened and closed in the same second), and runs started on a small lead stopped again within minutes.
+function solarStartMargin(): number {
+    let deg = 2;
+    try {
+        const c = config.getSection('controller.solar');
+        if (typeof c.startMargin !== 'undefined') { const v = parseFloat(c.startMargin); if (isFinite(v) && v >= 0) deg = Math.min(v, 10); }
+    } catch (err) { /* the default applies */ }
+    return deg;
+}
+// controller.solar.minRunMinutes in config.json (default 5, 0 to 60): for this long after solar turns on it is not stopped because the collector's
+// lead fell to the run delta. The collector reading falls from its idle temperature as water starts to flow, and runs ended within minutes. A
+// collector that falls to or below the water still stops solar at once, and so does the water reaching its stop level.
+function solarMinRunMs(): number {
+    let mins = 5;
+    try {
+        const c = config.getSection('controller.solar');
+        if (typeof c.minRunMinutes !== 'undefined') { const v = parseFloat(c.minRunMinutes); if (isFinite(v) && v >= 0) mins = Math.min(v, 60); }
+    } catch (err) { /* the default applies */ }
+    return mins * 60000;
+}
 // What the valve delay has done today, per heater, so the solar log shows what it costs and what it buys: the starts that went ahead, the starts it turned
 // down, the delays cancelled, and the seconds the pump ran at its solar speed with the valve closed (before a start, and with no start).
 const solarValveStats: Map<number, { day: string; started: number; turnedDown: number; cancelled: number; leadSecs: number; wastedSecs: number }> = new Map<number, { day: string; started: number; turnedDown: number; cancelled: number; leadSecs: number; wastedSecs: number }>();
@@ -4620,6 +4642,10 @@ export class HeaterCommands extends BoardCommands {
                                             else solarStopSince.delete(heater.id);
                                             // The water side of the decision: running, it holds until the stop above; stopped, the water must be below the setpoint (heating) or above the
                                             // cool setpoint plus the run delta (cooling), and after a stop at the target, the hysteresis further.
+                                            const startMargin = solarStartMargin();
+                                            // Early in a run (minRunMinutes after solar turned on) the collector's lead is not a reason to stop; the collector being no warmer (or for
+                                            // cooling no cooler) than the water still is.
+                                            const inMinRun = hState.isOn && typeof hState.startTime !== 'undefined' && hState.startTime !== null && (nowMs - hState.startTime.getTime()) < solarMinRunMs();
                                             const heatWater = (hState.isOn && hState.isCooling !== true)
                                                 ? !stopNow
                                                 : (waterTemp < cfgBody.heatSetpoint && (hState.targetStop !== 'heating' || waterTemp < (cfgBody.heatSetpoint - hysteresis)));
@@ -4630,27 +4656,27 @@ export class HeaterCommands extends BoardCommands {
                                             const heatOk = state.temps.solar > waterTemp // 1
                                                 && heatWater // 2 and 5
                                                 && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
-                                                && (state.temps.solar - waterTemp) > heater.stopTempDelta; // 4
+                                                && (inMinRun || (state.temps.solar - waterTemp) > heater.stopTempDelta); // 4, except early in a run (minRunMinutes)
                                             // reverse logic from heating states
                                             const coolOk = heater.coolingEnabled
                                                 && state.heliotrope.isNight
                                                 && state.temps.solar < waterTemp // 1
                                                 && coolWater // 2 and 5
                                                 && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
-                                                && (waterTemp - state.temps.solar) > heater.stopTempDelta; // 4
+                                                && (inMinRun || (waterTemp - state.temps.solar) > heater.stopTempDelta); // 4, except early in a run (minRunMinutes)
                                             // The same decisions as the valve delay check makes them, with the pump at its solar speed. The collector side is the same. The water side
                                             // is the level solar would stop at, not the level it starts at: the setpoint plus the hysteresis (heating), or the cool setpoint plus the
                                             // run delta minus the hysteresis (cooling). A start is not turned down for water that solar, once running, would not stop for.
                                             const heatAtSpeed = state.temps.solar > waterTemp
                                                 && waterTemp < (cfgBody.heatSetpoint + hysteresis)
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta))
-                                                && (state.temps.solar - waterTemp) > heater.stopTempDelta;
+                                                && (state.temps.solar - waterTemp) > (heater.stopTempDelta + startMargin);
                                             const coolAtSpeed = heater.coolingEnabled
                                                 && state.heliotrope.isNight
                                                 && state.temps.solar < waterTemp
                                                 && waterTemp > (cfgBody.coolSetpoint + heater.stopTempDelta - hysteresis)
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
-                                                && (waterTemp - state.temps.solar) > heater.stopTempDelta;
+                                                && (waterTemp - state.temps.solar) > (heater.stopTempDelta + startMargin);
                                             // What the water is expected to read at the solar pump speed: the reading now plus the difference the last check saw between the two speeds
                                             // (HeaterState.solarSpeedOffset: the reading at the end of the check minus the reading when it began; positive when the faster speed reads
                                             // higher). A check is begun only when it should pass on that expected reading, in whichever direction applies:
@@ -4665,14 +4691,14 @@ export class HeaterCommands extends BoardCommands {
                                             const heatPred = (margin: number) => state.temps.solar > waterPred
                                                 && waterPred < (cfgBody.heatSetpoint + hysteresis - margin)
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta))
-                                                && (state.temps.solar - waterPred) > (heater.stopTempDelta + margin);
+                                                && (state.temps.solar - waterPred) > (heater.stopTempDelta + startMargin + margin);
                                             const coolPred = (margin: number) => heater.coolingEnabled
                                                 && state.heliotrope.isNight
                                                 && state.temps.solar < waterPred
                                                 && waterPred > (cfgBody.coolSetpoint + heater.stopTempDelta + margin)
                                                 && (hState.targetStop !== 'cooling' || waterPred > (cfgBody.coolSetpoint + heater.stopTempDelta + hysteresis + margin))
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
-                                                && (waterPred - state.temps.solar) > (heater.stopTempDelta + margin);
+                                                && (waterPred - state.temps.solar) > (heater.stopTempDelta + startMargin + margin);
                                             const heatBegin = valveMs > 0 ? (heatOk && heatPred(0)) : heatOk;
                                             const coolBegin = valveMs > 0 ? coolPred(0) : coolOk;
                                             // The first check since the body's pump started: once the collector side alone would pass (the collector leads the expected reading by
@@ -4682,9 +4708,9 @@ export class HeaterCommands extends BoardCommands {
                                             const pumpStartedAt = solarBodyOnAt.get(body.id);
                                             const firstDue = valveMs > 0 && !hState.isOn && typeof pumpStartedAt === 'number' && solarFirstCheck.get(heater.id) !== pumpStartedAt;
                                             const firstProbe = firstDue && !heatBegin && !coolBegin && (
-                                                (state.temps.solar > waterPred && (state.temps.solar - waterPred) > heater.stopTempDelta
+                                                (state.temps.solar > waterPred && (state.temps.solar - waterPred) > (heater.stopTempDelta + startMargin)
                                                     && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)))
-                                                || (heater.coolingEnabled && state.heliotrope.isNight && state.temps.solar < waterPred && (waterPred - state.temps.solar) > heater.stopTempDelta
+                                                || (heater.coolingEnabled && state.heliotrope.isNight && state.temps.solar < waterPred && (waterPred - state.temps.solar) > (heater.stopTempDelta + startMargin)
                                                     && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))));
                                             // With the valve delay in use a start is made by its check and by nothing else.
                                             const direct = !(valveMs > 0 && !hState.isOn);
@@ -4907,7 +4933,7 @@ export class HeaterCommands extends BoardCommands {
                                                         // A hold above (a delay, a stop wait) takes precedence; these are the waits worth showing.
                                                         if (key === 'hysteresis') heatNote = `Solar waiting: the water must fall below ${cfgBody.heatSetpoint - hysteresis} to restart`;
                                                         else if (key === 'reheat') heatNote = `Solar waiting: the collector must reach ${r1(prevOff + heater.startTempDelta)} (now ${r1(solarT)})`;
-                                                        else if (key === 'at-speed') heatNote = `Solar waiting: the collector needs to be more than ${r1(heater.stopTempDelta + speedOffset)} above the water (${heater.stopTempDelta} at the solar pump speed, where the water reads ${r1(speedOffset)} higher)`;
+                                                        else if (key === 'at-speed') heatNote = `Solar waiting: the collector needs to be more than ${r1(heater.stopTempDelta + startMargin + speedOffset)} above the water (${heater.stopTempDelta + startMargin} at the solar pump speed, where the water reads ${r1(speedOffset)} higher)`;
                                                         else if (key === 'at-speed-water') heatNote = `Solar waiting: at the solar pump speed the water reads about ${r1(waterPred)}, not below ${cfgBody.heatSetpoint + hysteresis} where solar stops`;
                                                         else if (key === 'at-target') heatNote = `Solar waiting: the water (${r1(body.temp)}) is ${r1(body.temp) > cfgBody.heatSetpoint ? 'above' : 'at'} the setpoint ${cfgBody.heatSetpoint}`;
                                                         else if (key === 'run-delta') heatNote = `Solar waiting: the collector needs to be more than ${heater.stopTempDelta} above the water`;

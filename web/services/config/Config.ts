@@ -1348,11 +1348,11 @@ export class ConfigRoute {
         // The solar decision's settings (config.json controller.solar), shown on the dashPanel heater page. They apply at once.
         app.get('/config/solar/settings', (req, res) => {
             const c = config.getSection('controller.solar');
-            return res.status(200).send({ settleMinutes: c.settleMinutes, hysteresis: c.hysteresis, valveDelaySeconds: c.valveDelaySeconds, checkPeriodMinutes: c.checkPeriodMinutes, returnSensor: c.returnSensor || '' });
+            return res.status(200).send({ settleMinutes: c.settleMinutes, hysteresis: c.hysteresis, valveDelaySeconds: c.valveDelaySeconds, checkPeriodMinutes: c.checkPeriodMinutes, startMargin: c.startMargin, minRunMinutes: c.minRunMinutes, returnSensor: c.returnSensor || '' });
         });
         app.put('/config/solar/settings', (req, res) => {
             const out: any = config.getSection('controller.solar');
-            const limits = { settleMinutes: 60, hysteresis: 10, valveDelaySeconds: 600, checkPeriodMinutes: 1440 };
+            const limits = { settleMinutes: 60, hysteresis: 10, valveDelaySeconds: 600, checkPeriodMinutes: 1440, startMargin: 10, minRunMinutes: 60 };
             for (const name of Object.keys(limits)) {
                 if (typeof req.body[name] === 'undefined') continue;
                 const v = parseFloat(req.body[name]);
@@ -1365,7 +1365,7 @@ export class ConfigRoute {
                 out.returnSensor = req.body.returnSensor;
             }
             config.setSection('controller.solar', out);
-            return res.status(200).send({ settleMinutes: out.settleMinutes, hysteresis: out.hysteresis, valveDelaySeconds: out.valveDelaySeconds, checkPeriodMinutes: out.checkPeriodMinutes, returnSensor: out.returnSensor || '' });
+            return res.status(200).send({ settleMinutes: out.settleMinutes, hysteresis: out.hysteresis, valveDelaySeconds: out.valveDelaySeconds, checkPeriodMinutes: out.checkPeriodMinutes, startMargin: out.startMargin, minRunMinutes: out.minRunMinutes, returnSensor: out.returnSensor || '' });
         });
         // The hourly weather log's settings (config.json weather; see WeatherHistory.ts). The API key is never sent back, only whether one is set.
         app.get('/config/weather/settings', (req, res) => {
