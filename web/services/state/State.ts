@@ -693,6 +693,9 @@ export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number)
     state.autoSwg.awayStatus = cfg.awayStatus;
     state.autoSwg.awayStartedAt = cfg.awayActive ? cfg.awayStartedAt : undefined;
     state.autoSwg.awayTargetFc = cfg.awayTargetFc;
+    state.autoSwg.controlMode = cfg.controlMode;
+    state.autoSwg.fcLow = cfg.fcLow;
+    state.autoSwg.fcHigh = cfg.fcHigh;
     // The periodic check runs for the automatic mode's Auto-Apply and automatic check, or while Away protection is on.
     if (!cfg.enabled || !((cfg.autoCheckEnabled && cfg.autoApplyEnabled) || cfg.awayActive) || !cfg.shareCode || cfg.chlorinatorId < 0) {
         if (wasDue) state.autoSwg.emitEquipmentChange();

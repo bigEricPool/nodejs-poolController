@@ -3919,6 +3919,13 @@ export class AutoSwgState extends EqState {
     // The vacation target while Away protection is on (for the dashboard), and what the check made when it was turned on or off did to the SWG %.
     public get awayTargetFc(): number { return this.data.awayTargetFc; }
     public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
+    // How the SWG % is steered, as of the last save of the settings (see AutoSwg.controlMode): 'band' keeps FC between fcLow and fcHigh, 'target' steers to one Target FC.
+    public get controlMode(): string { return this.data.controlMode; }
+    public set controlMode(val: string) { this.setDataVal('controlMode', val); }
+    public get fcLow(): number { return this.data.fcLow; }
+    public set fcLow(val: number) { this.setDataVal('fcLow', val); }
+    public get fcHigh(): number { return this.data.fcHigh; }
+    public set fcHigh(val: number) { this.setDataVal('fcHigh', val); }
     public get awayChangeNote(): string { return this.data.awayChangeNote; }
     public set awayChangeNote(val: string) { this.setDataVal('awayChangeNote', val); }
     public get alerts(): any[] { return this.data.alerts; }
