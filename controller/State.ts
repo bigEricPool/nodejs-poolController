@@ -29,6 +29,8 @@ import { DataLogger, DataLoggerEntry } from '../logger/DataLogger';
 import { delayMgr } from './Lockouts';
 import { time } from 'console';
 import { getCoordinatesForZip } from './zipCoords';
+import { tempHistory } from './TempHistory';
+import { config } from '../config/Config';
 
 export class State implements IState {
     statePath: string;
@@ -508,6 +510,139 @@ export class State implements IState {
         this.appVersion = new AppVersionState(this.data, 'appVersion');
         this.data.startTime = Timestamp.toISOLocal(new Date());
         versionCheck.checkGitLocal();
+        tempHistory.start(() => this.sampleTemps());
+    }
+    // Once a minute: note the temperature of each body that is on (a body that is off keeps a stale temperature), then publish
+    // each body's 24 hour average, high and low. The 24 hours end now, so the figures move on as time passes.
+    private sampleTemps() {
+        try {
+            for (let i = 0; i < this.temps.bodies.length; i++) {
+                const body = this.temps.bodies.getItemByIndex(i);
+                // The temperature the dashboard shows for the body. Where solar has published the reading taken at its pump speed
+                // (solarCheckTemp, present only with the solar enhancements), that is the one shown, so it is the one recorded.
+                const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+                const setPoint = typeof this.solarHeaterFor(body.id) !== 'undefined' ? body.setPoint : undefined;
+                if (body.isOn) { if (typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown, body.temp, this.solarProjection(body), setPoint); }
+                else {
+                    // A body that is off keeps the temperature it had when it turned off, so the sensor's own reading is recorded, marked as
+                    // taken while off.
+                    const raw = this.offSensorTemp(body.id);
+                    if (typeof raw === 'number' && isFinite(raw)) tempHistory.record(body.id, raw, undefined, undefined, setPoint, true);
+                }
+                body.avgTemp24h = tempHistory.average(body.id);
+                body.avgTempHours = tempHistory.hours(body.id);
+                const ext = tempHistory.extremes(body.id);
+                body.maxTemp24h = typeof ext !== 'undefined' ? ext.high.v : undefined;
+                body.maxTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.high.t)) : undefined;
+                body.minTemp24h = typeof ext !== 'undefined' ? ext.low.v : undefined;
+                body.minTemp24hAt = typeof ext !== 'undefined' ? Timestamp.toISOLocal(new Date(ext.low.t)) : undefined;
+            }
+        } catch (err) { logger.warn(`Could not update the temperature averages: ${err.message}`); }
+    }
+    // The water sensor that reads a body while it is off: the first for the pool, and for the spa the second when the bodies have their own
+    // sensors, else the shared first. A shared sensor is not used while the other body is on, since it then reads that body's water.
+    private offSensorTemp(bodyId: number): number {
+        const other = (id: number) => { const b = this.temps.bodies.find(x => x.id === id); return typeof b !== 'undefined' && b.isOn; };
+        if (bodyId === 1) return sys.equipment.dual || !other(2) ? this.temps.waterSensor1 : undefined;
+        if (bodyId === 2) return sys.equipment.dual ? this.temps.waterSensor2 : (!other(1) ? this.temps.waterSensor1 : undefined);
+        return undefined;
+    }
+    // The active solar heater that serves a body, matched the way HeaterCommands.syncHeaterStates matches heaters to bodies, or undefined.
+    private solarHeaterFor(bodyId: number): any {
+        const heaters = sys.heaters.toArray();
+        for (let i = 0; i < heaters.length; i++) {
+            const h = heaters[i];
+            if (h.isActive === false || sys.board.valueMaps.heaterTypes.transform(h.type).name !== 'solar') continue;
+            if (h.body === bodyId) return h;
+            const b = sys.board.valueMaps.bodies.transform(h.body).name;
+            if ((b === 'pool' || b === 'body1') && bodyId === 1) return h;
+            if ((b === 'spa' || b === 'body2') && bodyId === 2) return h;
+            if (b === 'poolspa' && (bodyId === 1 || bodyId === 2)) return h;
+            if (b === 'body3' && bodyId === 3) return h;
+            if (b === 'body4' && bodyId === 4) return h;
+        }
+        return undefined;
+    }
+    // The solar enhancements' settings in config.json (controller.solar) that a chart of the water needs, with the defaults that code uses:
+    // the hysteresis (default 1) and the valve delay (default 120 s). Undefined when config.json has no controller.solar section.
+    private solarChartSettings(): { hysteresis: number, valveDelaySeconds: number } {
+        const c = config.getSection('controller.solar');
+        if (typeof c !== 'object' || c === null || Object.keys(c).length === 0) return undefined;
+        let hysteresis = 1, valveDelaySeconds = 120;
+        if (typeof c.hysteresis !== 'undefined') { const v = parseFloat(c.hysteresis); if (isFinite(v) && v >= 0) hysteresis = v; }
+        if (typeof c.valveDelaySeconds !== 'undefined') { const v = parseFloat(c.valveDelaySeconds); if (isFinite(v) && v >= 0) valveDelaySeconds = v; }
+        return { hysteresis: hysteresis, valveDelaySeconds: valveDelaySeconds };
+    }
+    // What a solar check would read for the body at the solar pump speed: the live reading plus the speed offset the last check measured
+    // (HeaterState.solarSpeedOffset, from the solar enhancements). While the pump already runs at that speed (solar is on, or a pump is
+    // priming) the live reading is that reading. Undefined without the solar enhancements, before the first check, or with the valve delay off.
+    private solarProjection(body: BodyTempState): number {
+        if (typeof body.temp !== 'number' || !isFinite(body.temp)) return undefined;
+        const heater = this.solarHeaterFor(body.id);
+        if (typeof heater === 'undefined') return undefined;
+        const settings = this.solarChartSettings();
+        if (typeof settings === 'undefined' || settings.valveDelaySeconds <= 0) return undefined;
+        const hs = this.heaters.getItemById(heater.id);
+        const offset = hs.data.solarSpeedOffset;
+        if (typeof offset !== 'number' || !isFinite(offset)) return undefined;
+        if (hs.isOn) return body.temp;
+        for (let p = 0; p < this.pumps.length; p++) {
+            const status = this.pumps.getItemByIndex(p).status;
+            if (status > 0 && sys.board.valueMaps.pumpStatus.transform(status).name === 'priming') return body.temp;
+        }
+        return body.temp + offset;
+    }
+    // The last 24 hours of each body's temperature for the dashboard's Water panel (GET /state/temps/history): the readings, one a minute
+    // while the body was on, and the figures the body publishes. `held` says the temperature shown now is not the live reading (see sampleTemps).
+    // With a solar heater for the body and the solar enhancements' settings, `hysteresis` with the setpoint of each minute (`s`) gives the
+    // levels solar stops at (setpoint + hysteresis) and starts again at after reaching its target (setpoint - hysteresis); `setPoint` is
+    // the setpoint now. With `range` week, month or year the lists are one row an hour (a day for a month or a year): the mean (v), the high (hi) and
+    // the low (lo), the mean projected reading (p) and the setpoint (s), and avg, high, low and hours give the figures for the whole range.
+    public getTempHistory(range?: string): any {
+        const now = Date.now();
+        const days = range === 'week' ? 7 : range === 'month' ? 30 : range === 'year' ? 365 : 0;
+        if (days > 0) return this.getTempRange(range, days, now);
+        const bodies = [];
+        const settings = this.solarChartSettings();
+        for (let i = 0; i < this.temps.bodies.length; i++) {
+            const body = this.temps.bodies.getItemByIndex(i);
+            const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+            const s = tempHistory.series(body.id, now);
+            const b: any = {
+                id: body.id, name: body.name, isOn: body.isOn, temp: shown, liveTemp: body.temp, held: shown !== body.temp,
+                avgTemp24h: body.avgTemp24h, avgTempHours: body.avgTempHours, maxTemp24h: body.maxTemp24h, maxTemp24hAt: body.maxTemp24hAt,
+                minTemp24h: body.minTemp24h, minTemp24hAt: body.minTemp24hAt, t: s.t, v: s.v, l: s.l, p: s.p, s: s.s, o: s.o
+            };
+            if (typeof settings !== 'undefined' && typeof this.solarHeaterFor(body.id) !== 'undefined' && typeof body.setPoint === 'number' && body.setPoint > 0) {
+                b.setPoint = body.setPoint;
+                b.hysteresis = settings.hysteresis;
+            }
+            bodies.push(b);
+        }
+        return { time: Timestamp.toISOLocal(new Date(now)), hours: 24, sampleSeconds: 60, bodies: bodies };
+    }
+    private getTempRange(range: string, days: number, now: number): any {
+        const daily = days > 7;
+        const bodies = [];
+        const settings = this.solarChartSettings();
+        for (let i = 0; i < this.temps.bodies.length; i++) {
+            const body = this.temps.bodies.getItemByIndex(i);
+            const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
+            const r = tempHistory.range(body.id, days, daily, now);
+            const b: any = {
+                id: body.id, name: body.name, isOn: body.isOn, temp: shown, liveTemp: body.temp, held: shown !== body.temp,
+                avgTemp: r.avg, hours: r.hours, maxTemp: r.high, minTemp: r.low,
+                maxTempAt: typeof r.highAt === 'number' ? Timestamp.toISOLocal(new Date(r.highAt)) : undefined,
+                minTempAt: typeof r.lowAt === 'number' ? Timestamp.toISOLocal(new Date(r.lowAt)) : undefined,
+                t: r.t, v: r.v, hi: r.hi, lo: r.lo, p: r.p, s: r.s, ov: r.ov
+            };
+            if (typeof settings !== 'undefined' && typeof this.solarHeaterFor(body.id) !== 'undefined' && typeof body.setPoint === 'number' && body.setPoint > 0) {
+                b.setPoint = body.setPoint;
+                b.hysteresis = settings.hysteresis;
+            }
+            bodies.push(b);
+        }
+        return { time: Timestamp.toISOLocal(new Date(now)), range: range, hours: days * 24, sampleSeconds: daily ? 86400 : 3600, bodies: bodies };
     }
     private sanitizeTransientLightGroupState(sdata: any) {
         if (!sdata || !Array.isArray(sdata.lightGroups)) return;
@@ -1838,6 +1973,20 @@ export class BodyTempState extends EqState {
     public set name(val: string) { this.setDataVal('name', val); }
     public get temp(): number { return this.data.temp; }
     public set temp(val: number) { this.setDataVal('temp', val); }
+    // The average of the last 24 hours of readings while the body was on, and how many hours it covers (see TempHistory.ts and State.sampleTemps).
+    public get avgTemp24h(): number { return this.data.avgTemp24h; }
+    public set avgTemp24h(val: number) { this.setDataVal('avgTemp24h', val); }
+    public get avgTempHours(): number { return this.data.avgTempHours; }
+    public set avgTempHours(val: number) { this.setDataVal('avgTempHours', val); }
+    // The highest and lowest reading of the same 24 hours, and when each was taken.
+    public get maxTemp24h(): number { return this.data.maxTemp24h; }
+    public set maxTemp24h(val: number) { this.setDataVal('maxTemp24h', val); }
+    public get maxTemp24hAt(): string { return this.data.maxTemp24hAt; }
+    public set maxTemp24hAt(val: string) { this.setDataVal('maxTemp24hAt', val); }
+    public get minTemp24h(): number { return this.data.minTemp24h; }
+    public set minTemp24h(val: number) { this.setDataVal('minTemp24h', val); }
+    public get minTemp24hAt(): string { return this.data.minTemp24hAt; }
+    public set minTemp24hAt(val: string) { this.setDataVal('minTemp24hAt', val); }
     public get type(): number { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : -1; }
     public set type(val: number) {
         if (this.type !== val) {
