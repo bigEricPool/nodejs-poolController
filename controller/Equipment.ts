@@ -2542,6 +2542,12 @@ export class AutoSwg extends EqItem {
         // Adjust the burn rate for the water temperature when the burn clearly follows it (see AutoSwgService). Off: on the pool it was
         // tried on it did not improve the projection; the what-if sweep scores it for yours.
         if (typeof this.data.burnTempAdjust === 'undefined') this.data.burnTempAdjust = false;
+        // How the SWG % is steered. 'band' keeps FC between fcLow and fcHigh (see SwgAssistBand.ts); 'target' steers to the single Target FC. Away protection always uses
+        // its own vacation target. bandBiasPerDay is how much above the maintenance % an old FC reading adds, for each day beyond 2.
+        if (this.data.controlMode !== 'target' && this.data.controlMode !== 'band') this.data.controlMode = 'band';
+        if (typeof this.data.fcLow === 'undefined') this.data.fcLow = 7.5;
+        if (typeof this.data.fcHigh === 'undefined') this.data.fcHigh = 10.5;
+        if (typeof this.data.bandBiasPerDay === 'undefined') this.data.bandBiasPerDay = 0.05;
     }
     public get enabled(): boolean { return this.data.enabled; }
     public set enabled(val: boolean) { this.setDataVal('enabled', val); }
@@ -2602,6 +2608,19 @@ export class AutoSwg extends EqItem {
     public set nightBurnRatio(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('nightBurnRatio', isFinite(n) ? Math.min(1.5, Math.max(0.1, n)) : 0.5); }
     public get overshootPpmPerDay(): number { return this.data.overshootPpmPerDay; }
     public set overshootPpmPerDay(val: number) { this.setDataVal('overshootPpmPerDay', val); }
+    public get controlMode(): string { return this.data.controlMode === 'target' ? 'target' : 'band'; }
+    public set controlMode(val: string) { this.setDataVal('controlMode', val === 'target' ? 'target' : 'band'); }
+    public get fcLow(): number { return this.data.fcLow; }
+    public set fcLow(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcLow', isFinite(n) ? Math.min(30, Math.max(0, n)) : 7.5); }
+    public get fcHigh(): number { return this.data.fcHigh; }
+    public set fcHigh(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcHigh', isFinite(n) ? Math.min(30, Math.max(0, n)) : 10.5); }
+    public get bandBiasPerDay(): number { return this.data.bandBiasPerDay; }
+    public set bandBiasPerDay(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBiasPerDay', isFinite(n) ? Math.min(0.3, Math.max(0, n)) : 0.05); }
+    // Range control is in use: the mode is 'band' and Away protection is not on (it steers to its own vacation target).
+    public get bandActive(): boolean { return this.controlMode === 'band' && !this.awayActive; }
+    // What the plan steers to when Away protection is off: the middle of the range, or the Target FC. And how to say that in a sentence.
+    public get normalTargetFc(): number { return this.controlMode === 'band' ? Math.round(((this.fcLow + this.fcHigh) / 2) * 100) / 100 : this.targetFc; }
+    public get normalTargetText(): string { return this.controlMode === 'band' ? `FC range of ${this.fcLow} to ${this.fcHigh} ppm` : `Target FC of ${this.targetFc} ppm`; }
     public get burnTempAdjust(): boolean { return this.data.burnTempAdjust; }
     public set burnTempAdjust(val: boolean) { this.setDataVal('burnTempAdjust', val); }
     public get projectionWeight(): number { return this.data.projectionWeight; }
@@ -2709,7 +2728,7 @@ export class AutoSwg extends EqItem {
     public get awayTargetFc(): number { return typeof this.data.awayTargetFc === 'number' ? this.data.awayTargetFc : this.data.targetFc + 2; }
     public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
     // The target the calculation uses now: the vacation target while Away protection is on, otherwise the Target FC.
-    public get effectiveTargetFc(): number { return this.awayActive ? this.awayTargetFc : this.targetFc; }
+    public get effectiveTargetFc(): number { return this.awayActive ? this.awayTargetFc : this.normalTargetFc; }
     // Records that Away protection ended and what that did (including a Target FC put back), shown in the next calculations for a few days and in the status line.
     // Cleared by the first apply after the one that followed the end (see applyAutoSwgRecommendation), so the note does not outlive what it explained.
     public clearAwayEnded() { this.setDataVal('awayEndedNote', ''); this.setDataVal('awayEndedAt', ''); }

@@ -45,6 +45,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import * as https from 'https';
 import { logger } from '../logger/Logger';
+import { bandDecision } from './SwgAssistBand';
+import type { BandDecision } from './SwgAssistBand';
 
 // How old the newest FC reading can be before the result says its projection is mostly
 // extrapolation.
@@ -126,7 +128,10 @@ export interface AutoSwgParams {
     targetPeriodsBelow: number;
     // Away protection, for the explanation: while it is on, the Target FC is the vacation target (and goes back to originalTargetFc when it ends); for a few days
     // after it ended, what ending it did.
-    away?: { active: boolean; normalTargetFc?: number; endedNote?: string };
+    away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
+    // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
+    // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
+    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; coasting?: boolean };
     // An already-committed target (a previous apply's FC and deadline) to stay on course
     // for instead of starting a new one, as long as the projected FC is within strayPpm of
     // targetFc. Infinity always stays on course (an explicit refresh); a finite value lets
@@ -202,6 +207,8 @@ export interface AutoSwgResult {
     avgWindowEnd: string;            // ISO end of that window (calculation time)
     avgWindowExtended: boolean;      // true if the window was extended back to include MIN_FC_READINGS_IN_WINDOW readings
     projectedCurrentFc: number;
+    bandMode?: 'coast' | 'boost' | 'hold';   // range control only: what it did (held the maintenance %, boosted toward the middle, or held the SWG at 0% above the range)
+    bandCoasting?: boolean;                  // range control only: the coasting state to keep for the next decision
     fcModelChange: number;           // the modelled FC change since the last reading, before weighting (generated minus consumed)
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
     projectionWeight: number;       // the weight applied to the modelled change
@@ -1246,6 +1253,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     };
     rationale.push(`Where the next FC test is likely to read (about 90%): ${projectedFcRange.low.toFixed(1)} to ${projectedFcRange.high.toFixed(1)} ppm, the projection plus or minus ${(FC_RANGE_Z * rangeSd).toFixed(1)} ppm. ${projectedFcRange.basis === 'history' ? `That is how far the projection has missed the tests that followed it over the last ${FC_RANGE_LOOKBACK_DAYS} days (${rangeCount} intervals), part of it the test itself and part real day-to-day differences in consumption (sun, rain, temperature).` : `There are too few intervals in the last ${FC_RANGE_LOOKBACK_DAYS} days to measure that, so a typical value was used.`}`);
 
+    const rationaleMark = rationale.length;   // range control replaces what the point target says from here on (see below)
     // What to aim at. If there's an in-flight target and the projected FC is still within
     // its stray threshold of the configured target, stay on course for it: same FC, same
     // deadline, only the % gets re-worked from fresh data. Otherwise start a new target
@@ -1322,18 +1330,19 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     const targetHours = targetDays * 24;
     // FC a little high is the safer miss, and an old reading is a less certain place to start from, so the target is raised by a margin that
     // grows with the age of the last reading (see AutoSwgParams.overshootPpmPerDay). Only the % that reaches the target uses it.
-    const targetMarginPpm = typeof params.overshootPpmPerDay === 'number' && params.overshootPpmPerDay > 0 ? Math.min(OVERSHOOT_MARGIN_CAP_PPM, params.overshootPpmPerDay * elapsedDays) : 0;
+    let targetMarginPpm = typeof params.overshootPpmPerDay === 'number' && params.overshootPpmPerDay > 0 ? Math.min(OVERSHOOT_MARGIN_CAP_PPM, params.overshootPpmPerDay * elapsedDays) : 0;
     if (params.away && params.away.active) {
         const normal = params.away.normalTargetFc;
-        rationale.push(`Away protection is on: the target in force is the vacation target of ${params.targetFc} ppm${typeof normal === 'number' && normal !== params.targetFc ? `, not your normal Target FC of ${normal} ppm, which applies again when Away protection ends` : ''}.`);
+        const normalText = params.away.normalTargetText || `Target FC of ${normal} ppm`;
+        rationale.push(`Away protection is on: the target in force is the vacation target of ${params.targetFc} ppm${typeof normal === 'number' && normal !== params.targetFc ? `, not your normal ${normalText}, which applies again when Away protection ends` : ''}.`);
     }
     else if (params.away && params.away.endedNote) rationale.push(`Away protection ended: ${params.away.endedNote}`);
     if (targetMarginPpm >= 0.05) rationale.push(`Aiming ${targetMarginPpm.toFixed(2)} ppm above the ${targetFc} ppm target, because the last FC reading is ${elapsedDays.toFixed(1)} days old (${params.overshootPpmPerDay} ppm per day, at most ${OVERSHOOT_MARGIN_CAP_PPM} ppm).`);
     // Consumption over the period in day equivalents (the night counts for less) and the SWG hours that really fall inside it. For whole days these are
     // simply the days and the days of run windows; for a part of a day (a half-day target) they follow the clock, so a period that holds the whole run
     // window plans differently from one that holds none of it.
-    const periodDayEquivalents = dayEquivalents(rightNow, targetDate);
-    const runHoursInPeriod = runWindowHoursBetween(rightNow, targetDate, swgStart, swgStop, params.timezone);
+    let periodDayEquivalents = dayEquivalents(rightNow, targetDate);
+    let runHoursInPeriod = runWindowHoursBetween(rightNow, targetDate, swgStart, swgStop, params.timezone);
     // The target is a floor, and FC is lowest just before the SWG starts. If the deadline falls where no SWG run lies between it and the next start (the evening,
     // overnight or early morning), FC keeps falling after the deadline, so the aim at the deadline is raised by what that costs: the maintenance output until the
     // next start, less the consumption until then (a deadline inside the run window gains from the rest of the run). Not used when the date was moved out (the SWG
@@ -1388,6 +1397,43 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         }
     }
 
+    // Range control (SwgAssistBand.ts): keep FC between a low and a high value instead of steering to one target. Everything above has worked out the maintenance %, the projected
+    // FC and the burn; this decides the % from them and replaces what the point target said. One run period ahead is the horizon for a boost, as for a new target.
+    let bandResult: BandDecision | undefined;
+    if (params.band && !(params.away && params.away.active) && swgHours > 0 && maxDailyPpmAtFull > 0) {
+        try {
+            const band = params.band;
+            const bandDeadline = deadlineAfterRunHours(rightNow, swgHours, swgStart, swgStop, params.timezone);
+            const bandEq = dayEquivalents(rightNow, bandDeadline);
+            const bandRun = runWindowHoursBetween(rightNow, bandDeadline, swgStart, swgStop, params.timezone);
+            const bandMargin = typeof params.overshootPpmPerDay === 'number' && params.overshootPpmPerDay > 0 ? Math.min(OVERSHOOT_MARGIN_CAP_PPM, params.overshootPpmPerDay * elapsedDays) : 0;
+            const decision = bandDecision({
+                projectedFc: projectedCurrentFc, avgPerDay: avgPerDay, elapsedDays: elapsedDays, low: band.low, high: band.high,
+                trim: typeof band.trim === 'number' ? band.trim : 0.2, biasPerDay: typeof band.biasPerDay === 'number' ? band.biasPerDay : 0.05,
+                guardPerDay: typeof band.guardPerDay === 'number' ? band.guardPerDay : 0.3, guardCap: typeof band.guardCap === 'number' ? band.guardCap : 2,
+                maintenancePct: recommendedPct, marginPpm: bandMargin, periodDayEq: bandEq, periodRunHours: bandRun,
+                ppmPerHourAtFull: maxDailyPpmAtFull / swgHours, coasting: band.coasting === true
+            });
+            rationale.splice(rationaleMark);
+            rationale.push(`FC range control: keeping FC between ${band.low} and ${band.high} ppm. ${decision.note}`);
+            bandResult = decision;
+            targetFc = decision.middle;
+            targetDate = bandDeadline;
+            targetDays = (bandDeadline.getTime() - rightNow.getTime()) / 86400000;
+            refreshed = false;
+            targetWarning = undefined;
+            targetInfo = undefined;
+            targetDateExtended = false;
+            longerDeadlineNote = undefined;
+            troughAddPpm = 0;
+            targetMarginPpm = bandMargin;
+            periodDayEquivalents = bandEq;
+            runHoursInPeriod = bandRun;
+            recommendedPctForTarget = decision.pct;
+        }
+        catch (err) { logger.warn(`SWG Assist: range control failed, using the target instead: ${err && err.message}`); }
+    }
+
     // With the last reading STALE_FC_DAYS or more old, never hold the SWG below the maintenance % (what matches the average consumption).
     // The projection is mostly an average by now, and its taper (projectionTaperStartDays to projectionTaperEndDays) stops crediting any
     // consumption at all, so a glide to a target above the current FC would keep the SWG at 0% -- and push the target date out at every
@@ -1402,7 +1448,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
 
     // However far the storm response lowered the projected FC, it adds at most maxExtraPct points to the % the plan would have used without it. The
     // glide to a target you set, and the maintenance floor, are not limited by it.
-    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0) {
+    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0 && !bandResult) {
         const neededWithoutStorm = (targetFc + targetMarginPpm + troughAddPpm - (projectedCurrentFc + stormLossPpm)) + (avgPerDay * periodDayEquivalents);
         let withoutStorm = Math.max(0, Math.min(100, (neededWithoutStorm / producibleAtFull) * 100));
         if (staleFcNote && withoutStorm < recommendedPct) withoutStorm = recommendedPct;
@@ -1448,6 +1494,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         troughAddPpm: Math.round(troughAddPpm * 100) / 100,
         stormLossPpm: Math.round(stormLossPpm * 100) / 100,
         projectedFcBeforeStorm: Math.round((projectedCurrentFc + stormLossPpm) * 100) / 100,
+        bandMode: bandResult ? bandResult.mode : undefined,
+        bandCoasting: bandResult ? bandResult.coasting : undefined,
         targetFcUsed: targetFc,
         targetDateUsed: targetDate.toISOString(),
         targetDaysUsed: targetDays,

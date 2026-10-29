@@ -325,10 +325,15 @@ function windowKeyTime(t: string): string {
 // minutes: editing the schedule counts, the daily drift of a sunrise or sunset based window does not.
 // What the calculation says about Away protection: while it is on, the vacation target and what it goes back to; for three days after it ended, what ending it did.
 function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; endedNote?: string } {
-    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.targetFc };
+    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText };
     const endedAt = cfg.awayEndedAt ? new Date(cfg.awayEndedAt).getTime() : NaN;
     if (cfg.awayEndedNote && !isNaN(endedAt) && Date.now() - endedAt < 3 * 86400000) return { active: false, endedNote: cfg.awayEndedNote };
     return { active: false };
+}
+// Range control for the calculation (see SwgAssistBand.ts): only while the mode is 'band' and Away protection is off. The coasting state is the one the last apply left.
+function autoSwgBandParams(cfg: typeof sys.autoSwg): AutoSwgParams['band'] | undefined {
+    if (!cfg.bandActive) return undefined;
+    return { low: cfg.fcLow, high: cfg.fcHigh, biasPerDay: cfg.bandBiasPerDay, coasting: state.autoSwg.bandCoasting };
 }
 function autoSwgSettingsKey(): string {
     let cfg = sys.autoSwg;
@@ -336,7 +341,7 @@ function autoSwgSettingsKey(): string {
     try { const win = resolveAutoSwgRunWindow(cfg); start = win.swgStartTime; stop = win.swgStopTime; }
     catch (err) { /* the typed-in window is the fallback */ }
     return [
-        cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
+        cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
         cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus,
         cfg.shareCode, cfg.poolName, cfg.scheduleId, windowKeyTime(start), windowKeyTime(stop)
     ].join('|');
@@ -407,6 +412,7 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         targetPeriodsAbove: cfg.targetPeriodsAbove,
         targetPeriodsBelow: cfg.targetPeriodsBelow,
         away: autoSwgAwayParams(cfg),
+        band: autoSwgBandParams(cfg),
         inFlight: inFlight,
         sunriseTime: sunTimes.sunrise,
         sunsetTime: sunTimes.sunset,
@@ -495,6 +501,8 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         stormApplied: result.stormApplied,
         stormLossPpm: result.stormLossPpm,
         projectedFcBeforeStorm: result.projectedFcBeforeStorm,
+        bandMode: result.bandMode,
+        bandCoasting: result.bandCoasting,
         targetMarginPpm: result.targetMarginPpm,
         burnTempNote: result.burnTempNote,
         runHoursInPeriod: result.runHoursInPeriod,
@@ -555,6 +563,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
     // runAutoSwgRecommendation (shouldn't normally happen, since /apply requires
     // state.autoSwg.pending, which only that function sets) there's no date to record, and
     // none is invented -- so no refine is offered and no step is scheduled off it.
+    state.autoSwg.bandCoasting = sys.autoSwg.bandActive && !!(state.autoSwg.details && state.autoSwg.details.bandCoasting);
     state.autoSwg.lastAppliedTargetFc = typeof state.autoSwg.pendingTargetFc === 'number' ? state.autoSwg.pendingTargetFc : sys.autoSwg.effectiveTargetFc;
     state.autoSwg.lastAppliedTargetDate = state.autoSwg.pendingTargetDate;
     state.autoSwg.lastAppliedPeriodsKey = state.autoSwg.pendingPeriodsKey;
@@ -762,6 +771,7 @@ function autoSwgReportParams(cfg: typeof sys.autoSwg): AutoSwgParams {
         targetPeriodsAbove: cfg.targetPeriodsAbove,
         targetPeriodsBelow: cfg.targetPeriodsBelow,
         away: autoSwgAwayParams(cfg),
+        band: autoSwgBandParams(cfg),
         sunriseTime: sunTimes.sunrise,
         sunsetTime: sunTimes.sunset,
         daytimeSharePct: cfg.daytimeLossSharePct,
@@ -907,8 +917,8 @@ function endAwayOnNewReading(reading?: { value: number; ts: string }): boolean {
     cfg.awayEnabled = false;
     // The plan goes back to the normal Target FC; a calculation made against the vacation target is out of date when the two differ.
     let targetNote = '';
-    if (cfg.awayTargetFc !== cfg.targetFc) {
-        targetNote = ` The target in force went back from the vacation target of ${cfg.awayTargetFc} to the Target FC of ${cfg.targetFc} ppm.`;
+    if (cfg.awayTargetFc !== cfg.normalTargetFc) {
+        targetNote = ` The target in force went back from the vacation target of ${cfg.awayTargetFc} to the ${cfg.normalTargetText}.`;
         targetRestored = true;
     }
     noteAutoSwgAwayToggled(false);   // the apply that follows is the one this explains

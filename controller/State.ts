@@ -3995,6 +3995,9 @@ export class AutoSwgState extends EqState {
     // below maintenance. Persisted so it survives a restart.
     public get stepAt(): string { return this.data.stepAt; }
     public set stepAt(val: string) { this.setDataVal('stepAt', val); }
+    // Range control: the last applied decision held the SWG at 0% because FC was above the range (it resumes once FC is half a ppm below the top). Kept across restarts.
+    public get bandCoasting(): boolean { return this.data.bandCoasting === true; }
+    public set bandCoasting(val: boolean) { this.setDataVal('bandCoasting', val === true); }
     public get stepPct(): number { return this.data.stepPct; }
     public set stepPct(val: number) { this.setDataVal('stepPct', val); }
 }

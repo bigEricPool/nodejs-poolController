@@ -24,7 +24,7 @@ import { sys, LightGroup, ControllerType, Pump, Valve, Body, General, Circuit, I
 import { config } from "../../../config/Config";
 import { logger } from "../../../logger/Logger";
 import { utils } from "../../../controller/Constants";
-import { ServiceProcessError } from "../../../controller/Errors";
+import { ServiceProcessError, ServiceParameterError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
 import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled } from '../state/State';
@@ -1033,9 +1033,15 @@ export class ConfigRoute {
                 let awayWasActive = sys.autoSwg.awayActive;
                 let awayWasOn = sys.autoSwg.awayEnabled, awayStartedBefore = sys.autoSwg.awayStartedAt;
                 const vacationTargetBefore = sys.autoSwg.awayTargetFc;
+                // The range must be wide enough for the projection to keep FC inside it (its usual error is about 1.5 ppm), so at least 2 ppm.
+                if (req.body && (typeof req.body.fcLow !== 'undefined' || typeof req.body.fcHigh !== 'undefined')) {
+                    const low = typeof req.body.fcLow !== 'undefined' ? parseFloat(req.body.fcLow) : sys.autoSwg.fcLow;
+                    const high = typeof req.body.fcHigh !== 'undefined' ? parseFloat(req.body.fcHigh) : sys.autoSwg.fcHigh;
+                    if (!isFinite(low) || !isFinite(high) || high - low < 2) throw new ServiceParameterError('FC High must be at least 2 ppm above FC Low.', 'autoSwg', 'fcHigh', req.body.fcHigh);
+                }
                 sys.autoSwg.set(req.body);
                 // Unchecking Away protection by hand: the plan goes back to the normal Target FC (the vacation target is left as it is for next time).
-                if (awayWasOn && !sys.autoSwg.awayEnabled) sys.autoSwg.noteAwayEnded(`Away protection was turned off.${vacationTargetBefore !== sys.autoSwg.targetFc ? ` The target in force went back from the vacation target of ${vacationTargetBefore} to the Target FC of ${sys.autoSwg.targetFc} ppm.` : ''}`);
+                if (awayWasOn && !sys.autoSwg.awayEnabled) sys.autoSwg.noteAwayEnded(`Away protection was turned off.${vacationTargetBefore !== sys.autoSwg.normalTargetFc ? ` The target in force went back from the vacation target of ${vacationTargetBefore} to the ${sys.autoSwg.normalTargetText}.` : ''}`);
                 // Keep a record of what changed (target, days to target, tuning ...) in the SWG Assist history, so the
                 // calculation's results can be lined up against the settings in force at the time. A failure here
                 // must not fail the save.
