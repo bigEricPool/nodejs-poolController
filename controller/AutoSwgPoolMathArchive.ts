@@ -90,7 +90,7 @@ export function readPoolMathArchive(): PoolMathArchive {
         if (parsed && Array.isArray(parsed.entries)) return parsed;
     }
     catch (err) {
-        if (err && err.code !== 'ENOENT') logger.warn(`AutoSwg: could not read ${archivePath()}: ${err.message}`);
+        if (err && err.code !== 'ENOENT') logger.warn(`SWG Assist: could not read ${archivePath()}: ${err.message}`);
     }
     return { entries: [] };
 }
@@ -469,7 +469,7 @@ async function fetchRecentLogs(shareCode: string, size: number): Promise<any | u
             if (attempt >= RATE_LIMIT_RETRIES) throw new Error('PoolMath is rate limiting the JSON request (HTTP 429).');
             const ra = parseInt(String(res.headers['retry-after'] || ''), 10);
             const wait = Math.min(MAX_WAIT_MS, isNaN(ra) ? DEFAULT_RETRY_AFTER_MS : Math.max(ra * 1000, 1000) + 5000);
-            logger.info(`AutoSwg: PoolMath rate limited the history sync; retrying in ${Math.round(wait / 1000)}s.`);
+            logger.info(`SWG Assist: PoolMath rate limited the history sync; retrying in ${Math.round(wait / 1000)}s.`);
             await sleep(wait);
             continue;
         }
@@ -504,7 +504,7 @@ export async function syncPoolMathArchive(shareCode: string, poolName?: string):
         if (logs.length < size || oldest <= cutoff) break; // everything PoolMath has, or far enough back
     }
     if (!data) throw lastError || new Error('PoolMath did not accept any recentLogs size for the JSON history.');
-    if (lastError) logger.warn(`AutoSwg: PoolMath history sync stopped early (${lastError.message}); archiving what was fetched.`);
+    if (lastError) logger.warn(`SWG Assist: PoolMath history sync stopped early (${lastError.message}); archiving what was fetched.`);
 
     const pool = pickPool(data, poolName);
     const logs: any[] = Array.isArray(pool.recentLogs) ? pool.recentLogs : [];

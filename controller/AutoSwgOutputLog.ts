@@ -99,7 +99,7 @@ class OutputLog {
             const f = this.file();
             fs.mkdirSync(path.dirname(f), { recursive: true });
             fs.appendFileSync(f, JSON.stringify(line) + '\n', 'utf8');
-        } catch (err) { logger.warn(`AutoSwg: could not write the chlorinator output log: ${err.message}`); }
+        } catch (err) { logger.warn(`SWG Assist: could not write the chlorinator output log: ${err.message}`); }
     }
     // The hours from the last `days` days, oldest first (the hour being built is not included until it is written).
     public read(days: number = 548, now: number = Date.now()): AutoSwgOutputHour[] {
@@ -118,7 +118,7 @@ class OutputLog {
                 } catch (err) { /* a torn last line after a power loss is skipped */ }
             }
             return out;
-        } catch (err) { logger.warn(`AutoSwg: could not read the chlorinator output log: ${err.message}`); return []; }
+        } catch (err) { logger.warn(`SWG Assist: could not read the chlorinator output log: ${err.message}`); return []; }
     }
     // Drops the hours older than 18 months; rewrites the file only when there are any.
     private prune(now: number) {
@@ -134,7 +134,7 @@ class OutputLog {
             const tmp = f + '.tmp';
             fs.writeFileSync(tmp, kept.map(h => JSON.stringify(h)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
             fs.renameSync(tmp, f);
-        } catch (err) { logger.warn(`AutoSwg: could not trim the chlorinator output log: ${err.message}`); }
+        } catch (err) { logger.warn(`SWG Assist: could not trim the chlorinator output log: ${err.message}`); }
     }
     // What the chlorinator actually did between two times (for the summary written when Away protection ends).
     public summary(fromMs: number, toMs: number): AutoSwgOutputSummary | undefined {

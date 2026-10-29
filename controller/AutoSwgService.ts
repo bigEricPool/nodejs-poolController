@@ -347,7 +347,7 @@ function restrictToHeadingSection(html: string, poolHeading?: string): string {
         }
     }
     if (sectionStart === -1) {
-        logger.warn(`AutoSwg: heading '${poolHeading}' not found on PoolMath page; scanning entire page instead.`);
+        logger.warn(`SWG Assist: heading '${poolHeading}' not found on PoolMath page; scanning entire page instead.`);
         return html;
     }
     // Find the next heading after sectionStart to bound the section.
@@ -918,7 +918,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     if (typeof asOfMs !== 'undefined') localSwgEntries = localSwgEntries.filter(e => new Date(e.ts).getTime() <= asOfMs);
     if (onPageParsed) {
         try { onPageParsed(pageReadings(parsedCards)); }
-        catch (err) { logger.warn(`AutoSwg: could not refresh the PoolMath history archive from the page: ${err.message}`); }
+        catch (err) { logger.warn(`SWG Assist: could not refresh the PoolMath history archive from the page: ${err.message}`); }
     }
 
     if (fcEvents.length === 0) throw new Error('No FC test readings found on the PoolMath page. The page markup may have changed, or the share code/pool name may be wrong.');
@@ -966,7 +966,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
                 daylight = { sunriseMin, sunsetMin, share, dayHours: dayMin / 60, auto, ratio };
             }
         }
-        catch (err) { logger.warn(`AutoSwg: ignoring unusable sunrise/sunset (${err.message}); counting time by the clock.`); }
+        catch (err) { logger.warn(`SWG Assist: ignoring unusable sunrise/sunset (${err.message}); counting time by the clock.`); }
     }
     const dayEquivalents = (a: Date, b: Date): number => daylight ? consumptionDayEquivalents(a, b, params.timezone, daylight) : (b.getTime() - a.getTime()) / 86400000;
     // The clock time at which `days` days of consumption (day equivalents, so the night counts for less) will have passed after `from`: whole 24 hour blocks
@@ -1048,7 +1048,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     if (coveredDays === 0 && uncoveredLeftOut > 0) {
         // Everything in the window predates the SWG record: there is nothing to base a burn rate on, and
         // assuming none would recommend as though the pool used no chlorine.
-        throw new Error(`None of the FC intervals in the averaging window has an SWG record behind it (the first SWG entry, in PoolMath or the local log, is ${firstSwgLabel}), so consumption can't be estimated yet. Log the SWG % in PoolMath (or let AutoSwg log it) and check again after a few more FC readings.`);
+        throw new Error(`None of the FC intervals in the averaging window has an SWG record behind it (the first SWG entry, in PoolMath or the local log, is ${firstSwgLabel}), so consumption can't be estimated yet. Log the SWG % in PoolMath (or let SWG Assist log it) and check again after a few more FC readings.`);
     }
     // Average over the time actually spanned by consecutive FC readings. The
     // stretch since the last reading has no measured consumption, so dividing by
@@ -1492,11 +1492,11 @@ export interface CombinedHistoryEntry {
     ml?: number;                 // CL rows: the volume added, in mL
     ppm?: number;                // CL rows: the ppm FC it adds to the configured pool volume
     record?: any;                // local SWG entries only: the full history record (inputs/outputs)
-    changes?: { setting: string; from: any; to: any }[];   // SETTINGS rows: the AutoSwg settings that changed
+    changes?: { setting: string; from: any; to: any }[];   // SETTINGS rows: the SWG Assist settings that changed
     via?: string;                // SETTINGS rows: 'tune' when applied from the Tune dialog
 }
 
-// A change to the AutoSwg settings, as listed in the combined history.
+// A change to the SWG Assist settings, as listed in the combined history.
 export interface SettingsChangeEntry { ts: string; changes: { setting: string; from: any; to: any }[]; via?: string; }
 
 export interface CombinedHistory {
@@ -1538,7 +1538,7 @@ export async function buildCombinedHistory(params: { shareCode?: string; poolNam
         const parsed = parseCards(html || await fetchHtml(params.shareCode), params.poolName);
         if (onPageParsed) {
             try { onPageParsed(pageReadings(parsed)); }
-            catch (err) { logger.warn(`AutoSwg: could not refresh the PoolMath history archive from the page: ${err.message}`); }
+            catch (err) { logger.warn(`SWG Assist: could not refresh the PoolMath history archive from the page: ${err.message}`); }
         }
         fcEvents = parsed.fcEvents;
         cyaEvents = parsed.cyaEvents;
@@ -1781,7 +1781,7 @@ export interface WhatIfVariant {
     diffLow?: number;                    // 90% bootstrap interval of that change
     diffHigh?: number;
     verdict: 'current' | 'better' | 'worse' | 'no clear difference';
-    settings?: { [setting: string]: number | boolean };   // the AutoSwg settings that make it differ from the current ones (none for e.g. daylight weighting, which is automatic)
+    settings?: { [setting: string]: number | boolean };   // the SWG Assist settings that make it differ from the current ones (none for e.g. daylight weighting, which is automatic)
 }
 
 export interface WhatIfSweep {

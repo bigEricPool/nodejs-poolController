@@ -25,8 +25,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // first SWG entry and every one after it. Tune needs at least 15 of them to say anything (its "insufficient" cutoff), which is the
 // default minimum here, and a minimum number of days (two averaging windows) keeps a short run of daily tests, which all share one
 // stretch of weather, from counting as enough. Automation additionally needs a Tune that was run and accepted (AutoSwg.tuneAcceptedAt).
-// The check uses only what is stored locally (the PoolMath archive and the AutoSwg history), so it needs no network request. The
-// thresholds are settings on the AutoSwg config that are not on the settings screen (gateMinFcReadings, gateMinSwgEntries,
+// The check uses only what is stored locally (the PoolMath archive and the SWG Assist history), so it needs no network request. The
+// thresholds are settings on the SWG Assist config that are not on the settings screen (gateMinFcReadings, gateMinSwgEntries,
 // gateMinDays; gateOff makes everything always available).
 
 import { AutoSwg, setAutoSwgReadinessProvider } from './Equipment';

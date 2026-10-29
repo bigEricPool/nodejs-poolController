@@ -1017,7 +1017,7 @@ export class ConfigRoute {
             }
             catch (err) { next(err); }
         });
-        // AutoSwg: persisted settings for the PoolMath-driven SWG% recommendation
+        // SWG Assist: persisted settings for the PoolMath-driven SWG% recommendation
         // feature. The computed recommendation itself is runtime state, exposed
         // under /state/autoSwg/* (see web/services/state/State.ts).
         app.get('/config/autoSwg', (req, res) => {
@@ -1036,12 +1036,12 @@ export class ConfigRoute {
                 sys.autoSwg.set(req.body);
                 // Unchecking Away protection by hand: the plan goes back to the normal Target FC (the vacation target is left as it is for next time).
                 if (awayWasOn && !sys.autoSwg.awayEnabled) sys.autoSwg.noteAwayEnded(`Away protection was turned off.${vacationTargetBefore !== sys.autoSwg.targetFc ? ` The target in force went back from the vacation target of ${vacationTargetBefore} to the Target FC of ${sys.autoSwg.targetFc} ppm.` : ''}`);
-                // Keep a record of what changed (target, days to target, tuning ...) in the AutoSwg history, so the
+                // Keep a record of what changed (target, days to target, tuning ...) in the SWG Assist history, so the
                 // calculation's results can be lined up against the settings in force at the time. A failure here
                 // must not fail the save.
                 // Turning Away protection off by hand writes the summary of the period, as its ending by itself does.
                 try { logAutoSwgSettingChanges(settingsBefore, snapshotAutoSwgSettings(sys.autoSwg), req.body && req.body.tuneApplied === true ? 'tune' : undefined, awayWasOn && !sys.autoSwg.awayEnabled ? awaySummary(awayStartedBefore) : undefined); }
-                catch (err) { logger.warn(`AutoSwg: could not log the settings change: ${err.message}`); }
+                catch (err) { logger.warn(`SWG Assist: could not log the settings change: ${err.message}`); }
                 if (tuningKeys.some((k, i) => (sys.autoSwg as any)[k] !== before[i])) sys.autoSwg.tuningChangedAt = new Date().toISOString();
                 // The Tune dialog marks its own Apply, so a later Tune can tell its changes from ones made by hand.
                 if (req.body && req.body.tuneApplied === true) {
@@ -1049,7 +1049,7 @@ export class ConfigRoute {
                     // Applying a Tune recommendation accepts the Tune: with enough history, automation can then be turned on.
                     sys.autoSwg.tuneAcceptedAt = sys.autoSwg.lastTuneAppliedAt;
                     try { markLastTuneApplied(sys.autoSwg.lastTuneAppliedAt, 'manual'); }
-                    catch (err) { logger.warn(`AutoSwg: could not mark the last Tune as applied: ${err.message}`); }
+                    catch (err) { logger.warn(`SWG Assist: could not mark the last Tune as applied: ${err.message}`); }
                     // Auto tune may apply recommendations only after you have applied a number of them yourself (see AutoSwgAutoTune.ts).
                     sys.autoSwg.tuneManualApplies = (typeof sys.autoSwg.tuneManualApplies === 'number' ? sys.autoSwg.tuneManualApplies : 0) + 1;
                 }

@@ -71,7 +71,7 @@ class ProjectionLog {
             }
         }
         catch (err) {
-            if (err && err.code !== 'ENOENT') logger.warn(`AutoSwg: could not read ${this.file()}: ${err.message}`);
+            if (err && err.code !== 'ENOENT') logger.warn(`SWG Assist: could not read ${this.file()}: ${err.message}`);
         }
         this.points = points;
         this.keys = new Set(points.map(p => keyOf(p.kind, p.t, p.run)));
@@ -136,7 +136,7 @@ function runRecords(records: any[]): any[] {
 // Brings the points up to date: the `after` of every apply (no calculation), then, for the last LOOKBACK_DAYS days, the `before` of every apply and a `reading`
 // for every FC test that has none yet, and an `hourly` for every hour of the last HOURLY_DAYS days that has none. It is safe to call as often as you like (a
 // call during a run makes the run go once more when it is done), and it never throws. Resolves true when it got as far as the calculations (false when a run
-// was going, or the PoolMath page has not been read since njsPC started). `cfg` is the share code and pool name of the AutoSwg settings (this module does
+// was going, or the PoolMath page has not been read since njsPC started). `cfg` is the share code and pool name of the SWG Assist settings (this module does
 // not read the equipment configuration itself).
 export async function updateProjectionPoints(cfg: { shareCode: string; poolName?: string }): Promise<boolean> {
     if (busy) { again = true; return false; }
@@ -203,11 +203,11 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             catch (err) { failed.add(keyOf(task.kind, task.t, task.run)); }
             await pause(PAUSE_MS);
         }
-        if (made > 0) logger.verbose(`AutoSwg: ${made} projected FC point${made === 1 ? '' : 's'} added for the Water panel.`);
+        if (made > 0) logger.verbose(`SWG Assist: ${made} projected FC point${made === 1 ? '' : 's'} added for the Water panel.`);
         return true;
     }
     catch (err) {
-        logger.warn(`AutoSwg: could not update the projected FC points: ${err && err.message}`);
+        logger.warn(`SWG Assist: could not update the projected FC points: ${err && err.message}`);
         return false;
     }
     finally {

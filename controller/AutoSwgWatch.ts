@@ -17,8 +17,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 // What to tell someone looking at the dashboard while away: the ways the SWG can fail to hold FC that no recommendation can fix. It looks only at
-// state njsPC already has (the chlorinator's status and output, the schedule's run window, the AutoSwg checks and the pending step) and shows them
-// as alerts in the AutoSwg area of the dashboard (state.autoSwg.alerts). It changes nothing. Nothing leaves the controller: texts and email need a
+// state njsPC already has (the chlorinator's status and output, the schedule's run window, the SWG Assist checks and the pending step) and shows them
+// as alerts in the SWG Assist area of the dashboard (state.autoSwg.alerts). It changes nothing. Nothing leaves the controller: texts and email need a
 // service outside njsPC (the dashboard alert is what is there for now).
 //
 // A chlorinator that loses power or flow when the pump stops is normal at night, so the chlorinator is judged only inside the SWG's daily run
@@ -37,7 +37,7 @@ export interface AutoSwgWatchInput {
     stepAt?: string;
     outages?: { from: string; to: string; minutes: number; rebooted?: boolean }[];   // times njsPC was not running (state.autoSwg.outages)
     tempsUnchangedMs?: number;            // how long none of the air, water or solar temperatures has changed (only for sensors that report fractions)
-    runWindow?: { start: string; stop: string; scheduleNote?: string };   // the daily SWG run window AutoSwg works from ('HH:MM'), and how it was found
+    runWindow?: { start: string; stop: string; scheduleNote?: string };   // the daily SWG run window SWG Assist works from ('HH:MM'), and how it was found
 }
 
 // Chlorinator statuses (the chlorinatorStatus value map): 0 ok, 1 low flow, 2 low salt, 3 very low salt, 4 high current, 5 clean cell, 6 low voltage,
@@ -75,7 +75,7 @@ export class AutoSwgWatch {
     public evaluate(i: AutoSwgWatchInput): AutoSwgAlert[] {
         const found: { id: string; level: 'alarm' | 'warning'; text: string; minMs: number; since?: string }[] = [];
         const c = i.chlorinator;
-        // Every figure AutoSwg produces (daily capacity, run periods, deadlines) rests on the SWG run window, which it reads from the SWG schedule. A start
+        // Every figure SWG Assist produces (daily capacity, run periods, deadlines) rests on the SWG run window, which it reads from the SWG schedule. A start
         // or end set against the wrong sun event, or an offset the wrong way round, gives a window that is far too long or too short (a start after sunset
         // with an end before it runs about 20 hours) and silently skews the calculation; a missing or disabled schedule means the typed-in times are used.
         const w = i.runWindow;
@@ -86,12 +86,12 @@ export class AutoSwgWatch {
                 const hours = (b > a ? b - a : 1440 - a + b) / 60;
                 if (hours > WATCH_WINDOW_MAX_H || hours < WATCH_WINDOW_MIN_H) {
                     found.push({ id: 'swg-window', level: 'warning', minMs: 0,
-                        text: `The SWG run window AutoSwg is using is ${w.start} to ${w.stop}, ${hours.toFixed(1)} hours a day, which does not look right. Check the SWG schedule's start and end (the sun event, such as sunrise for the start and sunset for the end, and the offsets). The run periods, daily capacity and deadlines all depend on this window.` });
+                        text: `The SWG run window SWG Assist is using is ${w.start} to ${w.stop}, ${hours.toFixed(1)} hours a day, which does not look right. Check the SWG schedule's start and end (the sun event, such as sunrise for the start and sunset for the end, and the offsets). The run periods, daily capacity and deadlines all depend on this window.` });
                 }
             }
             if (w.scheduleNote && /^Configured schedule/.test(w.scheduleNote)) {
                 found.push({ id: 'swg-window-schedule', level: 'warning', minMs: 0,
-                    text: `AutoSwg cannot use the SWG schedule it is set to follow, so it is working from the typed-in run times ${w.start} to ${w.stop}: ${w.scheduleNote}` });
+                    text: `SWG Assist cannot use the SWG schedule it is set to follow, so it is working from the typed-in run times ${w.start} to ${w.stop}: ${w.scheduleNote}` });
             }
         }
         // With power on to the SWG it must answer, whatever the time of day: njsPC then cannot control it and it falls back to the % set on the unit itself.
@@ -122,7 +122,7 @@ export class AutoSwgWatch {
                     text: `The automatic PoolMath check has not run for ${Math.round((i.now - last) / 3600000)} hours (it should run every ${i.autoCheckHours} hours), so the SWG % may be out of date.` });
             }
         }
-        if (i.checkError) found.push({ id: 'check-error', level: 'warning', minMs: 0, text: `The last AutoSwg check failed: ${i.checkError}` });
+        if (i.checkError) found.push({ id: 'check-error', level: 'warning', minMs: 0, text: `The last SWG Assist check failed: ${i.checkError}` });
         if (i.stepAt) {
             const at = new Date(i.stepAt).getTime();
             if (!isNaN(at) && i.now - at > WATCH_STEP_OVERDUE_MS) {

@@ -221,7 +221,7 @@ export class State implements IState {
             vacation: utils.makeBool(self.data.vacation),
             valveMode: self.data.valveMode || {},
             // Included (like appVersionState above) so a fresh page load has the
-            // last-known AutoSwg recommendation immediately, instead of waiting
+            // last-known SWG Assist recommendation immediately, instead of waiting
             // for the next 'autoSwg' socket emit (which only fires after a new
             // Check Now/Apply).
             autoSwg: self.autoSwg.get(true) || {},
@@ -2377,7 +2377,7 @@ export class ChlorinatorState extends EqState {
     }
     // Called after the pool setpoint (the SWG %) changes from one number to another,
     // whatever the source (API, socket, MQTT, or a panel message). Registered by
-    // the AutoSwg routes so direct changes get logged.
+    // the SWG Assist routes so direct changes get logged.
     public static onPoolSetpointChanged: (chlor: ChlorinatorState, previous: number, current: number) => void;
     public get poolSetpoint(): number { return this.data.poolSetpoint; }
     public set poolSetpoint(val: number) {
@@ -3900,11 +3900,11 @@ export class AutoSwgState extends EqState {
     public set lastAppliedTargetInfo(val: string) { this.setDataVal('lastAppliedTargetInfo', val); }
     // When the periodic automatic check is next due (ISO); cleared while it isn't armed.
     // Recomputed whenever the timer is armed (startup, a settings save, after each check).
-    // What the last auto tune did (see AutoSwgAutoTune.ts): shown on the AutoSwg page, and kept across restarts.
+    // What the last auto tune did (see AutoSwgAutoTune.ts): shown on the SWG Assist page, and kept across restarts.
     // The note on a recent fall in the chlorinator's salt reading (see AutoSwgSaltHistory); same lifecycle as staleFcNote.
     // The storm response's current event (see AutoSwgParams.storm): the baseline day of the salt drop it acted on, and when it started, so one event
     // cannot keep the SWG raised for longer than stormMaxDays.
-    // What the AutoSwg watch (AutoSwgWatch.ts) found: the alerts shown in the AutoSwg area of the dashboard. Recomputed every ten minutes.
+    // What the SWG Assist watch (AutoSwgWatch.ts) found: the alerts shown in the SWG Assist area of the dashboard. Recomputed every ten minutes.
     // When njsPC last knew it was running (every ten minutes), and the times it was not: a gap of 25 minutes or more found at start-up is an outage
     // (the pool equipment, which njsPC keeps on, was off), kept as { from, to, minutes, rebooted } for the last ten.
     public get heartbeatAt(): string { return this.data.heartbeatAt; }

@@ -16,7 +16,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-// Persistent log of SWG % changes on the AutoSwg chlorinator. A record is written
+// Persistent log of SWG % changes on the SWG Assist chlorinator. A record is written
 // (a) each time a recommendation is applied, capturing the inputs and outputs of
 // the calculation behind it, and (b) each time the pool setpoint is changed some
 // other way (API, socket, MQTT, the panel), with just the capacity inputs needed
@@ -36,11 +36,11 @@ import type { LocalSwgEntry } from './AutoSwgService';
 
 export const AUTO_SWG_HISTORY_MONTHS = 18;
 
-// What caused an AutoSwg apply: the periodic check, the Refresh and Apply button, Check Now or Refresh: Adjust % with
+// What caused an SWG Assist apply: the periodic check, the Refresh and Apply button, Check Now or Refresh: Adjust % with
 // Auto-Apply on, a person pressing Apply after reviewing the number, or the step to the maintenance % after a target.
 export type AutoSwgApplyTrigger = 'automatic-check' | 'refresh-and-apply' | 'check-now' | 'refine' | 'reviewed' | 'step';
 
-// One AutoSwg setting that was changed, with its old and new value.
+// One SWG Assist setting that was changed, with its old and new value.
 export interface AutoSwgSettingChange { setting: string; from: any; to: any; }
 
 // Bump this when the calculation itself changes in a way that can change its numbers (not for settings or display), so
@@ -64,7 +64,7 @@ export const AUTO_SWG_LOGGED_SETTINGS = [
 const AUTO_SWG_MASKED_SETTINGS = ['shareCode', 'poolName'];
 
 export interface AutoSwgHistoryRecord {
-    source: 'auto' | 'manual' | 'settings'; // 'auto' = applied via AutoSwg; 'manual' = changed some other way; 'settings' = AutoSwg settings were changed (see `changes`)
+    source: 'auto' | 'manual' | 'settings'; // 'auto' = applied via SWG Assist; 'manual' = changed some other way; 'settings' = SWG Assist settings were changed (see `changes`)
     changes?: AutoSwgSettingChange[]; // settings only: what changed
     via?: 'tune' | 'auto-tune' | 'away-ended'; // settings only: the change was applied from the Tune dialog, or by auto tune
     algorithm?: number;       // AUTO_SWG_ALGORITHM_VERSION when this was written (absent on older records)
@@ -98,7 +98,7 @@ export function readAutoSwgHistory(): AutoSwgHistoryRecord[] {
         return Array.isArray(parsed) ? parsed : [];
     }
     catch (err) {
-        if (err && err.code !== 'ENOENT') logger.warn(`AutoSwg: could not read ${historyPath()}: ${err.message}`);
+        if (err && err.code !== 'ENOENT') logger.warn(`SWG Assist: could not read ${historyPath()}: ${err.message}`);
         return [];
     }
 }
@@ -124,7 +124,7 @@ export function appendAutoSwgHistory(record: AutoSwgHistoryRecord): AutoSwgHisto
     return records;
 }
 
-// Reads the logged settings off an AutoSwg config object (anything with those properties).
+// Reads the logged settings off an SWG Assist config object (anything with those properties).
 export function snapshotAutoSwgSettings(cfg: any): { [setting: string]: any } {
     const snap: { [setting: string]: any } = {};
     for (const k of AUTO_SWG_LOGGED_SETTINGS) snap[k] = cfg ? cfg[k] : undefined;

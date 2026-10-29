@@ -28,7 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   * only settings with a safe range are changed, and only inside it. The liquid chlorine credit is never changed automatically: it is
 //     a statement about what went into the pool, not a tuning knob.
 // Every check set to 0 is skipped (where 0 is not a meaningful value). Every reason a recommendation was held is returned, so the
-// Tune history and the AutoSwg page can say why.
+// Tune history and the SWG Assist page can say why.
 
 import { AutoSwg } from './Equipment';
 import { TuneResult } from './AutoSwgService';

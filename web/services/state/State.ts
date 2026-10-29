@@ -128,7 +128,7 @@ function resolveAutoSwgRunWindow(cfg: typeof sys.autoSwg): { swgStartTime: strin
     return { swgStartTime, swgStopTime, scheduleNote };
 }
 
-// Set just before the AutoSwg apply route changes the setpoint, so the change it
+// Set just before the SWG Assist apply route changes the setpoint, so the change it
 // causes (which the setpoint hook below would otherwise see, possibly again when
 // the panel echoes it back) isn't also logged as a manual one.
 let autoSwgApplyInFlight: { pct: number; at: number } | undefined;
@@ -138,7 +138,7 @@ let autoSwgAwayToggle: { at: number; on: boolean } | undefined;
 export function noteAutoSwgAwayToggled(on: boolean) { autoSwgAwayToggle = { at: Date.now(), on: on }; }
 const AUTO_SWG_APPLY_ECHO_MS = 2 * 60 * 1000;
 
-// Logs a change to the AutoSwg chlorinator's pool setpoint that didn't come from
+// Logs a change to the SWG Assist chlorinator's pool setpoint that didn't come from
 // the apply route (API, socket, MQTT, or a panel message).
 function logManualSwgChange(previousPct: number, pct: number) {
     try {
@@ -146,7 +146,7 @@ function logManualSwgChange(previousPct: number, pct: number) {
         let win = resolveAutoSwgRunWindow(cfg);
         let capacity: { ppmPerDayAtFull: number; hours: number };
         try { capacity = computeSwgCapacity({ gallons: cfg.gallons, swgLbsPerDay: cfg.swgLbsPerDay, swgStartTime: win.swgStartTime, swgStopTime: win.swgStopTime }); }
-        catch (err) { logger.warn(`AutoSwg: logging a manual SWG % change without a ppm/day figure: ${err.message}`); }
+        catch (err) { logger.warn(`SWG Assist: logging a manual SWG % change without a ppm/day figure: ${err.message}`); }
         appendAutoSwgHistory({
             source: 'manual',
             appliedAt: new Date().toISOString(),
@@ -164,7 +164,7 @@ function logManualSwgChange(previousPct: number, pct: number) {
             },
         });
     }
-    catch (err) { logger.error(`AutoSwg: SWG % changed to ${pct}% but could not write the history log: ${err.message}`); }
+    catch (err) { logger.error(`SWG Assist: SWG % changed to ${pct}% but could not write the history log: ${err.message}`); }
 }
 
 // Clears every field a Check Now (/recommend) sets, leaving lastApplied*/step* untouched.
@@ -221,7 +221,7 @@ function armAutoSwgStep(minDelayMs: number = 0) {
     if (isNaN(at) || typeof state.autoSwg.stepPct !== 'number') return;
     // Wake at least every couple of days so a long target window never overflows setTimeout.
     let delay = Math.min(Math.max(at - Date.now(), minDelayMs), AUTO_SWG_TIMER_MAX_MS);
-    autoSwgStepTimer = setTimeout(() => { runAutoSwgStep().catch(err => logger.error(`AutoSwg: step failed: ${err.message}`)); }, delay);
+    autoSwgStepTimer = setTimeout(() => { runAutoSwgStep().catch(err => logger.error(`SWG Assist: step failed: ${err.message}`)); }, delay);
 }
 
 async function runAutoSwgStep() {
@@ -239,11 +239,11 @@ async function runAutoSwgStep() {
     try { await sys.board.chlorinator.setChlorAsync({ id: cfg.chlorinatorId, poolSetpoint: pct }); }
     catch (err) {
         autoSwgApplyInFlight = undefined;
-        logger.error(`AutoSwg: step ${direction} to ${pct}% failed (${err.message}); retrying in ${AUTO_SWG_STEP_RETRY_MS / 60000} minutes.`);
+        logger.error(`SWG Assist: step ${direction} to ${pct}% failed (${err.message}); retrying in ${AUTO_SWG_STEP_RETRY_MS / 60000} minutes.`);
         armAutoSwgStep(AUTO_SWG_STEP_RETRY_MS);
         return;
     }
-    logger.info(`AutoSwg: stepped SWG ${direction} to the maintenance ${pct}% now that the target period has ended.`);
+    logger.info(`SWG Assist: stepped SWG ${direction} to the maintenance ${pct}% now that the target period has ended.`);
     // A step is an apply too: the notes about the end of Away protection have done their job by now.
     state.autoSwg.awayChangeNote = undefined;
     if (!cfg.awayActive && cfg.awayEndedNote) cfg.clearAwayEnded();
@@ -267,7 +267,7 @@ async function runAutoSwgStep() {
         let win = resolveAutoSwgRunWindow(cfg);
         let capacity: { ppmPerDayAtFull: number; hours: number };
         try { capacity = computeSwgCapacity({ gallons: cfg.gallons, swgLbsPerDay: cfg.swgLbsPerDay, swgStartTime: win.swgStartTime, swgStopTime: win.swgStopTime }); }
-        catch (err) { logger.warn(`AutoSwg: logging the step without a ppm/day figure: ${err.message}`); }
+        catch (err) { logger.warn(`SWG Assist: logging the step without a ppm/day figure: ${err.message}`); }
         appendAutoSwgHistory({
             source: 'auto',
             trigger: 'step',
@@ -281,7 +281,7 @@ async function runAutoSwgStep() {
             outputs: { autoStep: true, direction: direction, targetFc: state.autoSwg.lastAppliedTargetFc, targetDate: completedTargetDate },
         });
     }
-    catch (err) { logger.error(`AutoSwg: stepped ${direction} to ${pct}% but could not write the history log: ${err.message}`); }
+    catch (err) { logger.error(`SWG Assist: stepped ${direction} to ${pct}% but could not write the history log: ${err.message}`); }
     clearAutoSwgStep();
 }
 
@@ -306,7 +306,7 @@ function autoSwgSunTimes(timeZone: string): { sunrise?: string; sunset?: string 
             return { sunrise: formatHHMMInZone(state.heliotrope.sunrise, timeZone), sunset: formatHHMMInZone(state.heliotrope.sunset, timeZone) };
         }
     }
-    catch (err) { logger.warn(`AutoSwg: could not read today's sunrise/sunset: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not read today's sunrise/sunset: ${err.message}`); }
     return {};
 }
 
@@ -346,18 +346,18 @@ function autoSwgSettingsKey(): string {
 // work from, otherwise undefined.
 async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNote?: string): Promise<string | undefined> {
     let cfg = sys.autoSwg;
-    if (!cfg.shareCode) throw new ServiceParameterError('AutoSwg is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
+    if (!cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
     // The in-flight target (the last apply's FC and deadline), if there's one still ahead.
     let inFlight: { targetFc: number; targetDate: Date; strayPpm: number } | undefined;
     let targetChangeNote: string | undefined;
     if (mode !== 'new') {
         let at = state.autoSwg.lastAppliedTargetDate ? new Date(state.autoSwg.lastAppliedTargetDate).getTime() : NaN;
         if (mode === 'refine') {
-            if (!state.autoSwg.lastAppliedTargetDate) throw new ServiceParameterError('There is no in-flight AutoSwg target to refine toward -- apply a recommendation first.', 'autoSwg', 'lastAppliedTargetDate', state.autoSwg.lastAppliedTargetDate);
+            if (!state.autoSwg.lastAppliedTargetDate) throw new ServiceParameterError('There is no in-flight SWG Assist target to refine toward -- apply a recommendation first.', 'autoSwg', 'lastAppliedTargetDate', state.autoSwg.lastAppliedTargetDate);
             // With no pending step to clear it (auto-step off), a deadline can pass and
             // linger -- there's nothing left to re-aim at, and a non-positive window would
             // quietly degrade to the maintenance % rather than say so.
-            if (isNaN(at) || at <= Date.now()) throw new ServiceParameterError('The target date of the last AutoSwg apply has already passed, so there is nothing left to refine toward -- run Check Now to start a new target.', 'autoSwg', 'lastAppliedTargetDate', state.autoSwg.lastAppliedTargetDate);
+            if (isNaN(at) || at <= Date.now()) throw new ServiceParameterError('The target date of the last SWG Assist apply has already passed, so there is nothing left to refine toward -- run Check Now to start a new target.', 'autoSwg', 'lastAppliedTargetDate', state.autoSwg.lastAppliedTargetDate);
         }
         // A Target FC changed since the last apply is a request for a new target: staying on course for the old one would ignore what you just set (and
         // the pending step would keep naming the old target). Refine is the explicit "stay on the in-flight target" and keeps it.
@@ -473,7 +473,7 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         state.autoSwg.stormEventKey = saltDrop.fromAt;
         state.autoSwg.stormStartedAt = new Date().toISOString();
         state.autoSwg.stormStartPct = saltDrop.pct;
-        logger.info(`AutoSwg: storm response acting on a ${(saltDrop.pct * 100).toFixed(0)}% fall in salt (${Math.round(saltDrop.fromPpm)} to ${Math.round(saltDrop.toPpm)} ppm) with a stale FC reading; it may keep the SWG raised for up to ${cfg.stormMaxDays} days.`);
+        logger.info(`SWG Assist: storm response acting on a ${(saltDrop.pct * 100).toFixed(0)}% fall in salt (${Math.round(saltDrop.fromPpm)} to ${Math.round(saltDrop.toPpm)} ppm) with a stale FC reading; it may keep the SWG raised for up to ${cfg.stormMaxDays} days.`);
     }
     state.autoSwg.details = {
         inputs: result.inputs,
@@ -525,15 +525,15 @@ function withoutPrivateInputs(inputs: any): any {
     return copy;
 }
 
-// Applies the currently pending AutoSwg recommendation to the chlorinator -- shared by
+// Applies the currently pending SWG Assist recommendation to the chlorinator -- shared by
 // the manual /apply route (isAutoApply=false, a human just reviewed the number on screen)
 // and fully-automatic mode's unattended apply (isAutoApply=true, nobody reviewed it, so
 // the magnitude gets checked against autoApplyWarnThresholdPct and flagged for the
 // dashboard if it's large). `pctOverride` lets a manual apply send a value other than the
 // plain recommendation; the automatic path never overrides it.
 async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: number, trigger?: AutoSwgApplyTrigger): Promise<ChlorinatorState> {
-    if (!state.autoSwg.pending) throw new ServiceParameterError('There is no pending AutoSwg recommendation to apply. Run /state/autoSwg/recommend first.', 'autoSwg', 'pending', state.autoSwg.pending);
-    if (sys.autoSwg.chlorinatorId < 0) throw new ServiceParameterError('AutoSwg is not configured with a target chlorinatorId.', 'autoSwg', 'chlorinatorId', sys.autoSwg.chlorinatorId);
+    if (!state.autoSwg.pending) throw new ServiceParameterError('There is no pending SWG Assist recommendation to apply. Run /state/autoSwg/recommend first.', 'autoSwg', 'pending', state.autoSwg.pending);
+    if (sys.autoSwg.chlorinatorId < 0) throw new ServiceParameterError('SWG Assist is not configured with a target chlorinatorId.', 'autoSwg', 'chlorinatorId', sys.autoSwg.chlorinatorId);
     let pct = typeof pctOverride !== 'undefined' ? pctOverride : state.autoSwg.recommendedPct;
     let previousAppliedPct = state.autoSwg.lastAppliedPct;
     let previousTargetDate = state.autoSwg.lastAppliedTargetDate;
@@ -592,7 +592,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
         state.autoSwg.lastAutoApplyLargeChange = typeof movedBy === 'number' && typeof threshold === 'number' && movedBy >= threshold;
         state.autoSwg.lastAutoApplyPreviousPct = previousAppliedPct;
         state.autoSwg.lastAutoApplyThresholdPct = threshold;
-        if (state.autoSwg.lastAutoApplyLargeChange) logger.warn(`AutoSwg: automatically applied a ${movedBy.toFixed(1)}-point change (to ${pct}%), at or above the ${threshold}-point warning threshold.`);
+        if (state.autoSwg.lastAutoApplyLargeChange) logger.warn(`SWG Assist: automatically applied a ${movedBy.toFixed(1)}-point change (to ${pct}%), at or above the ${threshold}-point warning threshold.`);
     }
     else state.autoSwg.lastAutoApplyLargeChange = false; // a human reviewed this one
     // If the applied % differs from maintenance (catching up from below, or backing
@@ -654,7 +654,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
         });
         updateAutoSwgProjection();
     }
-    catch (err) { logger.error(`AutoSwg: applied ${pct}% but could not write the history log: ${err.message}`); }
+    catch (err) { logger.error(`SWG Assist: applied ${pct}% but could not write the history log: ${err.message}`); }
     state.autoSwg.pending = false;
     state.autoSwg.emitEquipmentChange();
     return schlor;
@@ -674,7 +674,7 @@ function clearAutoSwgAutoCheck() {
 // calculation screen with nobody there to act on it, and autoApplyEnabled by itself (no
 // periodic timer) is a valid, supported standalone mode handled separately -- see
 // applyIfAutoApplyEnabled(), called after every manual Check Now/Refresh & Adjust too.
-// Called at startup and again whenever AutoSwg config is saved, so toggling either flag on
+// Called at startup and again whenever SWG Assist config is saved, so toggling either flag on
 // takes effect immediately rather than needing a restart.
 export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number) {
     clearAutoSwgAutoCheck();
@@ -696,14 +696,14 @@ export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number)
     // every `hours` from that time of day, so restarts and settings saves don't shift it.
     if (cfg.autoCheckStartTime && hours < 24) {
         try { delay = nextScheduledCheck(new Date(), cfg.autoCheckStartTime, hours, cfg.timezone, floorMs).getTime() - Date.now(); }
-        catch (err) { logger.warn(`AutoSwg: ignoring unusable automatic check start time '${cfg.autoCheckStartTime}' (${err.message}); counting ${hours}h from now instead.`); }
+        catch (err) { logger.warn(`SWG Assist: ignoring unusable automatic check start time '${cfg.autoCheckStartTime}' (${err.message}); counting ${hours}h from now instead.`); }
     }
     // Turning Away protection on starts its first check soon, so the target you just set takes effect (within its limits) rather than a day later.
     if (typeof firstRunMs === 'number') delay = firstRunMs;
     state.autoSwg.nextAutoCheckAt = new Date(Date.now() + delay).toISOString();
-    logger.info(`AutoSwg: next automatic check at ${formatLocalDateTime(new Date(state.autoSwg.nextAutoCheckAt), cfg.timezone)} ${cfg.timezone}.`);
+    logger.info(`SWG Assist: next automatic check at ${formatLocalDateTime(new Date(state.autoSwg.nextAutoCheckAt), cfg.timezone)} ${cfg.timezone}.`);
     state.autoSwg.emitEquipmentChange();
-    autoSwgAutoCheckTimer = setTimeout(() => { runAutoSwgAutoCheck().catch(err => logger.error(`AutoSwg: automatic check failed: ${err.message}`)); }, delay);
+    autoSwgAutoCheckTimer = setTimeout(() => { runAutoSwgAutoCheck().catch(err => logger.error(`SWG Assist: automatic check failed: ${err.message}`)); }, delay);
 }
 
 // After a manual Check Now/Refresh & Adjust produces a fresh pending recommendation, apply
@@ -713,7 +713,7 @@ export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number)
 async function applyIfAutoApplyEnabled(skipped?: string, trigger?: AutoSwgApplyTrigger): Promise<void> {
     if (!skipped && sys.autoSwg.autoApplyEnabled) await applyAutoSwgRecommendation(true, undefined, trigger);
     // A PoolMath read is also when auto tune looks at whether enough new FC readings have arrived (not waited for).
-    runAutoSwgAutoTune().catch(err => logger.error(`AutoSwg: auto tune failed: ${err.message}`));
+    runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
 }
 
 // The calculation state plus, when a Refresh was skipped for want of a new FC reading,
@@ -730,7 +730,7 @@ function refreshAutoSwgArchiveFromPage(page: PageReadings) {
     let cfg = sys.autoSwg;
     let r = refreshPoolMathArchiveFromPage(cfg.shareCode, cfg.poolName || undefined, page);
     if (r && (r.updated || r.added || r.removed)) {
-        logger.info(`AutoSwg: PoolMath history archive refreshed from the share page: ${r.updated} updated, ${r.added} added, ${r.removed} removed.`);
+        logger.info(`SWG Assist: PoolMath history archive refreshed from the share page: ${r.updated} updated, ${r.added} added, ${r.removed} removed.`);
         let sum = poolMathArchiveSummary();
         state.autoSwg.archiveCount = sum.count;
         state.autoSwg.archiveOldest = sum.oldest;
@@ -801,12 +801,12 @@ function recordAutoSwgTuneRun(cfg: typeof sys.autoSwg, tune: TuneResult, status:
             manualChangeSinceLastTune: status.manualChangeSinceTune, readingsSinceLastTune: status.readingsSinceTune,
         });
     }
-    catch (err) { logger.warn(`AutoSwg: could not record the Tune run: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not record the Tune run: ${err.message}`); }
 }
 
 // Auto tune (the automatic mode): after a PoolMath read (an automatic check, or a Check Now), if enough new FC readings have arrived since the
 // last Tune, run Tune. What it recommends is applied only when Auto tune apply is on and every guard passes (see AutoSwgAutoTune.ts);
-// otherwise the recommendation is kept in the Tune history, with the reasons it was held, and a note is shown on the AutoSwg page.
+// otherwise the recommendation is kept in the Tune history, with the reasons it was held, and a note is shown on the SWG Assist page.
 let autoSwgAutoTuneRunning = false;
 async function runAutoSwgAutoTune(): Promise<void> {
     let cfg = sys.autoSwg;
@@ -830,7 +830,7 @@ async function runAutoSwgAutoTune(): Promise<void> {
                 let guard = evaluateAutoTuneApply(cfg, tune, { manualChangeSinceTune: status.manualChangeSinceTune, readiness: getAutoSwgReadiness(cfg, true), newestFcAt: fcs.length ? fcs[fcs.length - 1].ts : undefined });
                 if (!guard.ok) {
                     note = `Auto tune recommends: ${what}. Not applied: ${guard.reasons.join('; ')}.`;
-                    try { markLastTuneHeld(guard.reasons); } catch (err) { logger.warn(`AutoSwg: could not note why the Tune recommendation was held: ${err.message}`); }
+                    try { markLastTuneHeld(guard.reasons); } catch (err) { logger.warn(`SWG Assist: could not note why the Tune recommendation was held: ${err.message}`); }
                 }
                 else {
                     let before = snapshotAutoSwgSettings(cfg);
@@ -839,18 +839,18 @@ async function runAutoSwgAutoTune(): Promise<void> {
                     cfg.set(rec.settings);
                     // Stamped together so the change does not read as one made by hand since the Tune.
                     cfg.tuningChangedAt = cfg.lastTuneAppliedAt = cfg.lastTuneAt = at;
-                    try { logAutoSwgSettingChanges(before, snapshotAutoSwgSettings(cfg), 'auto-tune'); } catch (err) { logger.warn(`AutoSwg: could not log the auto tune change: ${err.message}`); }
-                    try { markLastTuneApplied(at, 'auto', previous); } catch (err) { logger.warn(`AutoSwg: could not mark the Tune as applied: ${err.message}`); }
+                    try { logAutoSwgSettingChanges(before, snapshotAutoSwgSettings(cfg), 'auto-tune'); } catch (err) { logger.warn(`SWG Assist: could not log the auto tune change: ${err.message}`); }
+                    try { markLastTuneApplied(at, 'auto', previous); } catch (err) { logger.warn(`SWG Assist: could not mark the Tune as applied: ${err.message}`); }
                     note = `Auto tune applied: ${what}. The settings it replaced: ${Object.keys(previous).map(k => `${k} = ${previous[k]}`).join(', ')}.`;
                 }
             }
         }
         state.autoSwg.autoTuneAt = at;
     }
-    catch (err) { note = `Auto tune could not run: ${err.message}`; logger.error(`AutoSwg: ${note}`); }
+    catch (err) { note = `Auto tune could not run: ${err.message}`; logger.error(`SWG Assist: ${note}`); }
     finally { autoSwgAutoTuneRunning = false; }
     state.autoSwg.autoTuneNote = note;
-    logger.info(`AutoSwg: ${note}`);
+    logger.info(`SWG Assist: ${note}`);
     state.autoSwg.emitEquipmentChange();
 }
 
@@ -865,7 +865,7 @@ function autoSwgSaltAdditions(): SaltAddition[] {
 
 // Once an hour, record the chlorinator's own salt reading (AutoSwgSaltHistory keeps it): a fall in salt is the best sign the pool was diluted by
 // rain or a water change. It is local data only and changes no calculation; the timer is checked every ten minutes and the history keeps at most
-// one sample an hour. Nothing is recorded when the chlorinator is not configured for AutoSwg, ignores its salt reading, or reports none.
+// one sample an hour. Nothing is recorded when the chlorinator is not configured for SWG Assist, ignores its salt reading, or reports none.
 // A summary of an Away protection period for the history, written when it ends (by itself or unchecked): how many checks ran and the lowest and
 // highest % applied, the last check's projection with and without the storm and outage correction (to score against the FC test that ended it), the
 // outages and the alerts seen at the checks, and the reading that ended it. The records of the checks themselves are in the history too.
@@ -913,8 +913,8 @@ function endAwayOnNewReading(reading?: { value: number; ts: string }): boolean {
     }
     noteAutoSwgAwayToggled(false);   // the apply that follows is the one this explains
     cfg.noteAwayEnded(`Away protection ended by itself: a new FC reading (${reading.value} ppm, ${formatLocalDateTime(new Date(reading.ts), cfg.timezone)}) was logged in PoolMath after it was turned on. Your other settings apply again.${targetNote}`);
-    try { logAutoSwgSettingChanges(before, snapshotAutoSwgSettings(cfg), 'away-ended', summary); } catch (err) { logger.warn(`AutoSwg: could not log the end of Away protection: ${err.message}`); }
-    logger.info(`AutoSwg: ${cfg.awayEndedNote}`);
+    try { logAutoSwgSettingChanges(before, snapshotAutoSwgSettings(cfg), 'away-ended', summary); } catch (err) { logger.warn(`SWG Assist: could not log the end of Away protection: ${err.message}`); }
+    logger.info(`SWG Assist: ${cfg.awayEndedNote}`);
     state.autoSwg.awayStatus = cfg.awayStatus;
     state.autoSwg.awayStartedAt = undefined;
     armAutoSwgAutoCheck();
@@ -923,7 +923,7 @@ function endAwayOnNewReading(reading?: { value: number; ts: string }): boolean {
 }
 
 // The ways the SWG can fail to hold FC that no recommendation can fix (a bad chlorinator status or no output in the run window, an automatic check that
-// stopped, a step that did not happen) become alerts in the AutoSwg area of the dashboard, checked with each salt sample. See AutoSwgWatch.ts.
+// stopped, a step that did not happen) become alerts in the SWG Assist area of the dashboard, checked with each salt sample. See AutoSwgWatch.ts.
 const autoSwgWatch = new AutoSwgWatch();
 // How long none of the air, water or solar temperatures has changed. Only sensors that report to a fraction of a degree are watched: a controller that
 // reports whole degrees can legitimately sit on one value for hours.
@@ -948,14 +948,14 @@ function detectAutoSwgOutage() {
             let rebooted = os.uptime() * 1000 < (now - beat) + 5 * 60 * 1000;
             let outage = { from: new Date(beat).toISOString(), to: new Date(now).toISOString(), minutes: Math.round((now - beat) / 60000), rebooted: rebooted };
             state.autoSwg.outages = (state.autoSwg.outages || []).concat([outage]).slice(-10);
-            logger.warn(`AutoSwg: njsPC was not running from ${outage.from} to ${outage.to} (${outage.minutes} minutes), so the pool equipment it controls was off${rebooted ? '; the computer restarted (a power loss or a reboot)' : ''}.`);
+            logger.warn(`SWG Assist: njsPC was not running from ${outage.from} to ${outage.to} (${outage.minutes} minutes), so the pool equipment it controls was off${rebooted ? '; the computer restarted (a power loss or a reboot)' : ''}.`);
             state.autoSwg.emitEquipmentChange();
         }
         state.autoSwg.heartbeatAt = new Date(now).toISOString();
     }
-    catch (err) { logger.warn(`AutoSwg: could not check for an outage: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not check for an outage: ${err.message}`); }
 }
-// Whether the chlorinator should have power right now. When AutoSwg follows a schedule, that schedule's circuit is the SWG's power relay, so its
+// Whether the chlorinator should have power right now. When SWG Assist follows a schedule, that schedule's circuit is the SWG's power relay, so its
 // state is the answer (the SWG is only powered inside its run window, and is silent the rest of the day by design). With no schedule to follow,
 // fall back to the body running, as njsPC's own poll assumes.
 function autoSwgChlorinatorPowered(cfg: typeof sys.autoSwg, body: number): boolean {
@@ -995,8 +995,8 @@ function watchAutoSwg() {
         let put = (alerts: any[]) => {
             if (JSON.stringify(alerts) !== JSON.stringify(state.autoSwg.alerts || [])) {
                 let was: any[] = state.autoSwg.alerts || [];
-                for (const a of alerts) if (!was.some(w => w && w.id === a.id)) logger.info(`AutoSwg alert raised (${a.level}): ${a.text}`);
-                for (const w of was) if (w && !alerts.some(a => a.id === w.id)) logger.info(`AutoSwg alert cleared: ${w.id}`);
+                for (const a of alerts) if (!was.some(w => w && w.id === a.id)) logger.info(`SWG Assist alert raised (${a.level}): ${a.text}`);
+                for (const w of was) if (w && !alerts.some(a => a.id === w.id)) logger.info(`SWG Assist alert cleared: ${w.id}`);
                 state.autoSwg.alerts = alerts; state.autoSwg.emitEquipmentChange();
             }
         };
@@ -1023,12 +1023,12 @@ function watchAutoSwg() {
             outages: (state.autoSwg.outages || []).filter((o: any) => o && !o.dismissed),
         }));
     }
-    catch (err) { logger.warn(`AutoSwg: could not update the dashboard alerts: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not update the dashboard alerts: ${err.message}`); }
 }
 
 let autoSwgSaltTimer: NodeJS.Timeout | undefined;
 // What the chlorinator actually did, logged at all times (every mode, inside the run window or not) as one line an hour; see AutoSwgOutputLog.ts.
-// It uses the AutoSwg chlorinator when one is chosen, otherwise the first chlorinator there is.
+// It uses the SWG Assist chlorinator when one is chosen, otherwise the first chlorinator there is.
 function sampleAutoSwgOutput() {
     try {
         let chlorinators = sys.chlorinators.toArray();
@@ -1042,7 +1042,7 @@ function sampleAutoSwgOutput() {
             commAgeSec: typeof s.lastComm === 'number' && s.lastComm > 0 ? Math.max(0, Math.round((now - s.lastComm) / 1000)) : undefined
         }, now);
     }
-    catch (err) { logger.warn(`AutoSwg: could not log the chlorinator output: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not log the chlorinator output: ${err.message}`); }
 }
 function sampleAutoSwgSalt() {
     try { state.autoSwg.heartbeatAt = new Date().toISOString(); } catch (err) { /* the heartbeat is best effort */ }
@@ -1057,7 +1057,7 @@ function sampleAutoSwgSalt() {
         let schlor = state.chlorinators.getItemById(chlorRecord.id, false);
         if (schlor) saltHistory.record(schlor.saltLevel);
     }
-    catch (err) { logger.warn(`AutoSwg: could not record the salt reading: ${err.message}`); }
+    catch (err) { logger.warn(`SWG Assist: could not record the salt reading: ${err.message}`); }
 }
 // A top-up of the archive about once a day: salt additions and the extra numbers on new tests (salt, water temperature, pH ...) that the page
 // refresh does not copy. One small request; a failure is retried in a few hours. See topUpPoolMathArchive.
@@ -1068,7 +1068,7 @@ const AUTO_SWG_TOPUP_NOT_READY_MS = 30 * 60 * 1000;
 let autoSwgTopUpTimer: NodeJS.Timeout | undefined;
 export function armAutoSwgArchiveTopUp(delayMs: number = AUTO_SWG_TOPUP_FIRST_DELAY_MS) {
     if (typeof autoSwgTopUpTimer !== 'undefined') clearTimeout(autoSwgTopUpTimer);
-    autoSwgTopUpTimer = setTimeout(() => { runAutoSwgArchiveTopUp().catch(err => logger.error(`AutoSwg: archive top-up failed: ${err.message}`)); }, delayMs);
+    autoSwgTopUpTimer = setTimeout(() => { runAutoSwgArchiveTopUp().catch(err => logger.error(`SWG Assist: archive top-up failed: ${err.message}`)); }, delayMs);
     autoSwgTopUpTimer.unref();
 }
 async function runAutoSwgArchiveTopUp(): Promise<void> {
@@ -1087,11 +1087,11 @@ async function runAutoSwgArchiveTopUp(): Promise<void> {
                     if (newest) endAwayOnNewReading({ value: newest.value, ts: newest.ts.toISOString() });
                 }
                 if (typeof r === 'undefined') next = AUTO_SWG_TOPUP_NOT_READY_MS;   // the full pull has not happened yet
-                else if (r.saltAdded || r.testsEnriched || r.testsAdded || r.removed) logger.info(`AutoSwg: PoolMath archive top-up: ${r.saltAdded} salt addition${r.saltAdded === 1 ? '' : 's'}, ${r.testsEnriched} test${r.testsEnriched === 1 ? '' : 's'} filled in, ${r.testsAdded} test${r.testsAdded === 1 ? '' : 's'} added, ${r.removed} removed.`);
+                else if (r.saltAdded || r.testsEnriched || r.testsAdded || r.removed) logger.info(`SWG Assist: PoolMath archive top-up: ${r.saltAdded} salt addition${r.saltAdded === 1 ? '' : 's'}, ${r.testsEnriched} test${r.testsEnriched === 1 ? '' : 's'} filled in, ${r.testsAdded} test${r.testsAdded === 1 ? '' : 's'} added, ${r.removed} removed.`);
             }
         }
     }
-    catch (err) { next = AUTO_SWG_TOPUP_RETRY_MS; logger.warn(`AutoSwg: PoolMath archive top-up failed (${err.message}); trying again in ${next / 3600000} hours.`); }
+    catch (err) { next = AUTO_SWG_TOPUP_RETRY_MS; logger.warn(`SWG Assist: PoolMath archive top-up failed (${err.message}); trying again in ${next / 3600000} hours.`); }
     finally { armAutoSwgArchiveTopUp(next); }
 }
 
@@ -1130,7 +1130,7 @@ export function armAutoSwgArchiveSync(delayMs: number = AUTO_SWG_ARCHIVE_FIRST_D
         }
         return;
     }
-    autoSwgArchiveTimer = setTimeout(() => { runAutoSwgArchiveSync().catch(err => logger.error(`AutoSwg: PoolMath history sync failed: ${err.message}`)); }, delayMs);
+    autoSwgArchiveTimer = setTimeout(() => { runAutoSwgArchiveSync().catch(err => logger.error(`SWG Assist: PoolMath history sync failed: ${err.message}`)); }, delayMs);
 }
 
 async function runAutoSwgArchiveSync(): Promise<void> {
@@ -1146,12 +1146,12 @@ async function runAutoSwgArchiveSync(): Promise<void> {
         state.autoSwg.archiveCount = r.total;
         state.autoSwg.archiveOldest = r.oldest;
         state.autoSwg.archiveError = undefined;
-        logger.info(`AutoSwg: PoolMath history sync: ${r.fetched} entries returned (asked for ${r.requested}), ${r.added} new, ${r.total} archived back to ${r.oldest ? r.oldest.slice(0, 10) : 'n/a'}.`);
+        logger.info(`SWG Assist: PoolMath history sync: ${r.fetched} entries returned (asked for ${r.requested}), ${r.added} new, ${r.total} archived back to ${r.oldest ? r.oldest.slice(0, 10) : 'n/a'}.`);
     }
     catch (err) {
         retryMs = AUTO_SWG_ARCHIVE_RETRY_MS;
         state.autoSwg.archiveError = err.message;
-        logger.warn(`AutoSwg: PoolMath history sync failed (${err.message}); trying again in ${retryMs / 60000} minutes.`);
+        logger.warn(`SWG Assist: PoolMath history sync failed (${err.message}); trying again in ${retryMs / 60000} minutes.`);
     }
     finally {
         autoSwgArchiveRunning = false;
@@ -1180,20 +1180,20 @@ async function runAutoSwgAutoCheck() {
         // target unless the projected FC has strayed past the new-target-date threshold (or
         // there's no in-flight target left), in which case start a new one.
         let skipped = await runAutoSwgRecommendation('auto', cfg.autoApplyEnabled ? 'Automatic check.' : 'Automatic check (Away protection).');
-        if (skipped) logger.info(`AutoSwg: automatic check skipped. ${skipped}`);
+        if (skipped) logger.info(`SWG Assist: automatic check skipped. ${skipped}`);
         else if (cfg.autoApplyEnabled) await applyAutoSwgRecommendation(true, undefined, 'automatic-check');
         else {
             // Away protection only: the % is held within its limits.
             let bounded = awayBoundedPct();
-            if (typeof bounded === 'undefined') { logger.info('AutoSwg: Away protection had no usable recommendation to apply.'); return; }
-            if (bounded !== state.autoSwg.recommendedPct) logger.info(`AutoSwg: Away protection held the recommended ${state.autoSwg.recommendedPct}% to ${bounded}%, the maintenance %.`);
+            if (typeof bounded === 'undefined') { logger.info('SWG Assist: Away protection had no usable recommendation to apply.'); return; }
+            if (bounded !== state.autoSwg.recommendedPct) logger.info(`SWG Assist: Away protection held the recommended ${state.autoSwg.recommendedPct}% to ${bounded}%, the maintenance %.`);
             await applyAutoSwgRecommendation(true, bounded, 'automatic-check');
         }
     }
-    catch (err) { logger.error(`AutoSwg: automatic check/apply failed: ${err.message}`); }
+    catch (err) { logger.error(`SWG Assist: automatic check/apply failed: ${err.message}`); }
     finally {
         armAutoSwgAutoCheck();
-        runAutoSwgAutoTune().catch(err => logger.error(`AutoSwg: auto tune failed: ${err.message}`));
+        runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
     }
 }
 
@@ -1203,7 +1203,7 @@ export class StateRoute {
             if (sys.autoSwg.chlorinatorId !== chlor.id) return;
             if (autoSwgApplyInFlight && autoSwgApplyInFlight.pct === current && Date.now() - autoSwgApplyInFlight.at < AUTO_SWG_APPLY_ECHO_MS) return;
             // Someone changed the setpoint by hand: they've taken over, so don't step it later.
-            if (state.autoSwg.stepAt) logger.info(`AutoSwg: SWG % changed manually to ${current}%; cancelling the pending step.`);
+            if (state.autoSwg.stepAt) logger.info(`SWG Assist: SWG % changed manually to ${current}%; cancelling the pending step.`);
             clearAutoSwgStep();
             logManualSwgChange(previous, current);
             // Any not-yet-applied calculation preview is now stale (its "current %" input no
@@ -1235,7 +1235,7 @@ export class StateRoute {
         // AutoSwgProjection.ts), oldest first. It reads local files only and never contacts PoolMath: GET /state/autoSwg/fc?days=30
         app.get('/state/autoSwg/fc', (req, res, next) => {
             try {
-                if (!sys.autoSwg.shareCode) return res.status(404).send({ error: 'AutoSwg is not configured.' });
+                if (!sys.autoSwg.shareCode) return res.status(404).send({ error: 'SWG Assist is not configured.' });
                 let days = parseInt(req.query.days as string, 10);
                 if (isNaN(days) || days < 1 || days > 365) days = 30;
                 let from = Date.now() - days * 86400000;
@@ -1750,7 +1750,7 @@ export class StateRoute {
             }
             catch (err) { next(err); }
         });
-        // AutoSwg: computes (and, on confirmation, applies) a recommended SWG%
+        // SWG Assist: computes (and, on confirmation, applies) a recommended SWG%
         // from the configured PoolMath share page. See controller/AutoSwgService.ts
         // for the calculation and controller/Equipment.ts's AutoSwg class for the
         // persisted settings (exposed under /config/autoSwg).
@@ -1804,7 +1804,7 @@ export class StateRoute {
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {
             try {
                 let cfg = sys.autoSwg;
-                if (!cfg.shareCode) throw new ServiceParameterError('AutoSwg is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
+                if (!cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
                 let days = parseInt(String(req.query.days), 10);
                 days = isNaN(days) ? 365 : Math.max(14, Math.min(540, days));
                 // The same inputs a normal calculation uses (see runAutoSwgRecommendation).
@@ -1819,7 +1819,7 @@ export class StateRoute {
         app.get('/state/autoSwg/projectionAccuracy/whatIf', async (req, res, next) => {
             try {
                 let cfg = sys.autoSwg;
-                if (!cfg.shareCode) throw new ServiceParameterError('AutoSwg is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
+                if (!cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
                 let days = parseInt(String(req.query.days), 10);
                 days = isNaN(days) ? 365 : Math.max(14, Math.min(540, days));
                 let sweep = await buildWhatIfSweep(autoSwgReportParams(cfg), { lookbackDays: days, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), archive: autoSwgArchiveForReports() });
@@ -1832,7 +1832,7 @@ export class StateRoute {
         app.get('/state/autoSwg/tune', async (req, res, next) => {
             try {
                 let cfg = sys.autoSwg;
-                if (!cfg.shareCode) throw new ServiceParameterError('AutoSwg is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
+                if (!cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
                 let tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports() });
                 let status = autoSwgTuneStatus(cfg);   // as it stood before this run
                 recordAutoSwgTuneRun(cfg, tune, status, 'manual');

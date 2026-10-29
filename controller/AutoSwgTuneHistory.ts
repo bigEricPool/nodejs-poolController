@@ -55,7 +55,7 @@ export function readTuneHistory(): TuneHistoryRecord[] {
         return Array.isArray(parsed) ? parsed : [];
     }
     catch (err) {
-        if (err && err.code !== 'ENOENT') logger.warn(`AutoSwg: could not read ${historyPath()}: ${err.message}`);
+        if (err && err.code !== 'ENOENT') logger.warn(`SWG Assist: could not read ${historyPath()}: ${err.message}`);
         return [];
     }
 }

@@ -2387,7 +2387,7 @@ export class Alerts extends EqItem {
 // Auto-Apply Recommendations and the automatic PoolMath check change the chlorinator with nobody reviewing the number, and the tuning
 // tools only say something once there is enough history to judge. Both stay hidden until there is: see AutoSwgReadiness.ts, which
 // registers the function that decides here. Everything else, including Check Now, Apply and the step to the maintenance %, is unaffected.
-// The AutoSwg modes, lowest first. USE AT YOUR OWN RISK for every one above standard (see the comment where AutoSwg's defaults are set).
+// The SWG Assist modes, lowest first. USE AT YOUR OWN RISK for every one above standard (see the comment where SWG Assist's defaults are set).
 const AUTO_SWG_MODES = ['standard', 'advanced', 'automatic', 'developer'];
 let autoSwgReadinessProvider: ((cfg: AutoSwg) => { ready: boolean }) | undefined;
 export function setAutoSwgReadinessProvider(fn: (cfg: AutoSwg) => { ready: boolean }) { autoSwgReadinessProvider = fn; }
@@ -2450,7 +2450,7 @@ export class AutoSwg extends EqItem {
         // It is not on the settings screen: set it in poolConfig.json or through the config API. A pool that already had either unattended feature
         // turned on stays in advanced.
         //
-        // USE AT YOUR OWN RISK: every mode above standard (advanced, automatic and developer) changes the chlorinator and the AutoSwg settings
+        // USE AT YOUR OWN RISK: every mode above standard (advanced, automatic and developer) changes the chlorinator and the SWG Assist settings
         // without anyone reviewing the change first. They are not documented in the guide, the README or the release notes on purpose, and they
         // are meant for the author and for people who have read this code. The default, standard, never changes anything on its own except the
         // optional return to the maintenance % (autoStepEnabled).
@@ -2484,7 +2484,7 @@ export class AutoSwg extends EqItem {
         if (typeof this.data.stormResponseEnabled === 'undefined') this.data.stormResponseEnabled = false;
         if (typeof this.data.stormMaxExtraPct === 'undefined') this.data.stormMaxExtraPct = 20;
         if (typeof this.data.stormMaxDays === 'undefined') this.data.stormMaxDays = 3;
-        // Away protection (every mode; off until turned on for a trip). While it is on, AutoSwg checks PoolMath every autoCheckHours hours, applies
+        // Away protection (every mode; off until turned on for a trip). While it is on, SWG Assist checks PoolMath every autoCheckHours hours, applies
         // the glide to the target you set (never below the maintenance %), and may raise the SWG % further to make up for dilution or an outage (the storm
         // and outage response), by at most stormMaxExtraPct points. It overrides Auto-Apply, the automatic check and auto tune while it is on (their saved
         // settings are kept; they just do not act). It needs autoStepEnabled, so each boost ends by itself. It ends when it is unchecked, or by itself when a
