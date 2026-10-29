@@ -39,6 +39,7 @@ import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/A
 import { outputLog } from "../../../controller/AutoSwgOutputLog";
 import { projectionLog, updateHourlyProjection, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
+import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
 
@@ -1254,7 +1255,12 @@ export class StateRoute {
                 if (isNaN(days) || days < 1 || days > 365) days = 30;
                 let from = Date.now() - days * 86400000;
                 let tests = archivedFcReadings().filter(x => x.ts.getTime() >= from).map(x => ({ t: x.ts.getTime(), fc: x.value, source: 'poolmath' }));
-                return res.status(200).send({ units: 'ppm', days: days, tests: tests, projection: projectionLog.read(days) });
+                // What SWG Assist was steering to over the period, step by step (see AutoSwgSteps.ts): a range, a single target, or nothing.
+                const cfg = sys.autoSwg;
+                const history = readAutoSwgHistory();
+                const steps = buildSteps(history, { enabled: cfg.enabled, controlMode: cfg.controlMode, fcLow: cfg.fcLow, fcHigh: cfg.fcHigh, targetFc: cfg.targetFc, awayEnabled: cfg.awayEnabled, awayTargetFc: cfg.awayTargetFc },
+                    from, Date.now(), rangeSince(history, cfg.controlModeSince));
+                return res.status(200).send({ units: 'ppm', days: days, tests: tests, projection: projectionLog.read(days), steps: steps });
             }
             catch (err) { next(err); }
         });

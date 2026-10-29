@@ -2545,6 +2545,8 @@ export class AutoSwg extends EqItem {
         // How the SWG % is steered. 'band' keeps FC between fcLow and fcHigh (see SwgAssistBand.ts); 'target' steers to the single Target FC. Away protection always uses
         // its own vacation target. bandBiasPerDay is how much above the maintenance % an old FC reading adds, for each day beyond 2.
         if (this.data.controlMode !== 'target' && this.data.controlMode !== 'band') this.data.controlMode = 'band';
+        // When range control first took effect here: it arrived as a default, with no settings save to date it (the FC view of the Water panel draws the range from then).
+        if (typeof this.data.controlModeSince === 'undefined') this.data.controlModeSince = new Date().toISOString();
         if (typeof this.data.fcLow === 'undefined') this.data.fcLow = 7.5;
         if (typeof this.data.fcHigh === 'undefined') this.data.fcHigh = 10.5;
         if (typeof this.data.bandBiasPerDay === 'undefined') this.data.bandBiasPerDay = 0.05;
@@ -2610,6 +2612,8 @@ export class AutoSwg extends EqItem {
     public set nightBurnRatio(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('nightBurnRatio', isFinite(n) ? Math.min(1.5, Math.max(0.1, n)) : 0.5); }
     public get overshootPpmPerDay(): number { return this.data.overshootPpmPerDay; }
     public set overshootPpmPerDay(val: number) { this.setDataVal('overshootPpmPerDay', val); }
+    public get controlModeSince(): string { return typeof this.data.controlModeSince === 'string' ? this.data.controlModeSince : ''; }
+    public set controlModeSince(val: string) { /* set only when range control first takes effect, so a saved form cannot move it */ }
     public get controlMode(): string { return this.data.controlMode === 'target' ? 'target' : 'band'; }
     public set controlMode(val: string) { this.setDataVal('controlMode', val === 'target' ? 'target' : 'band'); }
     public get fcLow(): number { return this.data.fcLow; }
