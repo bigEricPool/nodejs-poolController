@@ -2340,16 +2340,20 @@ export class ChlorinatorState extends EqState {
     public get usageHours(): number { return this.data.usageHours || 0; }
     public get usagePounds(): number { return this.data.usagePounds || 0; }
     public get usageSince(): number { return this.data.usageSince || 0; }
-    public addUsage(hours: number, pounds: number) {
+    /** Hours the cell was producing at all, at any output (the equivalent hours above are the work it did). */
+    public get usageRunHours(): number { return this.data.usageRunHours || 0; }
+    public addUsage(hours: number, pounds: number, runHours: number = 0) {
         if (!(hours > 0)) return;
         this.setDataVal('usageHours', this.usageHours + hours);
         this.setDataVal('usagePounds', this.usagePounds + (pounds > 0 ? pounds : 0));
+        this.setDataVal('usageRunHours', this.usageRunHours + (runHours > 0 ? runHours : 0));
     }
-    public resetUsage(hours: number = 0, pounds: number = 0, since: number = Date.now()) {
-        if (!Number.isFinite(hours) || hours < 0 || !Number.isFinite(pounds) || pounds < 0)
+    public resetUsage(hours: number = 0, pounds: number = 0, since: number = Date.now(), runHours: number = 0) {
+        if (!Number.isFinite(hours) || hours < 0 || !Number.isFinite(pounds) || pounds < 0 || !Number.isFinite(runHours) || runHours < 0)
             throw new RangeError('Cell usage must be a non-negative number of hours and pounds.');
         this.setDataVal('usageHours', hours);
         this.setDataVal('usagePounds', pounds);
+        this.setDataVal('usageRunHours', runHours);
         this.setDataVal('usageSince', since);
     }
     public get setPointForCurrentBody() {
@@ -2515,6 +2519,7 @@ export class ChlorinatorState extends EqState {
         schlor.lockSetpoints = chlor.disabled || chlor.isDosing;
         schlor.usageHours = this.usageHours;
         schlor.usagePounds = this.usagePounds;
+        schlor.usageRunHours = this.usageRunHours;
         return schlor;
     }
 }

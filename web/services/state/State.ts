@@ -1056,7 +1056,7 @@ outputLog.onHour = (h) => {
     const s = outputChlorinatorState();
     if (!s || new Date(h.t).getTime() < s.usageSince) return;
     const u = cellUsageForHour(h, sys.autoSwg.swgLbsPerDay);
-    if (u.hours > 0) { s.addUsage(u.hours, u.pounds); s.emitEquipmentChange(); }
+    if (u.hours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
 };
 // Sets the cell's totals to what the output log holds from the install date on. The log is only as long as it was kept, so `firstHour` says where it starts; the
 // hours before that are not in it, and the total can be corrected by hand (PUT /state/chlorinator/resetUsage). An hour already being written is counted by this
@@ -1065,7 +1065,7 @@ outputLog.onHour = (h) => {
 export function cellUsageInfo() {
     const s = outputChlorinatorState();
     if (!s) return undefined;
-    return { hours: Math.round(s.usageHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
+    return { hours: Math.round(s.usageHours * 10) / 10, runHours: Math.round(s.usageRunHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
 }
 export function restartCellUsage() {
     const cfg = sys.autoSwg;
@@ -1074,9 +1074,9 @@ export function restartCellUsage() {
     outputLog.flush();
     const fromMs = new Date(cfg.cellInstalledDate + 'T00:00:00').getTime();
     const u = cellUsageSince(outputLog.read(548), fromMs, cfg.swgLbsPerDay);
-    s.resetUsage(u.hours, u.pounds, Date.now());
+    s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours);
     s.emitEquipmentChange();
-    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} equivalent hours, ${u.pounds.toFixed(2)} lb${u.firstHour ? ` (the output log starts ${u.firstHour})` : ' (the output log holds none of it)'}.`);
+    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h running, ${u.pounds.toFixed(2)} lb${u.firstHour ? ` (the output log starts ${u.firstHour})` : ' (the output log holds none of it)'}.`);
     return u;
 }
 function sampleAutoSwgOutput() {
@@ -1789,7 +1789,10 @@ export class StateRoute {
                 const pounds = typeof req.body.usagePounds === 'undefined' ? (lbs > 0 ? hours * lbs / 24 : 0) : req.body.usagePounds;
                 if (typeof pounds !== 'number' || !Number.isFinite(pounds) || pounds < 0)
                     return res.status(400).send({ error: 'Cell usage must be a non-negative number of pounds.' });
-                schlor.resetUsage(hours, pounds);
+                const runHours = typeof req.body.usageRunHours === 'undefined' ? 0 : req.body.usageRunHours;
+                if (typeof runHours !== 'number' || !Number.isFinite(runHours) || runHours < 0)
+                    return res.status(400).send({ error: 'Cell run time must be a non-negative number of hours.' });
+                schlor.resetUsage(hours, pounds, Date.now(), runHours);
                 schlor.emitEquipmentChange();
                 return res.status(200).send(schlor.getExtended());
             } catch (err) { next(err); }
