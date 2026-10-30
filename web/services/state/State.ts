@@ -21,6 +21,7 @@ import * as extend from "extend";
 import { state, ICircuitState, LightGroupState, ICircuitGroupState, ChemicalDoseState } from "../../../controller/State";
 import { sys } from "../../../controller/Equipment";
 import { utils } from '../../../controller/Constants';
+import { pumpPower } from "../../../controller/PumpPower";
 import { logger } from "../../../logger/Logger";
 import { DataLogger } from "../../../logger/DataLogger";
 import { conn } from "../../../controller/comms/Comms";
@@ -595,6 +596,15 @@ export class StateRoute {
                 }
                 else sys.board.system.setPanelModeAsync({ mode: 'auto' });
                 return res.status(200).send(state.controllerState);
+            } catch (err) { next(err); }
+        });
+        // The electricity a relay driven pump uses, from the time at each speed and the watts set for it (see PumpPower.ts).
+        // GET /state/pumpPower?range=day|week|month|year
+        pumpPower.start(() => config.getSection('pumpPower'));
+        app.get('/state/pumpPower', (req, res, next) => {
+            try {
+                const range = ['day', 'week', 'month', 'year'].indexOf(req.query.range as string) >= 0 ? req.query.range as any : 'week';
+                return res.status(200).send(pumpPower.report(range));
             } catch (err) { next(err); }
         });
         app.get('/state/emitAll', (req, res) => {

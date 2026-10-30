@@ -269,6 +269,12 @@
       }
     }
   },
+  "pumpPower": {
+    "enabled": false,
+    "ratePerKwh": 0,
+    "keepDays": 400,
+    "pumps": []
+  },
   "log": {
     "screenlogic": {
       "enabled": false,
