@@ -32,6 +32,7 @@ import { markLastTuneApplied } from '../../../controller/AutoSwgTuneHistory';
 import { autoSwgGateInfo } from '../../../controller/AutoSwgReadiness';
 import { snapshotAutoSwgSettings, logAutoSwgSettingChanges } from '../../../controller/AutoSwgHistory';
 import { conn } from "../../../controller/comms/Comms";
+import { normalizePumpPowerSettings, pumpPowerSettingsError } from "../../../controller/PumpPower";
 import { webApp, BackupFile, RestoreFile } from "../../Server";
 import { release } from "os";
 import { ScreenLogicComms, sl } from "../../../controller/comms/ScreenLogic";
@@ -422,6 +423,23 @@ export class ConfigRoute {
                 }
                 return res.status(200).send(opts);
             } catch (err) { next(err); }
+        });
+        // The pump power settings (config.json pumpPower; see PumpPower.ts) with what the settings dialog picks from.
+        app.get('/config/pumpPower/settings', async (req, res, next) => {
+            try {
+                return res.status(200).send({
+                    settings: normalizePumpPowerSettings(config.getSection('pumpPower')),
+                    pumps: sys.pumps.get().map(p => ({ id: p.id, name: p.name })),
+                    servers: await sys.ncp.getREMServers()
+                });
+            } catch (err) { next(err); }
+        });
+        app.put('/config/pumpPower/settings', (req, res) => {
+            const c = normalizePumpPowerSettings(req.body);
+            const msg = pumpPowerSettingsError(c);
+            if (msg) return res.status(400).send({ message: msg });
+            config.setSection('pumpPower', c);
+            return res.status(200).send(c);
         });
         app.get('/config/options/heaters', async (req, res, next) => {
             try {
