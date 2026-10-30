@@ -1088,7 +1088,7 @@ export function restartCellUsage() {
     const u = { hours: early.hours + logged.hours, pounds: early.pounds + logged.pounds, runHours: early.runHours + logged.runHours, firstHour: logged.firstHour };
     s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours, early.pounds);
     s.emitEquipmentChange();
-    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h running, ${u.pounds.toFixed(2)} lb, of which ${early.pounds.toFixed(2)} lb is estimated from the SWG entries before the output log began${u.firstHour ? ` (${u.firstHour})` : ''}.`);
+    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h enabled, ${u.pounds.toFixed(2)} lb, of which ${early.pounds.toFixed(2)} lb is estimated from the SWG entries before the output log began${u.firstHour ? ` (${u.firstHour})` : ''}.`);
     return u;
 }
 function sampleAutoSwgOutput() {
