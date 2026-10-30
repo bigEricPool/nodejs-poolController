@@ -246,6 +246,15 @@
       "build": true
     },
     {
+      "name": "feature/power-tracking",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Power usage for relay driven pumps: time at each speed times the watts set for it. Off by default. Adds a Pump Power panel in dashPanel. Merged last in pool-next, resolved together with the other panels.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "local/pi-tools",
       "kind": "local",
       "status": "active",
