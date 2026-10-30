@@ -22,11 +22,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   enabled       whether the time is being kept
 //   ratePerKwh    the price of a kWh, 0 to show no cost
 //   keepDays      how long the log is kept
-//   pumps         one entry per pump: { pump (its id), speeds: [{ id, name, rpm, watts, connectionId, deviceBinding }] }
+//   pumps         one entry per pump: { pump (its id), speeds: [{ id, name, rpm, watts, priority, connectionId, deviceBinding }] }
 //
 // The connection and device of a speed name the relay that selects it, the same two values a pump relay or a circuit is bound with. A speed
 // without them is the pump's default speed: it counts whenever the pump is on and no other speed applies. When several speeds apply the one
-// with the most watts is taken, since a higher speed overrides a lower one. The relay is not asked for its state, because a request to the
+// with the best priority is taken: 1 is first, 0 is not set and comes after any that are, and speeds that tie go by the most watts. It is a
+// setting because the pump decides which input wins, and that need not be the fastest. The relay is not asked for its state, because a request to the
 // relay manager makes it read the whole board. What njsPC already knows is used instead: a relay of the pump is on when its bit is set in the
 // pump state, and any other relay is on when the circuit bound to it is on. A relay that neither uses is never seen as on (see `relaySource`).
 //
@@ -49,7 +50,7 @@ const MAX_CREDIT_MS = 15000;        // the most one sample can credit: a longer 
 const FLUSH_MS = 15 * 60000;
 const MAX_SPEEDS = 8;
 
-export interface PumpPowerSpeed { id: number; name: string; rpm: number; watts: number; connectionId: string; deviceBinding: string; }
+export interface PumpPowerSpeed { id: number; name: string; rpm: number; watts: number; priority: number; connectionId: string; deviceBinding: string; }
 export interface PumpPowerPump { pump: number; speeds: PumpPowerSpeed[]; }
 export interface PumpPowerSettings { enabled: boolean; ratePerKwh: number; keepDays: number; pumps: PumpPowerPump[]; }
 export type PumpPowerRange = 'day' | 'week' | 'month' | 'year';
@@ -70,7 +71,7 @@ export function normalizePumpPowerSettings(raw: any): PumpPowerSettings {
             const sid = parseInt(s && s.id, 10);
             if (!(sid > 0)) continue;
             speeds.push({
-                id: sid, name: typeof s.name === 'string' ? s.name.trim() : '', rpm: num(s.rpm, 0, 10000, 0), watts: num(s.watts, 0, 20000, 0),
+                id: sid, name: typeof s.name === 'string' ? s.name.trim() : '', rpm: num(s.rpm, 0, 10000, 0), watts: num(s.watts, 0, 20000, 0), priority: Math.round(num(s.priority, 0, MAX_SPEEDS, 0)),
                 connectionId: s.connectionId || '', deviceBinding: s.deviceBinding || ''
             });
         }
@@ -99,12 +100,17 @@ export function pumpPowerSettingsError(c: PumpPowerSettings): string | undefined
     }
     return undefined;
 }
+// Whether speed a takes over from speed b when both apply.
+function speedWins(a: PumpPowerSpeed, b: PumpPowerSpeed): boolean {
+    if (a.priority !== b.priority) return a.priority > 0 && (b.priority === 0 || a.priority < b.priority);
+    return a.watts > b.watts;
+}
 // The speed a pump is at: its id, 0 when it is on but no speed applies, or -1 when it is off.
 export function pumpSpeedNow(speeds: PumpPowerSpeed[], pumpOn: boolean, relayOn: (s: PumpPowerSpeed) => boolean): number {
     let best: PumpPowerSpeed;
     for (const s of speeds) {
         const on = s.connectionId && s.deviceBinding ? relayOn(s) : pumpOn;
-        if (on && (!best || s.watts > best.watts)) best = s;
+        if (on && (!best || speedWins(s, best))) best = s;
     }
     if (best) return best.id;
     return pumpOn ? 0 : -1;
@@ -120,7 +126,7 @@ function isRelayOn(pumpId: number, s: PumpPowerSpeed): boolean {
     const bits = state.pumps.getItemById(pumpId).relay || 0;
     const relays: any[] = sys.pumps.getItemById(pumpId).relays.get();
     for (let i = 0; i < relays.length; i++) {
-        if (relayMatches(relays[i], s) && ((bits >> ((relays[i].id || i + 1) - 1)) & 1)) return true;
+        if (relayMatches(relays[i], s)) return ((bits >> ((relays[i].id || i + 1) - 1)) & 1) === 1;
     }
     return sys.circuits.get().some(c => relayMatches(c, s) && state.circuits.getItemById(c.id).isOn);
 }
