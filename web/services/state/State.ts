@@ -1738,6 +1738,22 @@ export class StateRoute {
                 return res.status(200).send(schlor.get(true));
             } catch (err) { next(err); }
         });
+        app.put('/state/chlorinator/resetUsage', (req, res, next) => {
+            try {
+                const id = Number(req.body.id);
+                if (!Number.isInteger(id) || id <= 0)
+                    return res.status(400).send({ error: 'A valid chlorinator id is required.' });
+                if (!sys.chlorinators.find(chlor => chlor.id === id))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                const schlor = state.chlorinators.getItemById(id, false);
+                const hours = typeof req.body.usageHours === 'undefined' ? 0 : req.body.usageHours;
+                if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0)
+                    return res.status(400).send({ error: 'Cell usage must be a non-negative number of hours.' });
+                schlor.resetUsage(hours);
+                schlor.emitEquipmentChange();
+                return res.status(200).send(schlor.getExtended());
+            } catch (err) { next(err); }
+        });
         app.put('/state/chlorinator/poolSetpoint', async (req, res, next) => {
             try {
                 let obj = { id: req.body.id, poolSetpoint: parseInt(req.body.setPoint, 10) }

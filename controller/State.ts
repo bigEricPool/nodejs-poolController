@@ -29,6 +29,7 @@ import { DataLogger, DataLoggerEntry } from '../logger/DataLogger';
 import { delayMgr } from './Lockouts';
 import { time } from 'console';
 import { getCoordinatesForZip } from './zipCoords';
+import { chlorinatorUsageHours } from './ChlorinatorUsage';
 
 export class State implements IState {
     statePath: string;
@@ -2334,7 +2335,32 @@ export class ChlorinatorState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
     public get currentOutput(): number { return this.data.currentOutput || 0; }
-    public set currentOutput(val: number) { this.setDataVal('currentOutput', val); }
+    public set currentOutput(val: number) {
+        // Sample even unchanged output, so constant production accumulates usage.
+        // Persist the observation with the total to recover gaps after a restart.
+        if (!Number.isFinite(val) || val < 0 || val > 100) return;
+        const observedAt = Date.now();
+        if (!this.usageLastSampleAt || observedAt > this.usageLastSampleAt) {
+            const hours = chlorinatorUsageHours(this.usageLastOutput, val, this.usageLastSampleAt, observedAt);
+            this.setDataVal('usageHours', this.usageHours + hours);
+            this.setDataVal('usageLastOutput', val);
+            this.setDataVal('usageLastSampleAt', observedAt);
+        }
+        this.setDataVal('currentOutput', val);
+    }
+    /** Cumulative equivalent hours at 100% output, starting with the first observation. */
+    public get usageHours(): number { return this.data.usageHours || 0; }
+    public get usageLastOutput(): number { return this.data.usageLastOutput; }
+    public get usageLastSampleAt(): number { return this.data.usageLastSampleAt; }
+    public resetUsage(hours: number = 0) {
+        if (!Number.isFinite(hours) || hours < 0)
+            throw new RangeError('Cell usage must be a non-negative number of hours.');
+        // Start accounting from the supplied total now, without adding the
+        // interval since the previous observation to the adjusted total.
+        this.setDataVal('usageHours', hours);
+        this.setDataVal('usageLastOutput', this.currentOutput);
+        this.setDataVal('usageLastSampleAt', Date.now());
+    }
     public get setPointForCurrentBody() {
         let body = state.temps.bodies.getBodyIsOn();
         if (typeof body !== 'undefined') {
@@ -2496,6 +2522,7 @@ export class ChlorinatorState extends EqState {
         let chlor = sys.chlorinators.getItemById(this.id, false);
         schlor.saltTarget = chlor.saltTarget;
         schlor.lockSetpoints = chlor.disabled || chlor.isDosing;
+        schlor.usageHours = this.usageHours;
         return schlor;
     }
 }
