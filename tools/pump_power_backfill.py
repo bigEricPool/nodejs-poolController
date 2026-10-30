@@ -27,7 +27,7 @@ LINE = re.compile(r'^\[(\d\d)/(\d\d)/(\d{4}), (\d\d):(\d\d):(\d\d)\]')
 PUMP = re.compile(r'NCP: Setting Pump (.+?) relays to (Relay \d: (?:on|off)(?:, (?:and )?Relay \d: (?:on|off))*)')
 RELAY = re.compile(r'Relay (\d): (on|off)')
 CIRCUIT = re.compile(r'NCP: Setting Circuit (.+) to (true|false)\s*$')
-BOOT = 'Initializing Nixie circuit'
+BOOT = re.compile(r'Initializing Nixie circuit (.+?)\s*$')
 
 
 def load_speeds(root):
@@ -150,10 +150,13 @@ class Replay:
             else:
                 self.credit(self.last, now)
         self.last = max(now, self.last or now)
-        if BOOT in text:
-            # njsPC started: its pump relays are all off until the pump line that follows.
+        b = BOOT.search(text)
+        if b:
+            # njsPC started: its pump relays are all off until the pump line that follows, and a circuit is off until it is set again
+            # (a schedule that should have it on does so within seconds), with no 'to false' line for the one that was on.
             for name in self.relays:
                 self.relays[name] = set()
+            self.circuits.discard(b.group(1))
             return
         p = PUMP.search(text)
         if p:
