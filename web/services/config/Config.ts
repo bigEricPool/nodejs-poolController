@@ -27,7 +27,7 @@ import { utils } from "../../../controller/Constants";
 import { ServiceProcessError, ServiceParameterError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
-import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled } from '../state/State';
+import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled, restartCellUsage } from '../state/State';
 import { markLastTuneApplied } from '../../../controller/AutoSwgTuneHistory';
 import { autoSwgGateInfo } from '../../../controller/AutoSwgReadiness';
 import { snapshotAutoSwgSettings, logAutoSwgSettingChanges } from '../../../controller/AutoSwgHistory';
@@ -1030,6 +1030,7 @@ export class ConfigRoute {
                 let tuningKeys = ['windowDays', 'daytimeLossSharePct', 'creditChlorineAdditions', 'fcAnomalyTolerancePpm', 'projectionWeight', 'projectionTaperStartDays', 'projectionTaperEndDays', 'burnTempAdjust', 'nightBurnRatio'];
                 let before = tuningKeys.map(k => (sys.autoSwg as any)[k]);
                 let settingsBefore = snapshotAutoSwgSettings(sys.autoSwg);
+                const cellDateBefore = sys.autoSwg.cellInstalledDate;
                 let awayWasActive = sys.autoSwg.awayActive;
                 let awayWasOn = sys.autoSwg.awayEnabled, awayStartedBefore = sys.autoSwg.awayStartedAt;
                 const vacationTargetBefore = sys.autoSwg.awayTargetFc;
@@ -1040,6 +1041,7 @@ export class ConfigRoute {
                     if (!isFinite(low) || !isFinite(high) || high - low < 2) throw new ServiceParameterError('FC High must be at least 2 ppm above FC Low.', 'autoSwg', 'fcHigh', req.body.fcHigh);
                 }
                 sys.autoSwg.set(req.body);
+                if (sys.autoSwg.cellInstalledDate !== cellDateBefore) { try { restartCellUsage(); } catch (err) { logger.warn(`SWG Assist: could not count the cell usage from its install date: ${err.message}`); } }
                 // Unchecking Away protection by hand: the plan goes back to the normal Target FC (the vacation target is left as it is for next time).
                 if (awayWasOn && !sys.autoSwg.awayEnabled) sys.autoSwg.noteAwayEnded(`Away protection was turned off.${vacationTargetBefore !== sys.autoSwg.normalTargetFc ? ` The target in force went back from the vacation target of ${vacationTargetBefore} to the ${sys.autoSwg.normalTargetText}.` : ''}`);
                 // Keep a record of what changed (target, days to target, tuning ...) in the SWG Assist history, so the

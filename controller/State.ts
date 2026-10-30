@@ -29,7 +29,6 @@ import { DataLogger, DataLoggerEntry } from '../logger/DataLogger';
 import { delayMgr } from './Lockouts';
 import { time } from 'console';
 import { getCoordinatesForZip } from './zipCoords';
-import { chlorinatorUsageHours } from './ChlorinatorUsage';
 
 export class State implements IState {
     statePath: string;
@@ -2335,31 +2334,23 @@ export class ChlorinatorState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
     public get currentOutput(): number { return this.data.currentOutput || 0; }
-    public set currentOutput(val: number) {
-        // Sample even unchanged output, so constant production accumulates usage.
-        // Persist the observation with the total to recover gaps after a restart.
-        if (!Number.isFinite(val) || val < 0 || val > 100) return;
-        const observedAt = Date.now();
-        if (!this.usageLastSampleAt || observedAt > this.usageLastSampleAt) {
-            const hours = chlorinatorUsageHours(this.usageLastOutput, val, this.usageLastSampleAt, observedAt);
-            this.setDataVal('usageHours', this.usageHours + hours);
-            this.setDataVal('usageLastOutput', val);
-            this.setDataVal('usageLastSampleAt', observedAt);
-        }
-        this.setDataVal('currentOutput', val);
-    }
-    /** Cumulative equivalent hours at 100% output, starting with the first observation. */
+    public set currentOutput(val: number) { this.setDataVal('currentOutput', val); }
+    // What the cell has made: the equivalent hours at 100% output and the pounds of chlorine (see AutoSwgCellUsage.ts, which works them out from the hourly output
+    // log). usageSince is when the totals were last set; only hours that start after it are added to them.
     public get usageHours(): number { return this.data.usageHours || 0; }
-    public get usageLastOutput(): number { return this.data.usageLastOutput; }
-    public get usageLastSampleAt(): number { return this.data.usageLastSampleAt; }
-    public resetUsage(hours: number = 0) {
-        if (!Number.isFinite(hours) || hours < 0)
-            throw new RangeError('Cell usage must be a non-negative number of hours.');
-        // Start accounting from the supplied total now, without adding the
-        // interval since the previous observation to the adjusted total.
+    public get usagePounds(): number { return this.data.usagePounds || 0; }
+    public get usageSince(): number { return this.data.usageSince || 0; }
+    public addUsage(hours: number, pounds: number) {
+        if (!(hours > 0)) return;
+        this.setDataVal('usageHours', this.usageHours + hours);
+        this.setDataVal('usagePounds', this.usagePounds + (pounds > 0 ? pounds : 0));
+    }
+    public resetUsage(hours: number = 0, pounds: number = 0, since: number = Date.now()) {
+        if (!Number.isFinite(hours) || hours < 0 || !Number.isFinite(pounds) || pounds < 0)
+            throw new RangeError('Cell usage must be a non-negative number of hours and pounds.');
         this.setDataVal('usageHours', hours);
-        this.setDataVal('usageLastOutput', this.currentOutput);
-        this.setDataVal('usageLastSampleAt', Date.now());
+        this.setDataVal('usagePounds', pounds);
+        this.setDataVal('usageSince', since);
     }
     public get setPointForCurrentBody() {
         let body = state.temps.bodies.getBodyIsOn();
@@ -2523,6 +2514,7 @@ export class ChlorinatorState extends EqState {
         schlor.saltTarget = chlor.saltTarget;
         schlor.lockSetpoints = chlor.disabled || chlor.isDosing;
         schlor.usageHours = this.usageHours;
+        schlor.usagePounds = this.usagePounds;
         return schlor;
     }
 }
