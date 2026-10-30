@@ -2340,7 +2340,7 @@ export class ChlorinatorState extends EqState {
     public get usageHours(): number { return this.data.usageHours || 0; }
     public get usagePounds(): number { return this.data.usagePounds || 0; }
     public get usageSince(): number { return this.data.usageSince || 0; }
-    /** Hours the cell was producing at all, at any output (the equivalent hours above are the work it did). */
+    /** Hours the setting was above 0 (the cell enabled; it is energized only part of that time). The equivalent hours above are the work it did. */
     public get usageRunHours(): number { return this.data.usageRunHours || 0; }
     /** Pounds of the total that were estimated from the SWG entries, for the time before the output log began. */
     public get usageEstimatedPounds(): number { return this.data.usageEstimatedPounds || 0; }
