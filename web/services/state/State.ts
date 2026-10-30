@@ -43,7 +43,7 @@ import { weatherHistory } from "../../../controller/WeatherHistory";
 import { projectionLog, updateHourlyProjection, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
-import { cellUsageForHour, cellUsageSince } from "../../../controller/AutoSwgCellUsage";
+import { cellUsageForHour, cellUsageFromSwgEvents, cellUsageSince } from "../../../controller/AutoSwgCellUsage";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
 
@@ -1068,7 +1068,7 @@ outputLog.onHour = (h) => {
 export function cellUsageInfo() {
     const s = outputChlorinatorState();
     if (!s) return undefined;
-    return { hours: Math.round(s.usageHours * 10) / 10, runHours: Math.round(s.usageRunHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
+    return { hours: Math.round(s.usageHours * 10) / 10, runHours: Math.round(s.usageRunHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, estimatedPounds: Math.round(s.usageEstimatedPounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
 }
 export function restartCellUsage() {
     const cfg = sys.autoSwg;
@@ -1076,10 +1076,19 @@ export function restartCellUsage() {
     if (!s || !cfg.cellInstalledDate) return undefined;
     outputLog.flush();
     const fromMs = new Date(cfg.cellInstalledDate + 'T00:00:00').getTime();
-    const u = cellUsageSince(outputLog.read(548), fromMs, cfg.swgLbsPerDay);
-    s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours);
+    const logHours = outputLog.read(548);
+    // The output log is exact but only goes back as far as it was kept; before it the SWG entries (PoolMath's, then this app's own) give an estimate.
+    const starts = logHours.map(h => new Date(h.t).getTime()).filter(t => isFinite(t) && t >= fromMs).sort((a, b) => a - b);
+    const logStart = starts.length ? starts[0] : Date.now();
+    const local = toLocalSwgEntries(readAutoSwgHistory()).map(e => ({ ts: new Date(e.ts).getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }));
+    // a PoolMath entry within an hour of one of this app's own is the same event, and the app's own wins (as in AutoSwgService)
+    const pm = archivedSwgEvents().map(e => ({ ts: e.ts.getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct })).filter(e => !local.some(l => Math.abs(l.ts - e.ts) < 3600000));
+    const early = cellUsageFromSwgEvents(pm.concat(local), fromMs, logStart, cfg.gallons, cfg.swgLbsPerDay);
+    const logged = cellUsageSince(logHours, logStart, cfg.swgLbsPerDay);
+    const u = { hours: early.hours + logged.hours, pounds: early.pounds + logged.pounds, runHours: early.runHours + logged.runHours, firstHour: logged.firstHour };
+    s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours, early.pounds);
     s.emitEquipmentChange();
-    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h running, ${u.pounds.toFixed(2)} lb${u.firstHour ? ` (the output log starts ${u.firstHour})` : ' (the output log holds none of it)'}.`);
+    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h running, ${u.pounds.toFixed(2)} lb, of which ${early.pounds.toFixed(2)} lb is estimated from the SWG entries before the output log began${u.firstHour ? ` (${u.firstHour})` : ''}.`);
     return u;
 }
 function sampleAutoSwgOutput() {
