@@ -27,7 +27,7 @@ import { utils } from "../../../controller/Constants";
 import { ServiceProcessError, ServiceParameterError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
-import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled, restartCellUsage } from '../state/State';
+import { armAutoSwgArchiveSync, armAutoSwgAutoCheck, autoSwgRunWindowInfo, awaySummary, noteAutoSwgAwayToggled, restartCellUsage, cellUsageInfo } from '../state/State';
 import { markLastTuneApplied } from '../../../controller/AutoSwgTuneHistory';
 import { autoSwgGateInfo } from '../../../controller/AutoSwgReadiness';
 import { snapshotAutoSwgSettings, logAutoSwgSettingChanges } from '../../../controller/AutoSwgHistory';
@@ -1021,7 +1021,7 @@ export class ConfigRoute {
         // feature. The computed recommendation itself is runtime state, exposed
         // under /state/autoSwg/* (see web/services/state/State.ts).
         app.get('/config/autoSwg', (req, res) => {
-            return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
+            return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo(), cellUsage: cellUsageInfo() }));
         });
         app.put('/config/autoSwg', async (req, res, next) => {
             try {
@@ -1073,7 +1073,7 @@ export class ConfigRoute {
                 armAutoSwgAutoCheck(0, (!awayWasActive && sys.autoSwg.awayActive) || (awayWasActive && !sys.autoSwg.awayActive) ? 3 * 1000 : undefined);
                 // If the share code or pool changed, pull its history soon (a no-op otherwise).
                 armAutoSwgArchiveSync(60 * 1000);
-                return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
+                return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo(), cellUsage: cellUsageInfo() }));
             }
             catch (err) { next(err); }
         });

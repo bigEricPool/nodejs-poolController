@@ -1061,6 +1061,12 @@ outputLog.onHour = (h) => {
 // Sets the cell's totals to what the output log holds from the install date on. The log is only as long as it was kept, so `firstHour` says where it starts; the
 // hours before that are not in it, and the total can be corrected by hand (PUT /state/chlorinator/resetUsage). An hour already being written is counted by this
 // and the rest of it is not, so up to an hour at the moment of the change is left out.
+// The cell's totals for the settings screen: pounds and equivalent hours at 100% output since `since` (when they were last set), and the install date.
+export function cellUsageInfo() {
+    const s = outputChlorinatorState();
+    if (!s) return undefined;
+    return { hours: Math.round(s.usageHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
+}
 export function restartCellUsage() {
     const cfg = sys.autoSwg;
     const s = outputChlorinatorState();
