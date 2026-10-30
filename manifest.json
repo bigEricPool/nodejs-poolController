@@ -235,6 +235,17 @@
       "build": true
     },
     {
+      "name": "feature/swg-cell-usage",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Salt cell tracking for SWG Assist: chlorine made (lb), full-output hours and hours running, worked out from the hourly output log, with a Cell In Service Since setting. Includes Kevin Montagne's chlorinator usage commit, adapted. Merged after feature/swg-assist in pool-next.",
+      "depends": [
+        "feature/swg-assist"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "local/pi-tools",
       "kind": "local",
       "status": "active",
