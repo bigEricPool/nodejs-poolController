@@ -53,6 +53,15 @@
       "servers": []
     }
   },
+  "weather": {
+    "enabled": false,
+    "stationId": "",
+    "apiKey": "",
+    "units": "e",
+    "backfillDays": 400,
+    "keepDays": 800,
+    "clearnessMarginMinutes": 60
+  },
   "web": {
     "servers": {
       "http2": {
