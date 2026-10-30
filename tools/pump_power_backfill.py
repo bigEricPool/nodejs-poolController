@@ -3,7 +3,7 @@
 
 njsPC logs at level info when a pump's relays change ("NCP: Setting Pump <name> relays to Relay 1: on, Relay 2: off.") and when a
 circuit is set ("NCP: Setting Circuit <name> to true"). This replays those lines against the pumpPower settings in config.json, so
-the speeds, their relays and the rule for choosing (the speed with the most watts among those that apply) are the same as in
+the speeds, their relays and the rule for choosing (the best priority among those that apply, then the most watts) are the same as in
 controller/PumpPower.ts. A speed's connection and device are matched to a pump relay or a circuit in data/poolConfig.json, so enter
 the speeds in the Pump Power settings first.
 
@@ -49,7 +49,7 @@ def load_speeds(root):
             circuits = [c.get('name') for c in pool.get('circuits') or [] if bound and same(c, s)]
             if bound and not relays and not circuits:
                 print('Warning: no pump relay or circuit uses the relay set for %s, so it will never count.' % s.get('name'))
-            speeds.append({'id': s['id'], 'name': s.get('name'), 'watts': s.get('watts') or 0, 'relays': relays, 'circuits': circuits, 'default': not bound})
+            speeds.append({'id': s['id'], 'name': s.get('name'), 'watts': s.get('watts') or 0, 'priority': s.get('priority') or 0, 'relays': relays, 'circuits': circuits, 'default': not bound})
         if speeds:
             pumps[pump.get('name')] = {'id': pump.get('id'), 'speeds': speeds}
     if not pumps:
@@ -57,13 +57,25 @@ def load_speeds(root):
     return pumps
 
 
+def speed_wins(a, b):
+    """As speedWins in PumpPower.ts: 1 is first, 0 is not set and comes last, a tie goes to the most watts."""
+    if a['priority'] != b['priority']:
+        return a['priority'] > 0 and (b['priority'] == 0 or a['priority'] < b['priority'])
+    return a['watts'] > b['watts']
+
+
 def speed_now(pump, relays_on, circuits_on):
     """As pumpSpeedNow in PumpPower.ts: a speed's id, 0 when on with no speed that applies, -1 when off."""
     pump_on = len(relays_on) > 0
     best = None
     for s in pump['speeds']:
-        on = pump_on if s['default'] else any(r in relays_on for r in s['relays']) or any(c in circuits_on for c in s['circuits'])
-        if on and (best is None or s['watts'] > best['watts']):
+        if s['default']:
+            on = pump_on
+        elif s['relays']:
+            on = any(r in relays_on for r in s['relays'])
+        else:
+            on = any(c in circuits_on for c in s['circuits'])
+        if on and (best is None or speed_wins(s, best)):
             best = s
     if best:
         return best['id']
