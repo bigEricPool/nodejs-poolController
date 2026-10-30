@@ -43,6 +43,7 @@ import { weatherHistory } from "../../../controller/WeatherHistory";
 import { projectionLog, updateHourlyProjection, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
+import { cellUsageForHour, cellUsageSince } from "../../../controller/AutoSwgCellUsage";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
 
@@ -1047,6 +1048,40 @@ function watchAutoSwg() {
 let autoSwgSaltTimer: NodeJS.Timeout | undefined;
 // What the chlorinator actually did, logged at all times (every mode, inside the run window or not) as one line an hour; see AutoSwgOutputLog.ts.
 // It uses the SWG Assist chlorinator when one is chosen, otherwise the first chlorinator there is.
+// The chlorinator the output log and the cell usage follow: the one SWG Assist uses when chosen, otherwise the first there is.
+function outputChlorinatorState() {
+    let chlorinators = sys.chlorinators.toArray();
+    let rec = chlorinators.find(c => c.id === sys.autoSwg.chlorinatorId) || chlorinators[0];
+    return rec ? state.chlorinators.getItemById(rec.id, false) : undefined;
+}
+// Each hour written to the output log is added to the cell's totals (hours that start before the totals were last set are already in them).
+outputLog.onHour = (h) => {
+    const s = outputChlorinatorState();
+    if (!s || new Date(h.t).getTime() < s.usageSince) return;
+    const u = cellUsageForHour(h, sys.autoSwg.swgLbsPerDay);
+    if (u.hours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
+};
+// Sets the cell's totals to what the output log holds from the install date on. The log is only as long as it was kept, so `firstHour` says where it starts; the
+// hours before that are not in it, and the total can be corrected by hand (PUT /state/chlorinator/resetUsage). An hour already being written is counted by this
+// and the rest of it is not, so up to an hour at the moment of the change is left out.
+// The cell's totals for the settings screen: pounds and equivalent hours at 100% output since `since` (when they were last set), and the install date.
+export function cellUsageInfo() {
+    const s = outputChlorinatorState();
+    if (!s) return undefined;
+    return { hours: Math.round(s.usageHours * 10) / 10, runHours: Math.round(s.usageRunHours * 10) / 10, pounds: Math.round(s.usagePounds * 100) / 100, since: s.usageSince > 0 ? new Date(s.usageSince).toISOString() : '', installedDate: sys.autoSwg.cellInstalledDate };
+}
+export function restartCellUsage() {
+    const cfg = sys.autoSwg;
+    const s = outputChlorinatorState();
+    if (!s || !cfg.cellInstalledDate) return undefined;
+    outputLog.flush();
+    const fromMs = new Date(cfg.cellInstalledDate + 'T00:00:00').getTime();
+    const u = cellUsageSince(outputLog.read(548), fromMs, cfg.swgLbsPerDay);
+    s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours);
+    s.emitEquipmentChange();
+    logger.info(`SWG Assist: cell usage counted from ${cfg.cellInstalledDate}: ${u.hours.toFixed(1)} full-output hours, ${u.runHours.toFixed(1)} h running, ${u.pounds.toFixed(2)} lb${u.firstHour ? ` (the output log starts ${u.firstHour})` : ' (the output log holds none of it)'}.`);
+    return u;
+}
 function sampleAutoSwgOutput() {
     try {
         let chlorinators = sys.chlorinators.toArray();
@@ -1806,6 +1841,30 @@ export class StateRoute {
                     lastComm: typeof cstate.lastComm === 'number' && cstate.lastComm > 0 ? new Date(cstate.lastComm).toISOString() : undefined,
                     records: ChlorinatorStateMessage.getLastReceived(id)
                 });
+            } catch (err) { next(err); }
+        });
+        app.put('/state/chlorinator/resetUsage', (req, res, next) => {
+            try {
+                const id = Number(req.body.id);
+                if (!Number.isInteger(id) || id <= 0)
+                    return res.status(400).send({ error: 'A valid chlorinator id is required.' });
+                if (!sys.chlorinators.find(chlor => chlor.id === id))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                const schlor = state.chlorinators.getItemById(id, false);
+                const hours = typeof req.body.usageHours === 'undefined' ? 0 : req.body.usageHours;
+                if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0)
+                    return res.status(400).send({ error: 'Cell usage must be a non-negative number of hours.' });
+                // The pounds are given, or worked out from the hours at the cell's rating when SWG Assist has one.
+                const lbs = sys.autoSwg.swgLbsPerDay;
+                const pounds = typeof req.body.usagePounds === 'undefined' ? (lbs > 0 ? hours * lbs / 24 : 0) : req.body.usagePounds;
+                if (typeof pounds !== 'number' || !Number.isFinite(pounds) || pounds < 0)
+                    return res.status(400).send({ error: 'Cell usage must be a non-negative number of pounds.' });
+                const runHours = typeof req.body.usageRunHours === 'undefined' ? 0 : req.body.usageRunHours;
+                if (typeof runHours !== 'number' || !Number.isFinite(runHours) || runHours < 0)
+                    return res.status(400).send({ error: 'Cell run time must be a non-negative number of hours.' });
+                schlor.resetUsage(hours, pounds, Date.now(), runHours);
+                schlor.emitEquipmentChange();
+                return res.status(200).send(schlor.getExtended());
             } catch (err) { next(err); }
         });
         app.put('/state/chlorinator/poolSetpoint', async (req, res, next) => {

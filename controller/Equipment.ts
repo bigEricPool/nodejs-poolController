@@ -2567,6 +2567,9 @@ export class AutoSwg extends EqItem {
         // its own vacation target. bandBiasPerDay is how much above the maintenance % an old FC reading adds, for each day beyond 2.
         if (this.data.controlMode !== 'target' && this.data.controlMode !== 'band') this.data.controlMode = 'band';
         // When range control first took effect here: it arrived as a default, with no settings save to date it (the FC view of the Water panel draws the range from then).
+        // The date (YYYY-MM-DD) the cell now in the chlorinator went into service, or '' when not set. Setting it counts the chlorine made from then on
+        // (see AutoSwgCellUsage.ts); the chlorinator's output log only goes back as far as it was kept.
+        if (typeof this.data.cellInstalledDate !== 'string') this.data.cellInstalledDate = '';
         if (typeof this.data.controlModeSince === 'undefined') this.data.controlModeSince = new Date().toISOString();
         if (typeof this.data.fcLow === 'undefined') this.data.fcLow = 7.5;
         if (typeof this.data.fcHigh === 'undefined') this.data.fcHigh = 10.5;
@@ -2633,6 +2636,8 @@ export class AutoSwg extends EqItem {
     public set nightBurnRatio(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('nightBurnRatio', isFinite(n) ? Math.min(1.5, Math.max(0.1, n)) : 0.5); }
     public get overshootPpmPerDay(): number { return this.data.overshootPpmPerDay; }
     public set overshootPpmPerDay(val: number) { this.setDataVal('overshootPpmPerDay', val); }
+    public get cellInstalledDate(): string { return typeof this.data.cellInstalledDate === 'string' ? this.data.cellInstalledDate : ''; }
+    public set cellInstalledDate(val: string) { this.setDataVal('cellInstalledDate', typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val.trim()) && !isNaN(new Date(val.trim() + 'T00:00:00').getTime()) ? val.trim() : ''); }
     public get controlModeSince(): string { return typeof this.data.controlModeSince === 'string' ? this.data.controlModeSince : ''; }
     public set controlModeSince(val: string) { /* set only when range control first takes effect, so a saved form cannot move it */ }
     public get controlMode(): string { return this.data.controlMode === 'target' ? 'target' : 'band'; }

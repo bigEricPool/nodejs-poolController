@@ -64,6 +64,8 @@ interface Bucket { start: number; n: number; on: number; sum: number; max: numbe
 
 class OutputLog {
     private bucket: Bucket | undefined;
+    // Told of each hour as it is written (the cell usage counter credits it; see AutoSwgCellUsage.ts).
+    public onHour: ((h: AutoSwgOutputHour) => void) | undefined;
     private lastPrune = 0;
     constructor() {
         process.on('exit', () => { try { this.flush(); } catch (err) { /* nothing more can be done at exit */ } });
@@ -100,6 +102,7 @@ class OutputLog {
             fs.mkdirSync(path.dirname(f), { recursive: true });
             fs.appendFileSync(f, JSON.stringify(line) + '\n', 'utf8');
         } catch (err) { logger.warn(`SWG Assist: could not write the chlorinator output log: ${err.message}`); }
+        try { if (this.onHour) this.onHour(line); } catch (err) { logger.warn(`SWG Assist: could not count the hour into the cell usage: ${err.message}`); }
     }
     // The hours from the last `days` days, oldest first (the hour being built is not included until it is written).
     public read(days: number = 548, now: number = Date.now()): AutoSwgOutputHour[] {
