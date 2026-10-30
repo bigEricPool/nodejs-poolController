@@ -64,6 +64,7 @@ interface IPoolSystem {
     security: Security;
     alerts: Alerts;
     chemControllers: ChemControllerCollection;
+    autoSwg: AutoSwg;
     board: SystemBoard;
     updateControllerDateTimeAsync(
         hour: number,
@@ -218,6 +219,7 @@ export class PoolSystem implements IPoolSystem {
         this.chemControllers = new ChemControllerCollection(this.data, 'chemControllers');
         this.chemDosers = new ChemDoserCollection(this.data, 'chemDosers');
         this.filters = new FilterCollection(this.data, 'filters');
+        this.autoSwg = new AutoSwg(this.data, 'autoSwgConfig');
         this.board = BoardFactory.fromControllerType(this.controllerType, this);
         this.anslq25Board = MockBoardFactory.fromControllerType(this.data.anslq25.controllerType, this);
         this.virtualEquipment = virtualEquipmentManager;
@@ -447,6 +449,7 @@ export class PoolSystem implements IPoolSystem {
     public chemControllers: ChemControllerCollection;
     public chemDosers: ChemDoserCollection;
     public filters: FilterCollection;
+    public autoSwg: AutoSwg;
     public screenlogic: ScreenLogicComms;
     public appVersion: string;
     public get dirty(): boolean { return this._isDirty; }
@@ -2401,6 +2404,385 @@ export class Alerts extends EqItem {
         this.data.raw[`selector${selector}`] = Array.isArray(raw) ? [...raw] : [];
         this.hasChanged = true;
     }
+}
+// Auto-Apply Recommendations and the automatic PoolMath check change the chlorinator with nobody reviewing the number, and the tuning
+// tools only say something once there is enough history to judge. Both stay hidden until there is: see AutoSwgReadiness.ts, which
+// registers the function that decides here. Everything else, including Check Now, Apply and the step to the maintenance %, is unaffected.
+// The SWG Assist modes, lowest first. USE AT YOUR OWN RISK for every one above standard (see the comment where SWG Assist's defaults are set).
+const AUTO_SWG_MODES = ['standard', 'advanced', 'automatic', 'developer'];
+let autoSwgReadinessProvider: ((cfg: AutoSwg) => { ready: boolean }) | undefined;
+export function setAutoSwgReadinessProvider(fn: (cfg: AutoSwg) => { ready: boolean }) { autoSwgReadinessProvider = fn; }
+export class AutoSwg extends EqItem {
+    // Singleton settings for the PoolMath-driven SWG% recommendation feature.
+    // Persisted config only -- the computed recommendation itself lives in
+    // state.autoSwg (controller/State.ts) since it is not equipment config,
+    // it is a runtime result that gets recomputed on demand.
+    public dataName = 'autoSwgConfig';
+    public initData() {
+        if (typeof this.data.enabled === 'undefined') this.data.enabled = false;
+        if (typeof this.data.chlorinatorId === 'undefined') this.data.chlorinatorId = -1;
+        // When set (>= 0), the recommendation's run window is derived from this
+        // schedule's startTime/endTime instead of the manual swgStartTime/
+        // swgStopTime fields below, so it can't drift out of sync with the
+        // pump's actual schedule. -1 means "use the manual fields".
+        if (typeof this.data.scheduleId === 'undefined') this.data.scheduleId = -1;
+        if (typeof this.data.shareCode === 'undefined') this.data.shareCode = '';
+        if (typeof this.data.poolName === 'undefined') this.data.poolName = '';
+        if (typeof this.data.gallons === 'undefined') this.data.gallons = 12000;
+        if (typeof this.data.swgLbsPerDay === 'undefined') this.data.swgLbsPerDay = 1.45;
+        if (typeof this.data.swgStartTime === 'undefined') this.data.swgStartTime = '07:00';
+        if (typeof this.data.swgStopTime === 'undefined') this.data.swgStopTime = '19:00';
+        if (typeof this.data.timezone === 'undefined') this.data.timezone = 'America/New_York';
+        if (typeof this.data.windowDays === 'undefined') this.data.windowDays = 21;
+        if (typeof this.data.targetFc === 'undefined') this.data.targetFc = 9.0;
+        // Days to take reaching targetFc, depending on which side of it the projected FC
+        // is on: coming down from above is the slow, gentle direction, building back up
+        // from below is the one to hurry. (Replaces the single targetDays this used to be.)
+        // Run periods to target: one period is one SWG run window, counted in on-time (see deadlineAfterRunHours in AutoSwgService). They used to be days
+        // (targetDaysAbove / targetDaysBelow); a saved number carries over as it is (1 day is 1 period).
+        if (typeof this.data.targetPeriodsAbove === 'undefined') this.data.targetPeriodsAbove = typeof this.data.targetDaysAbove === 'number' ? this.data.targetDaysAbove : 3;
+        if (typeof this.data.targetPeriodsBelow === 'undefined') this.data.targetPeriodsBelow = typeof this.data.targetDaysBelow === 'number' ? this.data.targetDaysBelow : 1;
+        delete this.data.targetDaysAbove;
+        delete this.data.targetDaysBelow;
+        // Used by "Refresh and Apply" (and the periodic check) while Auto-Apply is on: if the
+        // projected FC is more than this many ppm above or below targetFc it starts a new
+        // target date (new deadline, in the above/below window above); otherwise it keeps the
+        // existing target date and just refreshes the % against it.
+        // Renamed from newTargetThresholdPpm: carry a saved value over, then drop the old key.
+        if (typeof this.data.newTargetDateThresholdPpm === 'undefined' && typeof this.data.newTargetThresholdPpm !== 'undefined') this.data.newTargetDateThresholdPpm = this.data.newTargetThresholdPpm;
+        delete this.data.newTargetThresholdPpm;
+        if (typeof this.data.newTargetDateThresholdPpm === 'undefined') this.data.newTargetDateThresholdPpm = 1;
+        if (typeof this.data.autoStepEnabled === 'undefined') this.data.autoStepEnabled = false;
+        // When true, a recommendation gets applied with no manual review -- whenever one is
+        // produced, whether that's a manual Check Now/Refresh & Adjust click, or (if
+        // autoCheckEnabled below is also on) the periodic automatic check. Usable entirely
+        // on its own (auto-apply manual checks, no periodic timer at all).
+        if (typeof this.data.autoApplyEnabled === 'undefined') this.data.autoApplyEnabled = false;
+        // Periodically re-checks PoolMath on its own, every autoCheckHours, instead of
+        // waiting for a manual Check Now/Refresh & Adjust click. Only meaningful -- and only
+        // actually armed -- while autoApplyEnabled is also on, since a periodic check with
+        // nobody reviewing it would otherwise just overwrite whatever unapplied preview the
+        // user is looking at on the calculation screen.
+        if (typeof this.data.autoCheckEnabled === 'undefined') this.data.autoCheckEnabled = false;
+        // 'standard' (the default), 'advanced', 'automatic' or 'developer'. Advanced makes the unattended features (Auto-Apply and the automatic
+        // PoolMath check) available, still only once there is enough history and a Tune has been accepted (see AutoSwgReadiness.ts). Automatic is
+        // advanced plus auto tune and auto tune apply (see AutoSwgAutoTune.ts). Developer is everything automatic has, with the history gate and
+        // the accepted-Tune requirement not applying, so every feature is available on any pool (the auto tune guards still apply, as configured).
+        // It is not on the settings screen: set it in poolConfig.json or through the config API. A pool that already had either unattended feature
+        // turned on stays in advanced.
+        //
+        // USE AT YOUR OWN RISK: every mode above standard (advanced, automatic and developer) changes the chlorinator and the SWG Assist settings
+        // without anyone reviewing the change first. They are not documented in the guide, the README or the release notes on purpose, and they
+        // are meant for the author and for people who have read this code. The default, standard, never changes anything on its own except the
+        // optional return to the maintenance % (autoStepEnabled).
+        if (typeof this.data.mode === 'undefined') this.data.mode = (this.data.autoApplyEnabled === true || this.data.autoCheckEnabled === true) ? 'advanced' : 'standard';
+        // The thresholds for unlocking the tuning tools (see AutoSwgReadiness.ts). They are not on the settings screen; change them here
+        // (poolConfig.json) or through the config API. gateOff true makes the tuning tools always available.
+        if (typeof this.data.gateMinFcReadings === 'undefined') this.data.gateMinFcReadings = 15;   // what Tune itself needs (see buildTune)
+        if (typeof this.data.gateMinSwgEntries === 'undefined') this.data.gateMinSwgEntries = 1;
+        if (typeof this.data.gateMinDays === 'undefined') this.data.gateMinDays = 42;
+        if (typeof this.data.gateOff === 'undefined') this.data.gateOff = false;
+        // The automatic mode adds auto tune to the advanced mode's unattended features (see AutoSwgAutoTune.ts). Both checkboxes are off until
+        // turned on. autoTuneAfterFcReadings is how many new FC readings must have arrived since the last Tune before one runs by itself, and
+        // autoTuneApplyAfterManual is how many Tune recommendations you must have applied yourself before it may apply any. The autoTuneGuard*
+        // settings decide whether the data and history are good enough for an automatic apply (0 turns a check off); they are not on the
+        // settings screen -- change them in poolConfig.json or through the config API.
+        if (typeof this.data.autoTuneEnabled === 'undefined') this.data.autoTuneEnabled = false;
+        if (typeof this.data.autoTuneAfterFcReadings === 'undefined') this.data.autoTuneAfterFcReadings = 10;
+        if (typeof this.data.autoTuneApplyEnabled === 'undefined') this.data.autoTuneApplyEnabled = false;
+        if (typeof this.data.autoTuneApplyAfterManual === 'undefined') this.data.autoTuneApplyAfterManual = 2;
+        if (typeof this.data.autoTuneApplyConfirmRuns === 'undefined') this.data.autoTuneApplyConfirmRuns = 2;   // the same recommendation on this many auto tunes in a row
+        if (typeof this.data.autoTuneGuardMinReadings === 'undefined') this.data.autoTuneGuardMinReadings = 30;  // scored readings behind the Tune
+        if (typeof this.data.autoTuneGuardMinDays === 'undefined') this.data.autoTuneGuardMinDays = 90;          // days of FC and SWG history
+        if (typeof this.data.autoTuneGuardMinGainPpm === 'undefined') this.data.autoTuneGuardMinGainPpm = 0.05;  // expected drop in mean absolute error
+        if (typeof this.data.autoTuneGuardMaxFcAgeDays === 'undefined') this.data.autoTuneGuardMaxFcAgeDays = 14;  // newest FC reading
+        if (typeof this.data.autoTuneGuardMinSkill === 'undefined') this.data.autoTuneGuardMinSkill = 0;         // the calculation must beat "FC unchanged"
+        if (typeof this.data.tuneManualApplies === 'undefined') this.data.tuneManualApplies = 0;                 // Tune recommendations applied from the Tune dialog
+        // The storm response (the automatic and developer modes; off until turned on): when the last FC reading is 3 or more days old and the chlorinator's
+        // salt reading has fallen, the projected FC is lowered by the dilution that implies, so the SWG runs a little higher until FC is back at the target.
+        // It needs the return to the maintenance % (autoStepEnabled) so the extra ends by itself. stormMaxExtraPct is how many points the storm or outage may
+        // add to the % the plan would have used without it, and stormMaxDays how long one event may keep it going. It only reports the estimate when it is off.
+        if (typeof this.data.stormResponseEnabled === 'undefined') this.data.stormResponseEnabled = false;
+        if (typeof this.data.stormMaxExtraPct === 'undefined') this.data.stormMaxExtraPct = 20;
+        if (typeof this.data.stormMaxDays === 'undefined') this.data.stormMaxDays = 3;
+        // Away protection (every mode; off until turned on for a trip). While it is on, SWG Assist checks PoolMath every autoCheckHours hours, applies
+        // the glide to the target you set (never below the maintenance %), and may raise the SWG % further to make up for dilution or an outage (the storm
+        // and outage response), by at most stormMaxExtraPct points. It overrides Auto-Apply, the automatic check and auto tune while it is on (their saved
+        // settings are kept; they just do not act). It needs autoStepEnabled, so each boost ends by itself. It ends when it is unchecked, or by itself when a
+        // new FC reading is logged in PoolMath after it was turned on (see endAwayOnNewReading). awayStartedAt is when it was turned on; awayEndedNote says
+        // why it ended by itself.
+        if (typeof this.data.awayEnabled === 'undefined') this.data.awayEnabled = false;
+        if (typeof this.data.awayStartedAt === 'undefined') this.data.awayStartedAt = '';
+        if (typeof this.data.awayEndedNote === 'undefined') this.data.awayEndedNote = '';
+        // The Target FC used while Away protection is on (the vacation target). The normal Target FC is untouched and applies again when Away protection ends.
+        if (typeof this.data.awayTargetFc !== 'number') this.data.awayTargetFc = (typeof this.data.targetFc === 'number' ? this.data.targetFc : 9) + 2;
+        if (typeof this.data.awayEndedAt === 'undefined') this.data.awayEndedAt = '';
+        // Automation also needs a Tune that was run and accepted (applied, or accepted as "your settings look good"). A Tune that was
+        // applied before this existed counts.
+        if (typeof this.data.tuneAcceptedAt === 'undefined' && typeof this.data.lastTuneAppliedAt !== 'undefined') this.data.tuneAcceptedAt = this.data.lastTuneAppliedAt;
+        if (typeof this.data.autoCheckHours === 'undefined') this.data.autoCheckHours = 12;
+        // Optional 'HH:MM' (in `timezone`) to pin periodic checks to the clock: every
+        // autoCheckHours counting from this time of day. Empty = count from when the timer
+        // was last armed (startup, a settings save, or the previous check). Only used for
+        // intervals under 24 hours.
+        if (typeof this.data.autoCheckStartTime === 'undefined') this.data.autoCheckStartTime = '';
+        // An auto-applied change whose magnitude (percentage points vs. the previous
+        // applied %) meets or exceeds this is flagged prominently on the dashboard, since
+        // no human reviewed it before it took effect.
+        if (typeof this.data.autoApplyWarnThresholdPct === 'undefined') this.data.autoApplyWarnThresholdPct = 10;
+        // Percent of a day's FC consumption that happens in daylight, used to weight the
+        // partial day between FC readings. 0 = estimate it from today's day length with the
+        // parabolic model (~56% winter to ~78% summer).
+        if (typeof this.data.daytimeLossSharePct === 'undefined') this.data.daytimeLossSharePct = 0;
+        // Credit liquid chlorine additions logged in PoolMath as FC added when working out consumption
+        // and projecting the current FC.
+        if (typeof this.data.creditChlorineAdditions === 'undefined') this.data.creditChlorineAdditions = true;
+        // ppm of FC rise beyond what the SWG output and logged additions explain that marks an interval
+        // as suspect (left out of the average, with a banner). 0 = off.
+        if (typeof this.data.fcAnomalyTolerancePpm === 'undefined') this.data.fcAnomalyTolerancePpm = 2;
+        // How much of the modelled FC change since the last reading to apply when projecting the current FC:
+        // 1 = all of it (no damping), 0 = start from the last reading unchanged. Between tests FC moves less than the
+        // model expects, so the default damps it to half (on two pools' histories this beat the full model by 0.3 to
+        // 0.6 ppm; the Tune button tunes it for a particular pool).
+        // Renamed from projectionDamping: carry a saved value over, then drop the old key.
+        if (typeof this.data.projectionWeight === 'undefined' && typeof this.data.projectionDamping !== 'undefined') this.data.projectionWeight = this.data.projectionDamping;
+        delete this.data.projectionDamping;
+        if (typeof this.data.projectionWeight === 'undefined') this.data.projectionWeight = 0.5;
+        // Gap-aware taper of that weight: full weight until the last reading is this many days old, then
+        // falling to 0 at the end (days). End 0 = no taper. The model hurts across long gaps, hence 3 to 8 days.
+        if (typeof this.data.projectionTaperStartDays === 'undefined') this.data.projectionTaperStartDays = 3;
+        if (typeof this.data.projectionTaperEndDays === 'undefined') this.data.projectionTaperEndDays = 8;
+        // Aim this many ppm above the target for each day since the last FC reading (never more than 1 ppm) when working out the % that
+        // reaches it: an old reading is a less certain place to start from, and FC a little high is the safer miss. 0 = aim at the target.
+        if (typeof this.data.overshootPpmPerDay === 'undefined') this.data.overshootPpmPerDay = 0.15;
+        // Aim so FC stays at the target through the night, until the SWG starts again, not only at the deadline (see troughAddPpm in AutoSwgService).
+        if (typeof this.data.protectOvernightLow === 'undefined') this.data.protectOvernightLow = true;
+        // How much chlorine is used at night compared with the same hour of daylight: 0.5, the usual figure for a well-kept pool. Tune can suggest another when the history
+        // supports it, and says so when it cannot tell.
+        if (typeof this.data.nightBurnRatio === 'undefined') this.data.nightBurnRatio = 0.5;
+        // Adjust the burn rate for the water temperature when the burn clearly follows it (see AutoSwgService). Off: on the pool it was
+        // tried on it did not improve the projection; the what-if sweep scores it for yours.
+        if (typeof this.data.burnTempAdjust === 'undefined') this.data.burnTempAdjust = false;
+        // How the SWG % is steered. 'band' keeps FC between fcLow and fcHigh (see SwgAssistBand.ts); 'target' steers to the single Target FC. Away protection always uses
+        // its own vacation target. bandBiasPerDay is how much above the maintenance % an old FC reading adds, for each day beyond 2.
+        if (this.data.controlMode !== 'target' && this.data.controlMode !== 'band') this.data.controlMode = 'band';
+        // When range control first took effect here: it arrived as a default, with no settings save to date it (the FC view of the Water panel draws the range from then).
+        if (typeof this.data.controlModeSince === 'undefined') this.data.controlModeSince = new Date().toISOString();
+        if (typeof this.data.fcLow === 'undefined') this.data.fcLow = 7.5;
+        if (typeof this.data.fcHigh === 'undefined') this.data.fcHigh = 10.5;
+        if (typeof this.data.bandBiasPerDay === 'undefined') this.data.bandBiasPerDay = 0.05;
+        // How many run periods (run windows of SWG on-time, so about a day each) a boost takes to bring FC back to the middle of the range: 1 is a firm push, more is gentler.
+        if (typeof this.data.bandBoostPeriods === 'undefined') this.data.bandBoostPeriods = 1;
+    }
+    public get enabled(): boolean { return this.data.enabled; }
+    public set enabled(val: boolean) { this.setDataVal('enabled', val); }
+    // The id of the sys.chlorinators record this recommendation should be applied to.
+    public get chlorinatorId(): number { return this.data.chlorinatorId; }
+    public set chlorinatorId(val: number) { this.setDataVal('chlorinatorId', val); }
+    // The Schedule record (see ScheduleCollection) whose startTime/endTime should
+    // be used as the SWG run window; -1 falls back to swgStartTime/swgStopTime.
+    public get scheduleId(): number { return this.data.scheduleId; }
+    public set scheduleId(val: number) { this.setDataVal('scheduleId', val); }
+    // PoolMath (troublefreepool.com) share code, e.g. 'tfp-452124', or a full share URL.
+    public get shareCode(): string { return this.data.shareCode; }
+    public set shareCode(val: string) { this.setDataVal('shareCode', val); }
+    // Restricts parsing to this water body's section on the share page (e.g. 'Kentshire').
+    public get poolName(): string { return this.data.poolName; }
+    public set poolName(val: string) { this.setDataVal('poolName', val); }
+    public get gallons(): number { return this.data.gallons; }
+    public set gallons(val: number) { this.setDataVal('gallons', val); }
+    // SWG's manufacturer-rated chlorine production in lbs/day, at 100% duty cycle over a
+    // full 24h day (the standard spec-sheet basis) -- not scoped to the run window below.
+    public get swgLbsPerDay(): number { return this.data.swgLbsPerDay; }
+    public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val); }
+    // Daily SWG run window, e.g. '07:00' to '19:00', interpreted in `timezone`.
+    public get swgStartTime(): string { return this.data.swgStartTime; }
+    public set swgStartTime(val: string) { this.setDataVal('swgStartTime', val); }
+    public get swgStopTime(): string { return this.data.swgStopTime; }
+    public set swgStopTime(val: string) { this.setDataVal('swgStopTime', val); }
+    // IANA time zone name that swgStartTime/swgStopTime are given in.
+    public get timezone(): string { return this.data.timezone; }
+    public set timezone(val: string) { this.setDataVal('timezone', val); }
+    // Running-average window (days) used for the FC-consumption calculation. The
+    // window ends at calculation time; if it holds fewer than 3 FC readings it is
+    // extended back to the third-most-recent reading (and the summary says so).
+    public get windowDays(): number { return this.data.windowDays; }
+    public set windowDays(val: number) { this.setDataVal('windowDays', val); }
+    public get targetFc(): number { return this.data.targetFc; }
+    public set targetFc(val: number) { this.setDataVal('targetFc', val); }
+    public get autoCheckStartTime(): string { return this.data.autoCheckStartTime; }
+    public set autoCheckStartTime(val: string) { this.setDataVal('autoCheckStartTime', val); }
+    // When one of the tuning settings (averaging window, daylight share, chlorine credit, anomaly tolerance,
+    // projection weighting and taper) last changed, so the accuracy report can score only the readings
+    // that came after -- the ones the settings weren't tuned on.
+    // When the Tune button last ran (or applied a change), and when it last APPLIED one, so a later Tune can tell
+    // whether anything has changed since -- by hand, or by enough new readings to be worth tuning again.
+    public get lastTuneAt(): string { return this.data.lastTuneAt; }
+    public set lastTuneAt(val: string) { this.setDataVal('lastTuneAt', val); }
+    public get lastTuneAppliedAt(): string { return this.data.lastTuneAppliedAt; }
+    public set lastTuneAppliedAt(val: string) { this.setDataVal('lastTuneAppliedAt', val); }
+    public get tuningChangedAt(): string { return this.data.tuningChangedAt; }
+    public set tuningChangedAt(val: string) { this.setDataVal('tuningChangedAt', val); }
+    public get projectionTaperStartDays(): number { return this.data.projectionTaperStartDays; }
+    public set projectionTaperStartDays(val: number) { this.setDataVal('projectionTaperStartDays', val); }
+    public get projectionTaperEndDays(): number { return this.data.projectionTaperEndDays; }
+    public set projectionTaperEndDays(val: number) { this.setDataVal('projectionTaperEndDays', val); }
+    public get protectOvernightLow(): boolean { return utils.makeBool(this.data.protectOvernightLow); }
+    public set protectOvernightLow(val: boolean) { this.setDataVal('protectOvernightLow', utils.makeBool(val)); }
+    public get nightBurnRatio(): number { return this.data.nightBurnRatio; }
+    public set nightBurnRatio(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('nightBurnRatio', isFinite(n) ? Math.min(1.5, Math.max(0.1, n)) : 0.5); }
+    public get overshootPpmPerDay(): number { return this.data.overshootPpmPerDay; }
+    public set overshootPpmPerDay(val: number) { this.setDataVal('overshootPpmPerDay', val); }
+    public get controlModeSince(): string { return typeof this.data.controlModeSince === 'string' ? this.data.controlModeSince : ''; }
+    public set controlModeSince(val: string) { /* set only when range control first takes effect, so a saved form cannot move it */ }
+    public get controlMode(): string { return this.data.controlMode === 'target' ? 'target' : 'band'; }
+    public set controlMode(val: string) { this.setDataVal('controlMode', val === 'target' ? 'target' : 'band'); }
+    public get fcLow(): number { return this.data.fcLow; }
+    public set fcLow(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcLow', isFinite(n) ? Math.min(30, Math.max(0, n)) : 7.5); }
+    public get fcHigh(): number { return this.data.fcHigh; }
+    public set fcHigh(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcHigh', isFinite(n) ? Math.min(30, Math.max(0, n)) : 10.5); }
+    public get bandBoostPeriods(): number { return this.data.bandBoostPeriods; }
+    public set bandBoostPeriods(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBoostPeriods', isFinite(n) ? Math.min(5, Math.max(0.5, n)) : 1); }
+    public get bandBiasPerDay(): number { return this.data.bandBiasPerDay; }
+    public set bandBiasPerDay(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBiasPerDay', isFinite(n) ? Math.min(0.3, Math.max(0, n)) : 0.05); }
+    // Range control is in use: the mode is 'band' and Away protection is not on (it steers to its own vacation target).
+    public get bandActive(): boolean { return this.controlMode === 'band' && !this.awayActive; }
+    // What the plan steers to when Away protection is off: the middle of the range, or the Target FC. And how to say that in a sentence.
+    public get normalTargetFc(): number { return this.controlMode === 'band' ? Math.round(((this.fcLow + this.fcHigh) / 2) * 100) / 100 : this.targetFc; }
+    public get normalTargetText(): string { return this.controlMode === 'band' ? `FC range of ${this.fcLow} to ${this.fcHigh} ppm` : `Target FC of ${this.targetFc} ppm`; }
+    public get burnTempAdjust(): boolean { return this.data.burnTempAdjust; }
+    public set burnTempAdjust(val: boolean) { this.setDataVal('burnTempAdjust', val); }
+    public get projectionWeight(): number { return this.data.projectionWeight; }
+    public set projectionWeight(val: number) { this.setDataVal('projectionWeight', val); }
+    public get fcAnomalyTolerancePpm(): number { return this.data.fcAnomalyTolerancePpm; }
+    public set fcAnomalyTolerancePpm(val: number) { this.setDataVal('fcAnomalyTolerancePpm', val); }
+    public get creditChlorineAdditions(): boolean { return this.data.creditChlorineAdditions; }
+    public set creditChlorineAdditions(val: boolean) { this.setDataVal('creditChlorineAdditions', val); }
+    public get daytimeLossSharePct(): number { return this.data.daytimeLossSharePct; }
+    public set daytimeLossSharePct(val: number) { this.setDataVal('daytimeLossSharePct', val); }
+    public get targetPeriodsAbove(): number { return this.data.targetPeriodsAbove; }
+    public set targetPeriodsAbove(val: number) { this.setDataVal('targetPeriodsAbove', this.clampPeriods(val, 3)); }
+    public get targetPeriodsBelow(): number { return this.data.targetPeriodsBelow; }
+    public set targetPeriodsBelow(val: number) { this.setDataVal('targetPeriodsBelow', this.clampPeriods(val, 1)); }
+    // The old names, so a client that still sends or reads days keeps working: a day is a period.
+    public get targetDaysAbove(): number { return this.targetPeriodsAbove; }
+    public set targetDaysAbove(val: number) { this.targetPeriodsAbove = val; }
+    public get targetDaysBelow(): number { return this.targetPeriodsBelow; }
+    public set targetDaysBelow(val: number) { this.targetPeriodsBelow = val; }
+    // Run periods to target move in half steps and are never below half a period (or missing).
+    private clampPeriods(val: any, fallback: number): number {
+        const n = typeof val === 'number' ? val : parseFloat(val);
+        return isFinite(n) ? Math.min(60, Math.max(0.5, Math.round(n * 2) / 2)) : fallback;
+    }
+    public get newTargetDateThresholdPpm(): number { return this.data.newTargetDateThresholdPpm; }
+    public set newTargetDateThresholdPpm(val: number) { this.setDataVal('newTargetDateThresholdPpm', val); }
+    // When true, applying a recommendation that differs from the maintenance duty cycle
+    // (catching up toward targetFc, or backing off toward it from above) schedules an
+    // automatic step to the maintenance % once the target period ends, so the applied % doesn't keep
+    // pushing FC past targetFc indefinitely.
+    public get autoStepEnabled(): boolean { return this.data.autoStepEnabled; }
+    public set autoStepEnabled(val: boolean) { this.setDataVal('autoStepEnabled', val); }
+    // 'standard', 'advanced' (Auto-Apply and the automatic check), 'automatic' (advanced plus auto tune) or 'developer' (automatic with the history gate
+    // and the accepted-Tune requirement not applying); anything else is standard. USE AT YOUR OWN RISK for every mode above standard: see the comment
+    // where the default is set.
+    public get mode(): string { return AUTO_SWG_MODES.indexOf(this.data.mode) > 0 ? this.data.mode : 'standard'; }
+    public set mode(val: string) { this.setDataVal('mode', AUTO_SWG_MODES.indexOf(val) > 0 ? val : 'standard'); }
+    // The modes from the automatic one up have auto tune; developer is the one that skips the history gate and the accepted Tune.
+    public get developerMode(): boolean { return this.mode === 'developer'; }
+    public get gateMinFcReadings(): number { return this.data.gateMinFcReadings; }
+    public set gateMinFcReadings(val: number) { this.setDataVal('gateMinFcReadings', val); }
+    public get gateMinSwgEntries(): number { return this.data.gateMinSwgEntries; }
+    public set gateMinSwgEntries(val: number) { this.setDataVal('gateMinSwgEntries', val); }
+    public get gateMinDays(): number { return this.data.gateMinDays; }
+    public set gateMinDays(val: number) { this.setDataVal('gateMinDays', val); }
+    public get tuneAcceptedAt(): string { return this.data.tuneAcceptedAt; }
+    public set tuneAcceptedAt(val: string) { this.setDataVal('tuneAcceptedAt', val); }
+    public get gateOff(): boolean { return utils.makeBool(this.data.gateOff); }
+    public set gateOff(val: boolean) { this.setDataVal('gateOff', utils.makeBool(val)); }
+    // True once there is enough FC and SWG history to judge the calculation (or the gate is off): the tuning tools are then shown.
+    public get tuningAvailable(): boolean {
+        if (this.gateOff || this.developerMode) return true;
+        try { return typeof autoSwgReadinessProvider === 'function' && autoSwgReadinessProvider(this).ready === true; }
+        catch (err) { return false; }
+    }
+    // The unattended features (Auto-Apply and the automatic check) need the advanced mode and, on top of the history the tuning tools need,
+    // a Tune that was run and accepted.
+    public get automationAvailable(): boolean {
+        if (this.mode === 'standard') return false;
+        if (this.gateOff || this.developerMode) return true;
+        return this.tuningAvailable && typeof this.tuneAcceptedAt === 'string' && this.tuneAcceptedAt.length > 0;
+    }
+    // Auto tune needs the automatic mode on top of what the other unattended features need; applying its recommendations needs auto tune.
+    public get autoTuneAvailable(): boolean { return (this.mode === 'automatic' || this.developerMode) && this.automationAvailable; }
+    public get autoTuneEnabled(): boolean { return this.autoTuneAvailable && !this.awayActive ? utils.makeBool(this.data.autoTuneEnabled) : false; }
+    public set autoTuneEnabled(val: boolean) { this.setDataVal('autoTuneEnabled', this.autoTuneAvailable ? utils.makeBool(val) : false); }
+    public get autoTuneApplyEnabled(): boolean { return this.autoTuneEnabled ? utils.makeBool(this.data.autoTuneApplyEnabled) : false; }
+    // Stored whenever auto tune is available, so a save that sets both checkboxes at once keeps both (the getter still needs auto tune on).
+    public set autoTuneApplyEnabled(val: boolean) { this.setDataVal('autoTuneApplyEnabled', this.autoTuneAvailable ? utils.makeBool(val) : false); }
+    public get autoTuneAfterFcReadings(): number { return this.data.autoTuneAfterFcReadings; }
+    public set autoTuneAfterFcReadings(val: number) { this.setDataVal('autoTuneAfterFcReadings', val); }
+    public get autoTuneApplyAfterManual(): number { return this.data.autoTuneApplyAfterManual; }
+    public set autoTuneApplyAfterManual(val: number) { this.setDataVal('autoTuneApplyAfterManual', val); }
+    public get autoTuneApplyConfirmRuns(): number { return this.data.autoTuneApplyConfirmRuns; }
+    public set autoTuneApplyConfirmRuns(val: number) { this.setDataVal('autoTuneApplyConfirmRuns', val); }
+    public get autoTuneGuardMinReadings(): number { return this.data.autoTuneGuardMinReadings; }
+    public set autoTuneGuardMinReadings(val: number) { this.setDataVal('autoTuneGuardMinReadings', val); }
+    public get autoTuneGuardMinDays(): number { return this.data.autoTuneGuardMinDays; }
+    public set autoTuneGuardMinDays(val: number) { this.setDataVal('autoTuneGuardMinDays', val); }
+    public get autoTuneGuardMinGainPpm(): number { return this.data.autoTuneGuardMinGainPpm; }
+    public set autoTuneGuardMinGainPpm(val: number) { this.setDataVal('autoTuneGuardMinGainPpm', val); }
+    public get autoTuneGuardMaxFcAgeDays(): number { return this.data.autoTuneGuardMaxFcAgeDays; }
+    public set autoTuneGuardMaxFcAgeDays(val: number) { this.setDataVal('autoTuneGuardMaxFcAgeDays', val); }
+    public get autoTuneGuardMinSkill(): number { return this.data.autoTuneGuardMinSkill; }
+    public set autoTuneGuardMinSkill(val: number) { this.setDataVal('autoTuneGuardMinSkill', val); }
+    public get stormResponseEnabled(): boolean { return this.autoTuneAvailable ? utils.makeBool(this.data.stormResponseEnabled) : false; }
+    public set stormResponseEnabled(val: boolean) { this.setDataVal('stormResponseEnabled', this.autoTuneAvailable ? utils.makeBool(val) : false); }
+    public get stormMaxExtraPct(): number { return this.data.stormMaxExtraPct; }
+    public set stormMaxExtraPct(val: number) { this.setDataVal('stormMaxExtraPct', val); }
+    public get stormMaxDays(): number { return this.data.stormMaxDays; }
+    public set stormMaxDays(val: number) { this.setDataVal('stormMaxDays', val); }
+    public get awayEnabled(): boolean { return utils.makeBool(this.data.awayEnabled); }
+    public set awayEnabled(val: boolean) {
+        const on = utils.makeBool(val);
+        if (on && !utils.makeBool(this.data.awayEnabled)) {
+            // turned on now: from here, a new FC reading ends it
+            this.setDataVal('awayStartedAt', new Date().toISOString());
+            this.setDataVal('awayEndedNote', '');
+        }
+        this.setDataVal('awayEnabled', on);
+    }
+    public get awayStartedAt(): string { return typeof this.data.awayStartedAt === 'string' ? this.data.awayStartedAt : ''; }
+    public set awayStartedAt(val: string) { /* set only by turning Away protection on, so a saved form cannot move it */ }
+    // The vacation target: the Target FC the plan uses while Away protection is on. Target FC itself is not changed by it.
+    public get awayTargetFc(): number { return typeof this.data.awayTargetFc === 'number' ? this.data.awayTargetFc : this.data.targetFc + 2; }
+    public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
+    // The target the calculation uses now: the vacation target while Away protection is on, otherwise the Target FC.
+    public get effectiveTargetFc(): number { return this.awayActive ? this.awayTargetFc : this.normalTargetFc; }
+    // Records that Away protection ended and what that did (including a Target FC put back), shown in the next calculations for a few days and in the status line.
+    // Cleared by the first apply after the one that followed the end (see applyAutoSwgRecommendation), so the note does not outlive what it explained.
+    public clearAwayEnded() { this.setDataVal('awayEndedNote', ''); this.setDataVal('awayEndedAt', ''); }
+    public noteAwayEnded(note: string) { this.setDataVal('awayEndedNote', note); this.setDataVal('awayEndedAt', new Date().toISOString()); }
+    public get awayEndedAt(): string { return typeof this.data.awayEndedAt === 'string' ? this.data.awayEndedAt : ''; }
+    public set awayEndedAt(val: string) { /* set only by noteAwayEnded */ }
+    public get awayEndedNote(): string { return typeof this.data.awayEndedNote === 'string' ? this.data.awayEndedNote : ''; }
+    public set awayEndedNote(val: string) { this.setDataVal('awayEndedNote', typeof val === 'string' ? val : ''); }
+    // 'off', 'needs-step' (the return to the maintenance % is off, so it cannot act) or 'active'.
+    public get awayStatus(): string {
+        if (!this.awayEnabled || !this.enabled) return 'off';
+        if (!this.autoStepEnabled) return 'needs-step';
+        return 'active';
+    }
+    public get awayActive(): boolean { return this.awayStatus === 'active'; }
+    public get tuneManualApplies(): number { return this.data.tuneManualApplies; }
+    public set tuneManualApplies(val: number) { this.setDataVal('tuneManualApplies', val); }
+    public get autoApplyEnabled(): boolean { return this.automationAvailable && !this.awayActive ? this.data.autoApplyEnabled : false; }
+    public set autoApplyEnabled(val: boolean) { this.setDataVal('autoApplyEnabled', this.automationAvailable ? val : false); }
+    public get autoCheckEnabled(): boolean { return this.automationAvailable ? this.data.autoCheckEnabled : false; }
+    public set autoCheckEnabled(val: boolean) { this.setDataVal('autoCheckEnabled', this.automationAvailable ? val : false); }
+    public get autoCheckHours(): number { return this.data.autoCheckHours; }
+    public set autoCheckHours(val: number) { this.setDataVal('autoCheckHours', val); }
+    public get autoApplyWarnThresholdPct(): number { return this.data.autoApplyWarnThresholdPct; }
+    public set autoApplyWarnThresholdPct(val: number) { this.setDataVal('autoApplyWarnThresholdPct', val); }
 }
 export class ChemControllerCollection extends EqItemCollection<ChemController> {
     constructor(data: any, name?: string) { super(data, name || "chemControllers"); }

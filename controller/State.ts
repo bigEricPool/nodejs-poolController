@@ -227,6 +227,11 @@ export class State implements IState {
             freeze: utils.makeBool(self.data.freeze),
             vacation: utils.makeBool(self.data.vacation),
             valveMode: self.data.valveMode || {},
+            // Included (like appVersionState above) so a fresh page load has the
+            // last-known SWG Assist recommendation immediately, instead of waiting
+            // for the next 'autoSwg' socket emit (which only fires after a new
+            // Check Now/Apply).
+            autoSwg: self.autoSwg.get(true) || {},
         };
     }
     public emitAllEquipmentChanges() {
@@ -510,6 +515,7 @@ export class State implements IState {
         // (and the sunrise/sunset schedule windows that depend on it) isn't valid until then.
         syncHeliotrope();
         this.appVersion = new AppVersionState(this.data, 'appVersion');
+        this.autoSwg = new AutoSwgState(this.data, 'autoSwg');
         this.data.startTime = Timestamp.toISOLocal(new Date());
         versionCheck.checkGitLocal();
         tempHistory.start(() => this.sampleTemps());
@@ -692,6 +698,7 @@ export class State implements IState {
     public chemDosers: ChemDoserStateCollection;
     public comms: CommsState;
     public appVersion: AppVersionState;
+    public autoSwg: AutoSwgState;
 
     // This performs a safe load of the state file.  If the file gets corrupt or actually does not exist
     // it will not break the overall system and allow hardened recovery.
@@ -745,6 +752,7 @@ interface IState {
     chemControllers: ChemControllerStateCollection;
     filters: FilterStateCollection;
     comms: CommsState;
+    autoSwg: AutoSwgState;
 }
 export interface ICircuitState {
     id: number;
@@ -2699,8 +2707,19 @@ export class ChlorinatorState extends EqState {
             this.hasChanged = true;
         }
     }
+    // Called after the pool setpoint (the SWG %) changes from one number to another,
+    // whatever the source (API, socket, MQTT, or a panel message). Registered by
+    // the SWG Assist routes so direct changes get logged.
+    public static onPoolSetpointChanged: (chlor: ChlorinatorState, previous: number, current: number) => void;
     public get poolSetpoint(): number { return this.data.poolSetpoint; }
-    public set poolSetpoint(val: number) { this.setDataVal('poolSetpoint', val); }
+    public set poolSetpoint(val: number) {
+        const previous = this.data.poolSetpoint;
+        this.setDataVal('poolSetpoint', val);
+        if (typeof previous === 'number' && typeof val === 'number' && previous !== val && typeof ChlorinatorState.onPoolSetpointChanged === 'function') {
+            try { ChlorinatorState.onPoolSetpointChanged(this, previous, val); }
+            catch (err) { logger.error(`Error handling chlorinator pool setpoint change: ${err.message}`); }
+        }
+    }
     public get spaSetpoint(): number { return this.data.spaSetpoint; }
     public set spaSetpoint(val: number) { this.setDataVal('spaSetpoint', val); }
     public get superChlorHours(): number { return this.data.superChlorHours; }
@@ -4100,6 +4119,226 @@ export class AppVersionState extends EqState {
     public set gitLocalBranch(val: string) { this.data.gitLocalBranch = val; }
     public get gitLocalCommit() { return this.data.gitLocalCommit; }
     public set gitLocalCommit(val: string) { this.data.gitLocalCommit = val; }
+}
+export class AutoSwgState extends EqState {
+    // Runtime result of the last PoolMath-driven SWG% calculation. Not persisted
+    // to poolConfig.json (it's a computed value, recomputed on every "Check Now"),
+    // but does live in state.data so it emits over the socket and survives until
+    // the next check or process restart clears it.
+    public get lastCheckedAt(): string { return this.data.lastCheckedAt; }
+    public set lastCheckedAt(val: string) { this.setDataVal('lastCheckedAt', val); }
+    public get pending(): boolean { return this.data.pending; }
+    public set pending(val: boolean) { this.setDataVal('pending', val); }
+    public get currentPct(): number { return this.data.currentPct; }
+    public set currentPct(val: number) { this.setDataVal('currentPct', val); }
+    // The number the Apply button actually sends to the chlorinator: the duty
+    // cycle needed to reach targetFc within targetDays (see
+    // AutoSwgService.computeRecommendation's recommendedPctForTarget). This is
+    // a strict generalization of maintenancePct below -- when the pool is
+    // already sitting exactly at targetFc, the two are equal.
+    public get recommendedPct(): number { return this.data.recommendedPct; }
+    public set recommendedPct(val: number) { this.setDataVal('recommendedPct', val); }
+    // FYI-only duty cycle that would just replace ongoing FC consumption
+    // (AutoSwgService.computeRecommendation's recommendedPct) without
+    // correcting toward targetFc. Not what Apply uses -- shown so the user can
+    // see how much of the applied recommendedPct is "catch-up" versus
+    // steady-state maintenance.
+    public get maintenancePct(): number { return this.data.maintenancePct; }
+    public set maintenancePct(val: number) { this.setDataVal('maintenancePct', val); }
+    public get avgConsumptionPpmPerDay(): number { return this.data.avgConsumptionPpmPerDay; }
+    public set avgConsumptionPpmPerDay(val: number) { this.setDataVal('avgConsumptionPpmPerDay', val); }
+    // Human-readable form of avgConsumptionPpmPerDay (e.g. "Running 14-day
+    // average FC consumption (2026-09-04 09:10 to 2026-09-18 09:10
+    // America/New_York): 1.77 ppm/day (from 34 FC readings, 16 SWG log
+    // entries)."), used verbatim by the dashboard's Chemistry summary tile. When the
+    // window had to be extended back to include 3 FC readings, the parenthetical
+    // says so, e.g. "(2026-08-26 14:05 to 2026-09-18 09:10 America/New_York; window
+    // extended back from 14 days because it held fewer than 3 FC readings)".
+    public get avgConsumptionSummary(): string { return this.data.avgConsumptionSummary; }
+    public set avgConsumptionSummary(val: string) { this.setDataVal('avgConsumptionSummary', val); }
+    // ISO start/end of the running-average window actually used (start reflects any
+    // extension back to 3 FC readings; end is calculation time).
+    public get avgWindowStart(): string { return this.data.avgWindowStart; }
+    public set avgWindowStart(val: string) { this.setDataVal('avgWindowStart', val); }
+    public get avgWindowEnd(): string { return this.data.avgWindowEnd; }
+    public set avgWindowEnd(val: string) { this.setDataVal('avgWindowEnd', val); }
+    // Inputs and by-products of the last calculation that aren't surfaced as their
+    // own fields above (config parameters, SWG capacity and run window, most recent
+    // FC/CYA/SWG data points, how many SWG entries came from the local log). Written
+    // to the history log when the recommendation is applied.
+    public get details(): any { return this.data.details; }
+    public set details(val: any) { this.setDataVal('details', val); }
+    public get projectedCurrentFc(): number { return this.data.projectedCurrentFc; }
+    public set projectedCurrentFc(val: number) { this.setDataVal('projectedCurrentFc', val); }
+    public get lastAppliedAt(): string { return this.data.lastAppliedAt; }
+    public set lastAppliedAt(val: string) { this.setDataVal('lastAppliedAt', val); }
+    public get lastAppliedPct(): number { return this.data.lastAppliedPct; }
+    public set lastAppliedPct(val: number) { this.setDataVal('lastAppliedPct', val); }
+    // Free-form breakdown lines describing how the recommendation was derived,
+    // shown in the UI so the user can sanity-check the number before applying it.
+    // This reflects the most recent Check Now, whether or not it's been applied.
+    public get rationale(): string[] { return this.data.rationale; }
+    public set rationale(val: string[]) { this.setDataVal('rationale', val); }
+    // A snapshot of `rationale` taken at the moment a change was actually applied (by the
+    // Apply button, or an automatic step -- see runAutoSwgStep()). Unlike `rationale`, this
+    // isn't overwritten by a later Check Now that hasn't been applied, so the explanation
+    // behind what's actually running on the chlorinator right now stays available.
+    public get lastAppliedRationale(): string[] { return this.data.lastAppliedRationale; }
+    public set lastAppliedRationale(val: string[]) { this.setDataVal('lastAppliedRationale', val); }
+    // AutoSwg.targetFc as of the last apply -- config.targetFc may have changed since, so this
+    // is what a pending step (which is chasing THIS target) should be explained against.
+    public get lastAppliedTargetFc(): number { return this.data.lastAppliedTargetFc; }
+    public set lastAppliedTargetFc(val: number) { this.setDataVal('lastAppliedTargetFc', val); }
+    // The absolute date/time this apply is aiming to reach lastAppliedTargetFc by
+    // (lastAppliedAt + targetDays as of that apply). Unlike targetDays (a relative
+    // config number), this stays fixed once set, so a later "refine toward the
+    // original target" check can re-aim at the same deadline with fresh PoolMath
+    // data instead of restarting the countdown from today.
+    public get lastAppliedTargetDate(): string { return this.data.lastAppliedTargetDate; }
+    public set lastAppliedTargetDate(val: string) { this.setDataVal('lastAppliedTargetDate', val); }
+    // The target FC/date the CURRENT pending calculation (if any) was actually computed
+    // against -- set alongside recommendedPct/rationale/etc. by runAutoSwgRecommendation(),
+    // and consumed verbatim by applyAutoSwgRecommendation() when it becomes lastApplied*.
+    // This is what makes a refine toward an already-in-flight target (which deliberately
+    // computes against lastAppliedTargetFc/lastAppliedTargetDate, not today's live config)
+    // actually PRESERVE that same target on apply, instead of applyAutoSwgRecommendation
+    // silently resetting it back to "live config targetDays from right now" the way a fresh
+    // Check Now correctly does.
+    public get pendingTargetFc(): number { return this.data.pendingTargetFc; }
+    public set pendingTargetFc(val: number) { this.setDataVal('pendingTargetFc', val); }
+    public get pendingTargetDate(): string { return this.data.pendingTargetDate; }
+    public set pendingTargetDate(val: string) { this.setDataVal('pendingTargetDate', val); }
+    // The Run Periods to Target (above|below) this calculation used, and the ones of the last apply: changing either is a request for a new target,
+    // just as a changed Target FC is (see runAutoSwgRecommendation).
+    public get pendingPeriodsKey(): string { return this.data.pendingPeriodsKey; }
+    public set pendingPeriodsKey(val: string) { this.setDataVal('pendingPeriodsKey', val); }
+    public get lastAppliedPeriodsKey(): string { return this.data.lastAppliedPeriodsKey; }
+    public set lastAppliedPeriodsKey(val: string) { this.setDataVal('lastAppliedPeriodsKey', val); }
+    // Set when even 100% SWG can't reach the target within the window (the recommended %
+    // is capped at 100). targetWarning belongs to the current calculation preview and is
+    // cleared with it; lastAppliedTargetWarning is what was in force when it was last applied,
+    // so the dashboard can keep flagging it -- including after an unattended auto-apply.
+    public get targetWarning(): string { return this.data.targetWarning; }
+    public set targetWarning(val: string) { this.setDataVal('targetWarning', val); }
+    public get lastAppliedTargetWarning(): string { return this.data.lastAppliedTargetWarning; }
+    public set lastAppliedTargetWarning(val: string) { this.setDataVal('lastAppliedTargetWarning', val); }
+    // Set when the newest FC reading behind a calculation is several days old (the projection
+    // is then mostly extrapolation). Same lifecycle as targetWarning / lastAppliedTargetWarning.
+    // Informational counterpart of targetWarning: FC is so far above target that consumption
+    // alone (SWG at 0%) won't bring it down by the deadline. Same lifecycle as targetWarning.
+    public get targetInfo(): string { return this.data.targetInfo; }
+    public set targetInfo(val: string) { this.setDataVal('targetInfo', val); }
+    public get lastAppliedTargetInfo(): string { return this.data.lastAppliedTargetInfo; }
+    public set lastAppliedTargetInfo(val: string) { this.setDataVal('lastAppliedTargetInfo', val); }
+    // When the periodic automatic check is next due (ISO); cleared while it isn't armed.
+    // Recomputed whenever the timer is armed (startup, a settings save, after each check).
+    // What the last auto tune did (see AutoSwgAutoTune.ts): shown on the SWG Assist page, and kept across restarts.
+    // The note on a recent fall in the chlorinator's salt reading (see AutoSwgSaltHistory); same lifecycle as staleFcNote.
+    // The storm response's current event (see AutoSwgParams.storm): the baseline day of the salt drop it acted on, and when it started, so one event
+    // cannot keep the SWG raised for longer than stormMaxDays.
+    // What the SWG Assist watch (AutoSwgWatch.ts) found: the alerts shown in the SWG Assist area of the dashboard. Recomputed every ten minutes.
+    // When njsPC last knew it was running (every ten minutes), and the times it was not: a gap of 25 minutes or more found at start-up is an outage
+    // (the pool equipment, which njsPC keeps on, was off), kept as { from, to, minutes, rebooted } for the last ten.
+    public get heartbeatAt(): string { return this.data.heartbeatAt; }
+    public set heartbeatAt(val: string) { this.setDataVal('heartbeatAt', val); }
+    public get outages(): any[] { return this.data.outages; }
+    public set outages(val: any[]) { this.setDataVal('outages', val); }
+    // Away protection, as of the last save of the settings: its status (see AutoSwg.awayStatus) and when it was turned on, for the dashboard.
+    public get awayStatus(): string { return this.data.awayStatus; }
+    public set awayStatus(val: string) { this.setDataVal('awayStatus', val); }
+    public get awayStartedAt(): string { return this.data.awayStartedAt; }
+    public set awayStartedAt(val: string) { this.setDataVal('awayStartedAt', val); }
+    // The vacation target while Away protection is on (for the dashboard), and what the check made when it was turned on or off did to the SWG %.
+    public get awayTargetFc(): number { return this.data.awayTargetFc; }
+    public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
+    // How the SWG % is steered, as of the last save of the settings (see AutoSwg.controlMode): 'band' keeps FC between fcLow and fcHigh, 'target' steers to one Target FC.
+    public get controlMode(): string { return this.data.controlMode; }
+    public set controlMode(val: string) { this.setDataVal('controlMode', val); }
+    public get fcLow(): number { return this.data.fcLow; }
+    public set fcLow(val: number) { this.setDataVal('fcLow', val); }
+    public get fcHigh(): number { return this.data.fcHigh; }
+    public set fcHigh(val: number) { this.setDataVal('fcHigh', val); }
+    public get awayChangeNote(): string { return this.data.awayChangeNote; }
+    public set awayChangeNote(val: string) { this.setDataVal('awayChangeNote', val); }
+    public get alerts(): any[] { return this.data.alerts; }
+    public set alerts(val: any[]) { this.setDataVal('alerts', val); }
+    public get stormStartPct(): number { return this.data.stormStartPct; }
+    public set stormStartPct(val: number) { this.setDataVal('stormStartPct', val); }
+    public get stormEventKey(): string { return this.data.stormEventKey; }
+    public set stormEventKey(val: string) { this.setDataVal('stormEventKey', val); }
+    public get stormStartedAt(): string { return this.data.stormStartedAt; }
+    public set stormStartedAt(val: string) { this.setDataVal('stormStartedAt', val); }
+    public get saltNote(): string { return this.data.saltNote; }
+    public set saltNote(val: string) { this.setDataVal('saltNote', val); }
+    public get autoTuneNote(): string { return this.data.autoTuneNote; }
+    public set autoTuneNote(val: string) { this.setDataVal('autoTuneNote', val); }
+    public get autoTuneAt(): string { return this.data.autoTuneAt; }
+    public set autoTuneAt(val: string) { this.setDataVal('autoTuneAt', val); }
+    public get nextAutoCheckAt(): string { return this.data.nextAutoCheckAt; }
+    public set nextAutoCheckAt(val: string) { this.setDataVal('nextAutoCheckAt', val); }
+    // Background PoolMath history sync (see AutoSwgPoolMathArchive): when it last succeeded, how
+    // many entries and how far back the archive goes, and the last failure (cleared on success).
+    public get archiveSyncedAt(): string { return this.data.archiveSyncedAt; }
+    public set archiveSyncedAt(val: string) { this.setDataVal('archiveSyncedAt', val); }
+    public get archiveCount(): number { return this.data.archiveCount; }
+    public set archiveCount(val: number) { this.setDataVal('archiveCount', val); }
+    public get archiveOldest(): string { return this.data.archiveOldest; }
+    public set archiveOldest(val: string) { this.setDataVal('archiveOldest', val); }
+    public get archiveError(): string { return this.data.archiveError; }
+    public set archiveError(val: string) { this.setDataVal('archiveError', val); }
+    public get staleFcNote(): string { return this.data.staleFcNote; }
+    public set staleFcNote(val: string) { this.setDataVal('staleFcNote', val); }
+    public get lastAppliedStaleFcNote(): string { return this.data.lastAppliedStaleFcNote; }
+    public set lastAppliedStaleFcNote(val: string) { this.setDataVal('lastAppliedStaleFcNote', val); }
+    // Timestamp (ISO) of the newest PoolMath FC reading the last apply was based on. A
+    // Refresh against the same reading has nothing new to work from, so it is skipped.
+    // The target settings (target FC, days above/below, new-target-date threshold) the last apply
+    // was calculated with. The no-new-FC-reading skip only holds while these still match the
+    // current settings -- a changed target is a reason to recalculate even without new data.
+    public get lastAppliedSettingsKey(): string { return this.data.lastAppliedSettingsKey; }
+    public set lastAppliedSettingsKey(val: string) { this.setDataVal('lastAppliedSettingsKey', val); }
+    // Set while intervals in the averaging window are being left out for an FC rise nothing logged
+    // explains (see AutoSwgService fcAnomalyNote). Same lifecycle as staleFcNote.
+    public get fcAnomalyNote(): string { return this.data.fcAnomalyNote; }
+    public set fcAnomalyNote(val: string) { this.setDataVal('fcAnomalyNote', val); }
+    public get lastAppliedFcAnomalyNote(): string { return this.data.lastAppliedFcAnomalyNote; }
+    public set lastAppliedFcAnomalyNote(val: string) { this.setDataVal('lastAppliedFcAnomalyNote', val); }
+    // Set when PoolMath's recent SWG entries imply a rated output that disagrees with the SWG Rating setting.
+    // Same lifecycle as the other notes.
+    public get ratingNote(): string { return this.data.ratingNote; }
+    public set ratingNote(val: string) { this.setDataVal('ratingNote', val); }
+    public get lastAppliedRatingNote(): string { return this.data.lastAppliedRatingNote; }
+    public set lastAppliedRatingNote(val: string) { this.setDataVal('lastAppliedRatingNote', val); }
+    // Fingerprint of the PoolMath data (FC readings, additions, SWG entries) the last apply was
+    // calculated from -- a Refresh with the same data has nothing new to work from.
+    public get lastAppliedDataKey(): string { return this.data.lastAppliedDataKey; }
+    public set lastAppliedDataKey(val: string) { this.setDataVal('lastAppliedDataKey', val); }
+    public get lastAppliedFcAt(): string { return this.data.lastAppliedFcAt; }
+    public set lastAppliedFcAt(val: string) { this.setDataVal('lastAppliedFcAt', val); }
+    // True when the most recent AUTOMATIC apply (fully-automatic mode, no human review)
+    // moved the setpoint by at least AutoSwg.autoApplyWarnThresholdPct percentage points,
+    // so the dashboard can flag it prominently. Cleared by any manual apply/override --
+    // once a human has looked at and acted on the setpoint, there's nothing unreviewed
+    // left to warn about.
+    public get lastAutoApplyLargeChange(): boolean { return this.data.lastAutoApplyLargeChange; }
+    public set lastAutoApplyLargeChange(val: boolean) { this.setDataVal('lastAutoApplyLargeChange', val); }
+    // What the warning banner says about that change: the SWG % before it, and the warning threshold it was measured against.
+    public get lastAutoApplyPreviousPct(): number { return this.data.lastAutoApplyPreviousPct; }
+    public set lastAutoApplyPreviousPct(val: number) { this.setDataVal('lastAutoApplyPreviousPct', val); }
+    public get lastAutoApplyThresholdPct(): number { return this.data.lastAutoApplyThresholdPct; }
+    public set lastAutoApplyThresholdPct(val: number) { this.setDataVal('lastAutoApplyThresholdPct', val); }
+    public get error(): string { return this.data.error; }
+    public set error(val: string) { this.setDataVal('error', val); }
+    // Pending automatic step (see AutoSwg.autoStepEnabled): when to change the setpoint,
+    // and to what -- may be up or down depending on whether the applied % was above or
+    // below maintenance. Persisted so it survives a restart.
+    public get stepAt(): string { return this.data.stepAt; }
+    public set stepAt(val: string) { this.setDataVal('stepAt', val); }
+    // Range control: the last applied decision held the SWG at 0% because FC was above the range (it resumes once FC is half a ppm below the top). Kept across restarts.
+    public get bandCoasting(): boolean { return this.data.bandCoasting === true; }
+    public set bandCoasting(val: boolean) { this.setDataVal('bandCoasting', val === true); }
+    public get stepPct(): number { return this.data.stepPct; }
+    public set stepPct(val: number) { this.setDataVal('stepPct', val); }
 }
 export class CommsState {
     public keepAlives: number;
