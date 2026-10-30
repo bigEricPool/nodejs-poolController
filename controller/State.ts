@@ -2342,18 +2342,21 @@ export class ChlorinatorState extends EqState {
     public get usageSince(): number { return this.data.usageSince || 0; }
     /** Hours the cell was producing at all, at any output (the equivalent hours above are the work it did). */
     public get usageRunHours(): number { return this.data.usageRunHours || 0; }
+    /** Pounds of the total that were estimated from the SWG entries, for the time before the output log began. */
+    public get usageEstimatedPounds(): number { return this.data.usageEstimatedPounds || 0; }
     public addUsage(hours: number, pounds: number, runHours: number = 0) {
         if (!(hours > 0)) return;
         this.setDataVal('usageHours', this.usageHours + hours);
         this.setDataVal('usagePounds', this.usagePounds + (pounds > 0 ? pounds : 0));
         this.setDataVal('usageRunHours', this.usageRunHours + (runHours > 0 ? runHours : 0));
     }
-    public resetUsage(hours: number = 0, pounds: number = 0, since: number = Date.now(), runHours: number = 0) {
+    public resetUsage(hours: number = 0, pounds: number = 0, since: number = Date.now(), runHours: number = 0, estimatedPounds: number = 0) {
         if (!Number.isFinite(hours) || hours < 0 || !Number.isFinite(pounds) || pounds < 0 || !Number.isFinite(runHours) || runHours < 0)
             throw new RangeError('Cell usage must be a non-negative number of hours and pounds.');
         this.setDataVal('usageHours', hours);
         this.setDataVal('usagePounds', pounds);
         this.setDataVal('usageRunHours', runHours);
+        this.setDataVal('usageEstimatedPounds', estimatedPounds > 0 ? Math.min(estimatedPounds, pounds) : 0);
         this.setDataVal('usageSince', since);
     }
     public get setPointForCurrentBody() {
@@ -2520,6 +2523,7 @@ export class ChlorinatorState extends EqState {
         schlor.usageHours = this.usageHours;
         schlor.usagePounds = this.usagePounds;
         schlor.usageRunHours = this.usageRunHours;
+        schlor.usageEstimatedPounds = this.usageEstimatedPounds;
         return schlor;
     }
 }

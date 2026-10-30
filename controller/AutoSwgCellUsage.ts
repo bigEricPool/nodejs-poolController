@@ -17,6 +17,29 @@ export function cellUsageForHour(h: AutoSwgOutputHour, lbsPerDay: number): CellU
     return { hours: hours, pounds: lbsPerDay > 0 ? hours * lbsPerDay / 24 : 0, runHours: covered * Math.min(1, h.on / h.n) };
 }
 
+// The part of the time before the output log began, estimated from the SWG entries (PoolMath's, and the ones this app wrote after them): each entry holds until the
+// next one, and makes its credited ppm a day, which is the chlorine in pounds for the pool volume (so an entry whose % was not what ran, but whose credit fits the FC
+// readings, counts at its credit). The equivalent hours are those pounds at the rating. Counting starts at the first entry at or after `fromMs`, because the entry in
+// force at the install date was set for the cell that came out, and stops at `toMs`.
+export interface SwgEventLike { ts: number; ppmPerDay: number; hrs: number; pct: number; }
+export function cellUsageFromSwgEvents(events: SwgEventLike[], fromMs: number, toMs: number, gallons: number, lbsPerDay: number): CellUsage {
+    const total: CellUsage = { hours: 0, pounds: 0, runHours: 0 };
+    const list = events.filter(e => isFinite(e.ts) && e.ts >= fromMs && e.ts < toMs).sort((a, b) => a.ts - b.ts);
+    // the entries before the first one in range do not count, but the one that ends this stretch is the next entry whatever its time
+    const all = events.filter(e => isFinite(e.ts)).sort((a, b) => a.ts - b.ts);
+    for (const e of list) {
+        const next = all.find(x => x.ts > e.ts);
+        const end = Math.min(toMs, next ? next.ts : toMs);
+        const days = (end - e.ts) / 86400000;
+        if (!(days > 0) || !(e.ppmPerDay > 0)) continue;
+        const pounds = e.ppmPerDay * gallons * 8.34 / 1e6 * days;
+        total.pounds += pounds;
+        total.hours += lbsPerDay > 0 ? pounds * 24 / lbsPerDay : (e.pct / 100) * e.hrs * days;
+        total.runHours += e.hrs * days;
+    }
+    return total;
+}
+
 // The usage of the hours that start at or after `fromMs`, and the start of the first of them that the log holds.
 export function cellUsageSince(hours: AutoSwgOutputHour[], fromMs: number, lbsPerDay: number): CellUsage & { firstHour?: string } {
     const total: CellUsage & { firstHour?: string } = { hours: 0, pounds: 0, runHours: 0 };
