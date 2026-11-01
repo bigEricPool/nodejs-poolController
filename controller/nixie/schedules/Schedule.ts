@@ -167,6 +167,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             let ssched = c.sscheds[j];
                             ssched.triggered = ssched.scheduleTime.shouldBeOn;
                             ssched.resumeAfterRestart = false;
+                            // The circuit is on again, so an earlier stand-down is over: a restart from here resumes it.
+                            ssched.divergedSince = undefined;
+                            this._suppressionLogged.delete(ssched.id);
                             if (mOP && ssched.manualPriorityActive) {
                                 ssched.isOn = false;
                                 // Not sure what setting a delay for this does but ok.
