@@ -199,14 +199,18 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         // Nixie just starts with the relays off.  Put the relay back on once, without the one-time heat push.
                         if (!untriggered && c.sscheds.some(elem => elem.resumeAfterRestart && elem.scheduleTime.shouldBeOn)) {
                             await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
-                            // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
-                            await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
-                            c.cstate.priority = 'scheduled';
-                            for (let j = 0; j < c.sscheds.length; j++) {
-                                let ssched = c.sscheds[j];
-                                if (!ssched.scheduleTime.shouldBeOn) continue;
-                                ssched.isOn = true;
-                                ssched.manualPriorityActive = ssched.resumeAfterRestart = false;
+                            // The relay manager may not be answering yet at startup, and then the circuit stays off without an
+                            // error.  The flag stays set in that case, so the next pass tries again.
+                            if (c.cstate.isOn) {
+                                // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
+                                await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
+                                c.cstate.priority = 'scheduled';
+                                for (let j = 0; j < c.sscheds.length; j++) {
+                                    let ssched = c.sscheds[j];
+                                    if (!ssched.scheduleTime.shouldBeOn) continue;
+                                    ssched.isOn = true;
+                                    ssched.manualPriorityActive = ssched.resumeAfterRestart = false;
+                                }
                             }
                         }
                         else if (!untriggered) {
@@ -292,6 +296,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                 if (!ssched.triggered && ssched.scheduleTime.shouldBeOn) {
                                     if (!c.cstate.isOn) {
                                         await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
+                                        // Not on means the relay manager did not take the command.  Marking the schedule triggered
+                                        // would stand it down for the day, so it stays untriggered and the next pass tries again.
+                                        if (!c.cstate.isOn) continue;
                                         // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
                                         await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
                                     }
