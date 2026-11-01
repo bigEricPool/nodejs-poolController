@@ -162,6 +162,7 @@ export class State implements IState {
     public async stopAsync() {
         try {
             if (this._timerDirty) clearTimeout(this._timerDirty);
+            if (this._emitTimerDirty) { clearTimeout(this._emitTimerDirty); this._emitTimerDirty = null; }
             this.persist();
             // Circuit/feature/body isOn is reset on the next startup instead (see the Nixie
             // controller block in init()) so it also covers an ungraceful restart/crash, not
@@ -341,6 +342,8 @@ export class State implements IState {
         if (this.delay !== val) {
             this.data.delay = sys.board.valueMaps.delay.transform(val);
             this.hasChanged = true;
+            // The controller delay is surfaced in the delays list so emit that as well.
+            delayMgr.setDirty();
         }
     }
     public get batteryVoltage(): number { return this.data.batteryVoltage; }
@@ -379,18 +382,21 @@ export class State implements IState {
             for (let i = 0; i < sdata.schedules.length; i++) {
                 let ssched = sdata.schedules[i];
                 let st = ssched.scheduleTime;
-                // A schedule already inside its last-calculated active window is resuming
-                // after a restart, not starting fresh -- preserve `triggered` so
-                // triggerSchedules() (see controller/nixie/schedules/Schedule.ts) only
-                // reasserts the relay on the next pass instead of also re-running the
-                // schedule's one-time heat mode/setpoint push, which would clobber whatever
-                // the user set manually since the schedule actually started. A schedule
-                // outside its window (or never calculated) still starts clean.
+                // A schedule that started and is still inside its last-calculated window is resuming after a
+                // restart, not starting fresh -- keep `triggered` so its one-time heat mode/setpoint push is not
+                // run again over whatever the user set since it started.  `resumeAfterRestart` asks
+                // triggerSchedules() to put its relay back on once.  A schedule that had stood down (a circuit
+                // turned off in its window) keeps standing down, and one that never started starts normally.
                 let withinWindow = st && typeof st.startTime === 'string' && st.startTime !== '' && typeof st.endTime === 'string' && st.endTime !== ''
                     && new Date(st.startTime).getTime() <= nowMs && nowMs <= new Date(st.endTime).getTime();
+                let resuming = !!withinWindow && ssched.triggered === true;
+                ssched.resumeAfterRestart = resuming && (ssched.isOn === true || ssched.resumeAfterRestart === true) && !ssched.divergedSince;
                 ssched.manualPriorityActive = false;
                 ssched.isOn = false;
-                ssched.triggered = withinWindow;
+                ssched.triggered = resuming;
+                // divergedSince is a diagnostic condition, not control state.  A value carried
+                // across a restart would report a stranded schedule that no longer exists.
+                ssched.divergedSince = undefined;
                 if (typeof st !== 'undefined') st.calculated = false;
             }
         }
@@ -399,9 +405,9 @@ export class State implements IState {
         // IntelliCenter/*Touch do. If a persisted "isOn: true" survives a restart, triggerSchedules()
         // (see controller/nixie/schedules/Schedule.ts) sees the circuit as already on and never
         // re-issues the command to actually energize the relay -- e.g. a sunrise-to-sunset SWG
-        // schedule restarted mid-day never re-triggers. Clearing isOn here (schedules are reset
-        // above, so shouldBeOn will re-trigger them) forces a real re-assertion of the relay state
-        // on every startup, regardless of whether the previous process exited cleanly.
+        // schedule restarted mid-day never re-triggers. Clearing isOn here (a schedule that was running
+        // is marked resumeAfterRestart above) forces a real re-assertion of the relay state on every
+        // startup, regardless of whether the previous process exited cleanly.
         if (sys.controllerType === ControllerType.Nixie) {
             if (typeof sdata.circuits !== 'undefined') for (let i = 0; i < sdata.circuits.length; i++) sdata.circuits[i].isOn = false;
             if (typeof sdata.features !== 'undefined') for (let i = 0; i < sdata.features.length; i++) sdata.features[i].isOn = false;
@@ -419,39 +425,10 @@ export class State implements IState {
         this.equipment.messages.clear();
 
         //this.onchange(state, function () { self.dirty = true; });
-        const syncHeliotrope = function () {
-            self.heliotrope.date = self._dt.toDate();
-            // Provide safe access & environment fallback for coordinates
-            const loc = sys?.general?.location || {} as any;
-            let lon = loc.longitude;
-            let lat = loc.latitude;
-            if (typeof lon !== 'number' || typeof lat !== 'number') {
-                const envLat = process.env.POOL_LATITUDE ? parseFloat(process.env.POOL_LATITUDE) : undefined;
-                const envLon = process.env.POOL_LONGITUDE ? parseFloat(process.env.POOL_LONGITUDE) : undefined;
-                if (typeof lon !== 'number' && typeof envLon === 'number' && !isNaN(envLon)) lon = envLon;
-                if (typeof lat !== 'number' && typeof envLat === 'number' && !isNaN(envLat)) lat = envLat;
-            }
-            if (typeof lon !== 'number' || typeof lat !== 'number') {
-                const zipCoords = getCoordinatesForZip(loc.zip);
-                if (zipCoords) {
-                    if (typeof lat !== 'number') lat = zipCoords.latitude;
-                    if (typeof lon !== 'number') lon = zipCoords.longitude;
-                }
-            }
-            self.heliotrope.longitude = lon;
-            self.heliotrope.latitude = lat;
-            let times = self.heliotrope.calculatedTimes;
-            self.data.sunrise = times.isValid ? Timestamp.toISOLocal(times.sunrise) : '';
-            self.data.sunset = times.isValid ? Timestamp.toISOLocal(times.sunset) : '';
-            self.data.nextSunrise = times.isValid ? Timestamp.toISOLocal(times.nextSunrise) : '';
-            self.data.nextSunset = times.isValid ? Timestamp.toISOLocal(times.nextSunset) : '';
-            self.data.prevSunrise = times.isValid ? Timestamp.toISOLocal(times.prevSunrise) : '';
-            self.data.prevSunset = times.isValid ? Timestamp.toISOLocal(times.prevSunset) : '';
-        };
         this._dt.emitter.on('change', function () {
             self.data.time = self._dt.format();
             self.hasChanged = true;
-            syncHeliotrope();
+            self.syncHeliotrope();
             versionCheck.checkGitRemote();
         });
         this.status = 0; // Initializing
@@ -473,12 +450,41 @@ export class State implements IState {
         this.filters = new FilterStateCollection(this.data, 'filters');
         this.comms = new CommsState();
         this.heliotrope = new Heliotrope();
-        // The clock only emits 'change' when the minute rolls over, so without this the heliotrope
-        // (and the sunrise/sunset schedule windows that depend on it) isn't valid until then.
-        syncHeliotrope();
+        // The clock only emits 'change' when the minute moves, so seed the heliotrope now or the
+        // first schedule pass after a restart can see it without a date or coordinates.
+        this.syncHeliotrope();
         this.appVersion = new AppVersionState(this.data, 'appVersion');
         this.data.startTime = Timestamp.toISOLocal(new Date());
         versionCheck.checkGitLocal();
+    }
+    public syncHeliotrope() {
+        this.heliotrope.date = this._dt.toDate();
+        // Provide safe access & environment fallback for coordinates
+        const loc = sys?.general?.location || {} as any;
+        let lon = loc.longitude;
+        let lat = loc.latitude;
+        if (typeof lon !== 'number' || typeof lat !== 'number') {
+            const envLat = process.env.POOL_LATITUDE ? parseFloat(process.env.POOL_LATITUDE) : undefined;
+            const envLon = process.env.POOL_LONGITUDE ? parseFloat(process.env.POOL_LONGITUDE) : undefined;
+            if (typeof lon !== 'number' && typeof envLon === 'number' && !isNaN(envLon)) lon = envLon;
+            if (typeof lat !== 'number' && typeof envLat === 'number' && !isNaN(envLat)) lat = envLat;
+        }
+        if (typeof lon !== 'number' || typeof lat !== 'number') {
+            const zipCoords = getCoordinatesForZip(loc.zip);
+            if (zipCoords) {
+                if (typeof lat !== 'number') lat = zipCoords.latitude;
+                if (typeof lon !== 'number') lon = zipCoords.longitude;
+            }
+        }
+        this.heliotrope.longitude = lon;
+        this.heliotrope.latitude = lat;
+        let times = this.heliotrope.calculatedTimes;
+        this.data.sunrise = times.isValid ? Timestamp.toISOLocal(times.sunrise) : '';
+        this.data.sunset = times.isValid ? Timestamp.toISOLocal(times.sunset) : '';
+        this.data.nextSunrise = times.isValid ? Timestamp.toISOLocal(times.nextSunrise) : '';
+        this.data.nextSunset = times.isValid ? Timestamp.toISOLocal(times.nextSunset) : '';
+        this.data.prevSunrise = times.isValid ? Timestamp.toISOLocal(times.prevSunrise) : '';
+        this.data.prevSunset = times.isValid ? Timestamp.toISOLocal(times.prevSunset) : '';
     }
     private sanitizeTransientLightGroupState(sdata: any) {
         if (!sdata || !Array.isArray(sdata.lightGroups)) return;
@@ -1420,22 +1426,27 @@ export class ScheduleTime extends ChildEqState {
                 }
                 this.startTime = times.startTime;
                 this.endTime = times.endTime;
-                // A failed calculation (e.g. heliotrope not ready yet) must not be cached as "calculated for
-                // today" -- with null times nothing else would ever trigger a recalculation until midnight, and
-                // the schedule would be dropped from getActiveSchedules() all day.  Retry on the next pass.
-                if (times.startTime && times.endTime) this.calculated = true;
-                else {
-                    this.calculated = false;
-                    logger.warn(`Schedule ${sched.id} window could not be calculated (heliotrope valid: ${state.heliotrope.isValid}); will retry.`);
-                }
+                // A null window means the times could not be resolved (e.g. the heliotrope is not
+                // ready yet).  Leave calculated false so the next status pass retries.
+                this.calculated = !!(times.startTime && times.endTime);
+                if (!this.calculated) ScheduleTime.warnUncalculated(sched.id, 'start or end time could not be resolved');
             }
             return this.shouldBeOn;
         } catch (err) {
-            this.calculated = true;
-            this.calculatedDate = new Date(new Date().setHours(0, 0, 0, 0));
+            this.calculated = false;
             this.startTime = null;
             this.endTime = null;
+            ScheduleTime.warnUncalculated(sched?.id, err.message);
         }
+    }
+    // Schedule id -> start of day the last warning was logged.  Static because a ScheduleTime
+    // instance is created on every access.
+    private static _uncalcWarned = new Map<number, number>();
+    private static warnUncalculated(id: number, reason: string) {
+        let sod = new Date().setHours(0, 0, 0, 0);
+        if (ScheduleTime._uncalcWarned.get(id) === sod) return;
+        ScheduleTime._uncalcWarned.set(id, sod);
+        logger.warn(`Schedule ${id} window not calculated (${reason}); will retry on the next pass.`);
     }
 }
 export class ScheduleState extends EqState {
@@ -1476,6 +1487,18 @@ export class ScheduleState extends EqState {
     public set disabled(val: boolean) { this.setDataVal('disabled', val); }
     public get triggered(): boolean { return this.data.triggered || false; }
     public set triggered(val: boolean) { this.setDataVal('triggered', val); }
+    // Diagnostic condition, not a control input.  Set to the instant at which this schedule was
+    // first observed wanting its circuit on while the circuit was off and every matching schedule
+    // was already triggered -- i.e. the scheduler is not going to act and cannot say whether that
+    // is a deliberate manual off or another subsystem having stomped the circuit.  Undefined means
+    // no divergence.  Nothing branches on this value; it exists so a stranded schedule is visible
+    // in /state/schedules instead of only in the log.  An instant rather than a flag so consumers
+    // can show how long it has been stranded.  (#1243 / ISSUE-232)
+    public get divergedSince(): Date { return typeof this.data.divergedSince !== 'undefined' && this.data.divergedSince !== '' ? new Date(this.data.divergedSince) : undefined; }
+    public set divergedSince(val: Date) { this.setDataVal('divergedSince', typeof val === 'undefined' ? undefined : Timestamp.toISOLocal(val)); }
+    // Set at startup for a schedule that was running when njsPC stopped; triggerSchedules() puts its relay back on once.
+    public get resumeAfterRestart(): boolean { return this.data.resumeAfterRestart === true; }
+    public set resumeAfterRestart(val: boolean) { this.setDataVal('resumeAfterRestart', val); }
     public get scheduleType(): number { return typeof (this.data.scheduleType) !== 'undefined' ? this.data.scheduleType.val : undefined; }
     public set scheduleType(val: number) {
         if (this.scheduleType !== val) {
