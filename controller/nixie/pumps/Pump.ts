@@ -220,7 +220,8 @@ export class NixiePump extends NixieEquipment {
     //   * when the pump stopped although it was meant to be running, because its relays were not refreshed within their latch time (see
     //     checkLatchAsync): njsPC was restarted or stalled, or the relay manager could not be reached. Water can settle and leave air in the lines
     //     while the pump is stopped, however briefly. It ends early when the pump is turned off.
-    // Turning the pump on by hand does not prime. Priming is off until it is turned on for the pump (primingEnabled).
+    //   * when the pump starts any other way, by hand for instance, after being off for more than minOffForPrimingMs (see checkLatchAsync), so a quick
+    //     off and on does not run the pump at the priming speed. It ends early when the pump is turned off.
     // Priming is off until it is turned on for the pump (primingEnabled). Not set, the priming time is 3 minutes, and a two speed pump primes at its
     // high speed. The other pump types prime only once a priming speed or a priming circuit has been chosen.
     public static readonly defaultPrimingMinutes = 3;
@@ -259,23 +260,34 @@ export class NixiePump extends NixieEquipment {
     // The relay manager turns a pump relay off when it is not refreshed within the latch time sent with each command, so a pump that is meant to be
     // running stops when njsPC is restarted, stalls, or cannot reach the relay manager for longer than that. njsPC cannot see the relay, but it knows
     // when it last set the relays as wanted: a gap longer than the latch means the pump stopped. So does njsPC starting up with the pump on, since
-    // starting takes longer than the latch. Either way the pump is primed (when priming is set up for it). Called after each pass that sets the relays.
+    // starting takes longer than the latch. Either way the pump is primed (when priming is set up for it). A pump that starts after being off for more
+    // than minOffForPrimingMs is primed too; found off at startup, it is taken as off for long enough. Called after each pass that sets the relays.
     protected static readonly relayLatchMs = 5000;
     protected _relaysOkAt: number;
     protected _relaysChecked = false;
+    // A pump that has been off this long has had time for water to settle, so it primes when it starts.
+    protected static readonly minOffForPrimingMs = 30000;
+    protected _stoppedAt: number;
     protected async checkLatchAsync(relaysSet: boolean) {
         let now = new Date().getTime();
         let first = !this._relaysChecked;
         this._relaysChecked = true;
-        if (this._targetSpeed === 0) { this._relaysOkAt = undefined; return; }
+        if (this._targetSpeed === 0) {
+            this._relaysOkAt = undefined;
+            if (typeof this._stoppedAt === 'undefined') this._stoppedAt = first ? 0 : now;
+            return;
+        }
         if (!relaysSet) return;
         let gap = typeof this._relaysOkAt === 'undefined' ? 0 : now - this._relaysOkAt;
+        let offFor = typeof this._stoppedAt === 'undefined' ? 0 : now - this._stoppedAt;
+        this._stoppedAt = undefined;
         this._relaysOkAt = now;
         try {
             if (this.isPriming) return;
             if (first) await this.startPrimingAsync(undefined, 'njsPC started with the pump on, so its relays had timed out');
             else if (gap > NixiePump.relayLatchMs) await this.startPrimingAsync(undefined, `its relays were not refreshed for ${Math.round(gap / 100) / 10} s, longer than their ${NixiePump.relayLatchMs / 1000} s latch`);
-        } catch (err) { logger.error(`NCP: Error priming pump ${this.pump.name} after its relays timed out: ${err.message}`); }
+            else if (offFor > NixiePump.minOffForPrimingMs) await this.startPrimingAsync(undefined, `it was turned on after being off for more than ${NixiePump.minOffForPrimingMs / 1000} s`);
+        } catch (err) { logger.error(`NCP: Error priming pump ${this.pump.name}: ${err.message}`); }
     }
     // While it primes the pump's status is 'priming', which a dashboard shows and the solar decision waits for. Called after each pass that sets the
     // relays.
