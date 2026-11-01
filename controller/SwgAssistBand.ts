@@ -71,7 +71,10 @@ export function bandDecision(i: BandInput): BandDecision {
     let note: string;
     if (coasting && !stale) {
         pct = 0; mode = 'coast';
-        note = `FC is projected at ${i.projectedFc.toFixed(2)} ppm, above the top of the range (${hi} ppm), so the SWG is held at 0% until it falls to ${(hi - 0.5).toFixed(1)} ppm.`;
+        // coasting stays on from the moment FC went above the top until it falls half a ppm below it, so the projection can already be under the top
+        note = i.projectedFc > hi
+            ? `FC is projected at ${i.projectedFc.toFixed(2)} ppm, above the top of the range (${hi} ppm), so the SWG is held at 0% until it falls to ${(hi - 0.5).toFixed(1)} ppm.`
+            : `FC went above the top of the range (${hi} ppm) and is now projected at ${i.projectedFc.toFixed(2)} ppm, so the SWG stays at 0% until it falls to ${(hi - 0.5).toFixed(1)} ppm.`;
     }
     else if (i.projectedFc - guard < lo) {
         const need = mid + i.marginPpm - i.projectedFc + i.avgPerDay * i.periodDayEq;
