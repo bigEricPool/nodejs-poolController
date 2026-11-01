@@ -31,7 +31,7 @@ import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
 import { ChlorinatorStateMessage } from "../../../controller/comms/messages/status/ChlorinatorStateMessage";
-import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck } from "../../../controller/AutoSwgService";
+import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter } from "../../../controller/AutoSwgService";
 import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgService";
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
@@ -81,8 +81,8 @@ function autoSwgStepTime(target: Date): Date {
         if (isNaN(a) || isNaN(b) || b <= a) return target;
         let t = minutesOfDayIn(cfg.timezone, target.getTime());
         if (t >= a && t < b) return target;
-        let wait = t < a ? (a + 1 - t) : (1440 - t + a + 1);
-        return new Date(target.getTime() + Math.max(wait, 0) * 60000);
+        // by the clock of the zone, so the day the clocks change does not move it an hour
+        return new Date(nextWindowStartAfter(target, win.swgStartTime, cfg.timezone).getTime() + 60000);
     }
     catch (err) { return target; }
 }

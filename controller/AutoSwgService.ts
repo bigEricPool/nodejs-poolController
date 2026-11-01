@@ -658,23 +658,29 @@ function deadlineAfterRunHours(from: Date, onHours: number, start: TimeOfDay, st
     return new Date(from.getTime() + Math.ceil(hi - 1e-4) * 60000);   // to the whole minute, so a deadline at the end of a window reads 17:06, not 17:05:59
 }
 
-// The next time the SWG's run window opens, strictly after `instant` (to the minute).
+// The next time the SWG's run window opens, strictly after `instant`. Worked out on the clock of `timeZone`, so on a day the clocks change it is still the time the
+// window opens by the clock, not that many minutes later.
 function nextRunStartAfter(instant: Date, start: TimeOfDay, timeZone: string): Date {
-    const a = start.hour * 60 + start.minute;
-    const m = localMinutesOfDay(instant, timeZone);
-    const wait = a > m ? a - m : a - m + 1440;
-    return new Date(instant.getTime() + wait * 60000);
+    const today = localYmd(instant, timeZone);
+    const first = zonedTimeToUtc(today.year, today.month, today.day, start, timeZone);
+    if (first.getTime() > instant.getTime()) return first;
+    const next = addDays(today, 1);
+    return zonedTimeToUtc(next.year, next.month, next.day, start, timeZone);
+}
+export function nextWindowStartAfter(instant: Date, startTime: string, timeZone: string): Date {
+    return nextRunStartAfter(instant, parseTimeOfDay(startTime), timeZone);
 }
 
 const TROUGH_MAX_ADD_PPM = 1;   // never aim more than this above the target to protect the overnight low
 
 // How many hours of the SWG's daily run window fall between two instants. Every whole 24 hours holds one full run; the rest of the period holds only the part of
-// the run that lies inside it, so a half-day target period can hold the whole run, part of it, or none of it. (Daylight saving shifts are ignored.)
+// the run that lies inside it, so a half-day target period can hold the whole run, part of it, or none of it. The span is measured on the wall clock of `timeZone`
+// (a day the clocks change is 23 or 25 hours long, and still holds the run once, where it falls on the clock).
 function runWindowHoursBetween(from: Date, to: Date, start: TimeOfDay, stop: TimeOfDay, timeZone: string): number {
     const a = start.hour * 60 + start.minute + start.second / 60;
     const b = stop.hour * 60 + stop.minute + stop.second / 60;
     const len = b > a ? b - a : b + 1440 - a;     // a window may run past midnight
-    const totalMin = Math.max(0, (to.getTime() - from.getTime()) / 60000);
+    const totalMin = Math.max(0, ((to.getTime() + tzOffsetMinutes(to, timeZone) * 60000) - (from.getTime() + tzOffsetMinutes(from, timeZone) * 60000)) / 60000);
     const full = Math.floor(totalMin / 1440), rem = totalMin - full * 1440;
     const s = localMinutesOfDay(from, timeZone), e = s + rem;
     const overlap = (w0: number, w1: number) => Math.max(0, Math.min(e, w1) - Math.max(s, w0));
@@ -730,7 +736,8 @@ export function nextScheduledCheck(now: Date, startTime: string, hours: number, 
         const day = addDays(today, d);
         const anchor = anchorOn(day);
         const nextAnchor = anchorOn(addDays(day, 1));
-        for (let k = 0; anchor + k * intervalMs < nextAnchor; k++) {
+        // `k * hours < 24`: a day holds the checks of its 24 nominal hours, so the day the clocks go back (25 hours) does not get an extra one an hour before the next anchor
+        for (let k = 0; k * hours < 24 && anchor + k * intervalMs < nextAnchor; k++) {
             const at = anchor + k * intervalMs;
             if (at >= earliest) return new Date(at);
         }
@@ -2043,4 +2050,4 @@ export function minutesToHHMM(minutes: number): string {
 }
 
 // Exported for unit testing / offline debugging against a saved copy of the page.
-export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml };
+export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml, runWindowHoursBetween, deadlineAfterRunHours, nextRunStartAfter };
