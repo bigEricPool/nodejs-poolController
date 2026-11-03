@@ -4385,7 +4385,7 @@ export class HeaterCommands extends BoardCommands {
                                             // actually reached the whole degree of the setpoint/coolSetpoint, rather than
                                             // stopping/starting half a degree early because of a fractional reading. This
                                             // is local to the solar on/off check; body.temp itself is untouched everywhere
-                                            // else (display, other heater types, AutoSwg, etc).
+                                            // else (display, other heater types, etc).
                                             let waterTemp = Math.trunc(body.temp);
                                             if (state.temps.solar > waterTemp // 1
                                                 && waterTemp < cfgBody.heatSetpoint // 2
