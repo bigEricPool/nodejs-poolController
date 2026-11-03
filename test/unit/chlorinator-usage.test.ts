@@ -92,8 +92,9 @@ describe('cellUsageFromSwgEntries', () => {
 
 describe('mergeSwgEntries', () => {
     it('drops entries within an hour of an own entry', () => {
-        const own = [{ ts: 1000 * 3600, ppmPerDay: 2, hrs: 12, pct: 40 }];
-        const others = [{ ts: 1000 * 3600 + 1800000, ppmPerDay: 5, hrs: 12, pct: 40 }, { ts: 900 * 3600, ppmPerDay: 1, hrs: 12, pct: 20 }];
+        const H = 3600000;
+        const own = [{ ts: 1000 * H, ppmPerDay: 2, hrs: 12, pct: 40 }];
+        const others = [{ ts: 1000 * H + H / 2, ppmPerDay: 5, hrs: 12, pct: 40 }, { ts: 900 * H, ppmPerDay: 1, hrs: 12, pct: 20 }];
         const m = mergeSwgEntries(own, others);
         expect(m.map(e => e.ppmPerDay)).toEqual([1, 2]);
     });
