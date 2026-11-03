@@ -2392,6 +2392,9 @@ const AUTO_SWG_MODES = ['standard', 'advanced', 'automatic', 'developer'];
 let autoSwgReadinessProvider: ((cfg: AutoSwg) => { ready: boolean }) | undefined;
 export function setAutoSwgReadinessProvider(fn: (cfg: AutoSwg) => { ready: boolean }) { autoSwgReadinessProvider = fn; }
 export class AutoSwg extends EqItem {
+    // AutoSwg is the internal name of SWG Assist. The class and file names, the `autoSwg` config key, the data/autoSwg*.json(l) files,
+    // the /config/autoSwg and /state/autoSwg routes, the 'autoSwg' socket event and the browser storage keys keep the old name on purpose, so stored
+    // settings and history need no migration. Text the user sees says SWG Assist.
     // Singleton settings for the PoolMath-driven SWG% recommendation feature.
     // Persisted config only -- the computed recommendation itself lives in
     // state.autoSwg (controller/State.ts) since it is not equipment config,
