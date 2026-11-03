@@ -16,6 +16,10 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+// AutoSwg is the internal name of SWG Assist. The class and file names, the `autoSwg` config key, the data/autoSwg*.json(l) files,
+// the /config/autoSwg and /state/autoSwg routes, the 'autoSwg' socket event and the browser storage keys keep the old name on purpose, so stored
+// settings and history need no migration. Text the user sees says SWG Assist.
+//
 // AutoSwgService -- reads a PoolMath (troublefreepool.com) shared pool page and
 // computes a recommended salt-water-chlorinator (SWG) duty-cycle percentage.
 //
@@ -811,7 +815,7 @@ export function cachedPageHtml(maxAgeMs: number): string | undefined {
 function fetchHtml(shareCodeOrUrl: string): Promise<string> {
     noteShareRequest();
     const url = shareCodeOrUrl.startsWith('http') ? shareCodeOrUrl : `https://api.poolmathapp.com/share/${shareCodeOrUrl}`;
-    const options = { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (nodejs-poolController AutoSwg)' } };
+    const options = { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (nodejs-poolController SWG Assist)' } };
     return new Promise<string>((resolve, reject) => {
         try {
             const req = https.request(url, options, res => {

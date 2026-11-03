@@ -399,7 +399,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 function httpGet(url: string, redirects = 3): Promise<{ status: number; headers: any; body: string }> {
     return new Promise((resolve, reject) => {
         try {
-            const req = https.request(url, { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (nodejs-poolController AutoSwg)' }, timeout: 60000 }, res => {
+            const req = https.request(url, { method: 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (nodejs-poolController SWG Assist)' }, timeout: 60000 }, res => {
                 if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
                     res.resume();
                     httpGet(new URL(res.headers.location, url).toString(), redirects - 1).then(resolve, reject);
