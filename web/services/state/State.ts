@@ -1508,6 +1508,27 @@ export class StateRoute {
             catch (err) { next(err); }
         });
 
+        // Registered before /state/chlorinator/:id, which would otherwise take 'outputLog' and 'usage' as an id.
+        // What each chlorinator actually did, hour by hour (see ChlorinatorLog.ts): GET /state/chlorinator/outputLog?days=30[&id=1]
+        app.get('/state/chlorinator/outputLog', (req, res, next) => {
+            try {
+                let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
+                if (isNaN(days) || days < 1) days = 30;
+                days = Math.min(days, 548);
+                const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
+                if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send({ days: days, id: id, hours: chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) });
+            } catch (err) { next(err); }
+        });
+        // The cell's totals: GET /state/chlorinator/usage?id=1
+        app.get('/state/chlorinator/usage', (req, res, next) => {
+            try {
+                const u = cellUsageInfo(parseInt(req.query.id as string, 10));
+                if (!u) return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send(u);
+            } catch (err) { next(err); }
+        });
         app.get('/state/chlorinator/:id', (req, res) => {
             res.status(200).send(state.chlorinators.getItemById(parseInt(req.params.id, 10), false).getExtended());
         });
@@ -1720,26 +1741,6 @@ export class StateRoute {
             try {
                 let schlor = await sys.board.chlorinator.setChlorAsync(req.body);
                 return res.status(200).send(schlor.get(true));
-            } catch (err) { next(err); }
-        });
-        // What each chlorinator actually did, hour by hour (see ChlorinatorLog.ts): GET /state/chlorinator/outputLog?days=30[&id=1]
-        app.get('/state/chlorinator/outputLog', (req, res, next) => {
-            try {
-                let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
-                if (isNaN(days) || days < 1) days = 30;
-                days = Math.min(days, 548);
-                const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
-                if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
-                    return res.status(404).send({ error: 'Chlorinator not found.' });
-                return res.status(200).send({ days: days, id: id, hours: chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) });
-            } catch (err) { next(err); }
-        });
-        // The cell's totals: GET /state/chlorinator/usage?id=1
-        app.get('/state/chlorinator/usage', (req, res, next) => {
-            try {
-                const u = cellUsageInfo(parseInt(req.query.id as string, 10));
-                if (!u) return res.status(404).send({ error: 'Chlorinator not found.' });
-                return res.status(200).send(u);
             } catch (err) { next(err); }
         });
         // Counts the cell's totals again from its install date: PUT /state/chlorinator/recountUsage { id }
