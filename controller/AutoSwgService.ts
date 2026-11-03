@@ -50,6 +50,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import * as https from 'https';
 import { logger } from '../logger/Logger';
 import { bandDecision } from './SwgAssistBand';
+import { noteShareRequest } from './PoolMathArchive';
 import type { BandDecision } from './SwgAssistBand';
 
 // How old the newest FC reading can be before the result says its projection is mostly
@@ -411,7 +412,7 @@ interface ParsedCards {
 }
 
 // What a read of the share page found, for refreshing the history archive (see
-// AutoSwgPoolMathArchive.refreshPoolMathArchiveFromPage): the test readings it lists and the
+// AutoSwgArchivePage.refreshPoolMathArchiveFromPage): the test readings it lists and the
 // time its oldest entry of any kind goes back to -- everything newer is what the page vouches
 // for, so edits and deletions made in PoolMath within that span show up here.
 export interface PageReadings {
@@ -799,12 +800,8 @@ function dailyWindowOverlapHours(t1: Date, t2: Date, startTime: TimeOfDay, durat
 // PoolMath fetch
 // ---------------------------------------------------------------------------
 
-// When the share endpoint was last asked for anything. PoolMath rate limits it (about one
-// request a minute), so the background history sync (AutoSwgPoolMathArchive) leaves a gap
-// after any request made here, and records its own.
-let lastShareRequestAt = 0;
-export function noteShareRequest() { lastShareRequestAt = Date.now(); }
-export function msSinceLastShareRequest(): number { return Date.now() - lastShareRequestAt; }
+// PoolMath rate limits the share endpoint (about one request a minute): the background history sync (PoolMathSync.ts) leaves a gap after any request
+// made here, and this records its own (noteShareRequest, kept with the archive reader in PoolMathArchive.ts).
 
 // The PoolMath page the last calculation read, kept so the projection points (AutoSwgProjection.ts) can be worked out from it without another request.
 let lastPage: { html: string; at: number } | undefined;
@@ -1574,7 +1571,7 @@ export interface CombinedHistory {
     chlorineAdditions?: { ts: string; percent: number; ml: number; ppm?: number }[];
 }
 
-// Older PoolMath history from the background-synced archive (see AutoSwgPoolMathArchive).
+// Older PoolMath history from the background-synced archive (see PoolMathArchive).
 export interface ArchivedHistory {
     fc: { ts: Date; value: number }[];
     swg: { ts: Date; ppmPerDay: number; hrs: number; pct: number }[];

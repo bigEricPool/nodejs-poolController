@@ -36,15 +36,16 @@ import { evaluateAutoTuneApply } from "../../../controller/AutoSwgAutoTune";
 import { getAutoSwgReadiness, registerAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
-import { outputLog } from "../../../controller/AutoSwgOutputLog";
 import { projectionLog, updateHourlyProjection, updateProjectionPoints } from "../../../controller/AutoSwgProjection";
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, topUpPoolMathArchive, isPoolMathArchiveCurrent, poolMathArchiveSummary, refreshPoolMathArchiveFromPage, syncPoolMathArchive } from "../../../controller/AutoSwgPoolMathArchive";
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, poolMathArchiveSummary, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
+import { refreshPoolMathArchiveFromPage } from "../../../controller/AutoSwgArchivePage";
+import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
-import { cellUsageInfo, firstChlorinatorId, recountCellUsage } from "../../../controller/ChlorinatorLogService";
-import { poolMathSyncStatus } from "../../../controller/PoolMathSync";
+import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
+import { onPoolMathUpdated, poolMathSyncStatus } from "../../../controller/PoolMathSync";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
@@ -872,7 +873,7 @@ async function runAutoSwgAutoTune(): Promise<void> {
     state.autoSwg.emitEquipmentChange();
 }
 
-// The salt you logged adding in PoolMath (from the archive, see topUpPoolMathArchive), in ppm of this pool.
+// The salt you logged adding in PoolMath (from the archive, see PoolMathSync.ts), in ppm of this pool.
 function autoSwgSaltAdditions(): SaltAddition[] {
     try {
         let gallons = sys.autoSwg.gallons;
@@ -896,6 +897,7 @@ export function awaySummary(startedAt: string, reading?: { value: number; ts: st
     for (const r of recs) for (const a of ((r.outputs && r.outputs.alerts) || [])) if (a && a.id && alertIds.indexOf(a.id) < 0) alertIds.push(a.id);
     let last = recs.length ? recs[recs.length - 1] : undefined;
     let o: any = last && last.outputs ? last.outputs : {};
+    const swgId = assistChlorinatorId();
     return {
         startedAt: startedAt,
         endedAt: new Date().toISOString(),
@@ -907,7 +909,7 @@ export function awaySummary(startedAt: string, reading?: { value: number; ts: st
         lastCheck: last ? { at: last.appliedAt, appliedPct: last.appliedPct, recommendedPct: last.recommendedPct, maintenancePct: o.maintenancePct, projectedFc: o.projectedCurrentFc, projectedFcBeforeStorm: o.projectedFcBeforeStorm, stormLossPpm: o.stormLossPpm, projectedFcRange: o.projectedFcRange } : undefined,
         outages: (state.autoSwg.outages || []).filter(x => x && new Date(x.to).getTime() >= from).map(x => ({ from: x.from, to: x.to, minutes: x.minutes, rebooted: x.rebooted })),
         alertsSeen: alertIds,
-        swgOutput: outputLog.summary(from, Date.now()),
+        swgOutput: typeof swgId === 'number' ? chlorinatorLog.summary(from, Date.now(), swgId, firstChlorinatorId()) : undefined,
     };
 }
 
@@ -1045,26 +1047,16 @@ function watchAutoSwg() {
 }
 
 let autoSwgSaltTimer: NodeJS.Timeout | undefined;
-// What the chlorinator actually did, logged at all times (every mode, inside the run window or not) as one line an hour; see AutoSwgOutputLog.ts.
-// It uses the SWG Assist chlorinator when one is chosen, otherwise the first chlorinator there is.
-function sampleAutoSwgOutput() {
-    try {
-        let chlorinators = sys.chlorinators.toArray();
-        let rec = chlorinators.find(c => c.id === sys.autoSwg.chlorinatorId) || chlorinators[0];
-        if (!rec) return;
-        let s = state.chlorinators.getItemById(rec.id, false);
-        if (!s) return;
-        let now = Date.now();
-        outputLog.record({
-            output: s.currentOutput, set: s.poolSetpoint, target: s.targetOutput, status: s.status, salt: s.saltLevel,
-            commAgeSec: typeof s.lastComm === 'number' && s.lastComm > 0 ? Math.max(0, Math.round((now - s.lastComm) / 1000)) : undefined
-        }, now);
-    }
-    catch (err) { logger.warn(`SWG Assist: could not log the chlorinator output: ${err.message}`); }
+// The chlorinator SWG Assist controls: the one chosen in its settings, otherwise the first there is. What every chlorinator did is logged by the pool's
+// own logging (ChlorinatorLogService.ts, on its own 10-minute timer); this only says which one's lines SWG Assist reads.
+function assistChlorinatorId(): number | undefined {
+    const chlors = sys.chlorinators.toArray();
+    const rec = chlors.find(c => c.id === sys.autoSwg.chlorinatorId) || chlors[0];
+    return rec ? rec.id : undefined;
 }
 function sampleAutoSwgSalt() {
     try { state.autoSwg.heartbeatAt = new Date().toISOString(); } catch (err) { /* the heartbeat is best effort */ }
-    sampleAutoSwgOutput();
+    try { showAutoSwgArchiveStatus(); } catch (err) { /* the archive status is best effort */ }
     void updateHourlyProjection({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName });
     watchAutoSwg();
     try {
@@ -1077,42 +1069,6 @@ function sampleAutoSwgSalt() {
     }
     catch (err) { logger.warn(`SWG Assist: could not record the salt reading: ${err.message}`); }
 }
-// A top-up of the archive about once a day: salt additions and the extra numbers on new tests (salt, water temperature, pH ...) that the page
-// refresh does not copy. One small request; a failure is retried in a few hours. See topUpPoolMathArchive.
-const AUTO_SWG_TOPUP_FIRST_DELAY_MS = 15 * 60 * 1000;
-const AUTO_SWG_TOPUP_MS = 24 * 3600 * 1000;
-const AUTO_SWG_TOPUP_RETRY_MS = 6 * 3600 * 1000;
-const AUTO_SWG_TOPUP_NOT_READY_MS = 30 * 60 * 1000;
-let autoSwgTopUpTimer: NodeJS.Timeout | undefined;
-export function armAutoSwgArchiveTopUp(delayMs: number = AUTO_SWG_TOPUP_FIRST_DELAY_MS) {
-    if (typeof autoSwgTopUpTimer !== 'undefined') clearTimeout(autoSwgTopUpTimer);
-    autoSwgTopUpTimer = setTimeout(() => { runAutoSwgArchiveTopUp().catch(err => logger.error(`SWG Assist: archive top-up failed: ${err.message}`)); }, delayMs);
-    autoSwgTopUpTimer.unref();
-}
-async function runAutoSwgArchiveTopUp(): Promise<void> {
-    autoSwgTopUpTimer = undefined;
-    let next = AUTO_SWG_TOPUP_MS;
-    try {
-        let cfg = sys.autoSwg;
-        if (cfg.enabled && cfg.shareCode) {
-            if (autoSwgArchiveRunning) next = AUTO_SWG_TOPUP_NOT_READY_MS;
-            else {
-                let r = await topUpPoolMathArchive(cfg.shareCode, cfg.poolName || undefined);
-                // Whatever the mode, PoolMath is read at least once a day here; a new test ends Away protection.
-                if (typeof r !== 'undefined') {
-                    let newest: { value: number; ts: Date } | undefined;
-                    for (const f of archivedFcReadings()) if (!newest || f.ts.getTime() > newest.ts.getTime()) newest = f;
-                    if (newest) endAwayOnNewReading({ value: newest.value, ts: newest.ts.toISOString() });
-                }
-                if (typeof r === 'undefined') next = AUTO_SWG_TOPUP_NOT_READY_MS;   // the full pull has not happened yet
-                else if (r.saltAdded || r.testsEnriched || r.testsAdded || r.removed) logger.info(`SWG Assist: PoolMath archive top-up: ${r.saltAdded} salt addition${r.saltAdded === 1 ? '' : 's'}, ${r.testsEnriched} test${r.testsEnriched === 1 ? '' : 's'} filled in, ${r.testsAdded} test${r.testsAdded === 1 ? '' : 's'} added, ${r.removed} removed.`);
-            }
-        }
-    }
-    catch (err) { next = AUTO_SWG_TOPUP_RETRY_MS; logger.warn(`SWG Assist: PoolMath archive top-up failed (${err.message}); trying again in ${next / 3600000} hours.`); }
-    finally { armAutoSwgArchiveTopUp(next); }
-}
-
 export function armAutoSwgSaltLog() {
     if (typeof autoSwgSaltTimer !== 'undefined') return;
     detectAutoSwgOutage();
@@ -1122,62 +1078,34 @@ export function armAutoSwgSaltLog() {
     autoSwgSaltTimer.unref();
 }
 
-// Background PoolMath history sync: pulls up to 18 months of logs from the share link's JSON
-// interface into a local archive (see AutoSwgPoolMathArchive). It is a one-time pull per share
-// code and pool -- it runs only when the archive isn't already for the configured ones (the first
-// time, or after either changes), not on a schedule; a failure (including PoolMath rate
-// limiting) is retried until it succeeds.
-const AUTO_SWG_ARCHIVE_FIRST_DELAY_MS = 3 * 60 * 1000;
-const AUTO_SWG_ARCHIVE_RETRY_MS = 30 * 60 * 1000;
-let autoSwgArchiveTimer: NodeJS.Timeout | undefined;
-let autoSwgArchiveRunning = false;
-
-export function armAutoSwgArchiveSync(delayMs: number = AUTO_SWG_ARCHIVE_FIRST_DELAY_MS) {
-    if (autoSwgArchiveTimer) clearTimeout(autoSwgArchiveTimer);
-    autoSwgArchiveTimer = undefined;
-    let cfg = sys.autoSwg;
-    if (!cfg.enabled || !cfg.shareCode) return;
-    if (isPoolMathArchiveCurrent(cfg.shareCode, cfg.poolName || undefined)) {
-        // Already archived for this share code -- nothing to pull; just show what's there.
-        let sum = poolMathArchiveSummary();
-        if (state.autoSwg.archiveCount !== sum.count || state.autoSwg.archiveSyncedAt !== sum.syncedAt) {
-            state.autoSwg.archiveSyncedAt = sum.syncedAt;
-            state.autoSwg.archiveCount = sum.count;
-            state.autoSwg.archiveOldest = sum.oldest;
-            state.autoSwg.emitEquipmentChange();
-        }
-        return;
-    }
-    autoSwgArchiveTimer = setTimeout(() => { runAutoSwgArchiveSync().catch(err => logger.error(`SWG Assist: PoolMath history sync failed: ${err.message}`)); }, delayMs);
+// The PoolMath history (the one-time pull of up to 18 months and the daily top-up) is read and kept current by PoolMathSync.ts, the pool's own feature, which
+// works without SWG Assist. SWG Assist shows its status on its own state, ends Away protection when a top-up brings a new FC test, and gives the cell usage the
+// SWG entries it wrote itself.
+let autoSwgArchiveRunning = false;   // a sync started by hand: POST /state/autoSwg/history/poolmath/sync
+function showAutoSwgArchiveStatus() {
+    const st = poolMathSyncStatus();
+    const a = state.autoSwg;
+    if (a.archiveCount === st.count && a.archiveSyncedAt === st.syncedAt && a.archiveOldest === st.oldest && a.archiveError === st.error) return;
+    a.archiveSyncedAt = st.syncedAt;
+    a.archiveCount = st.count;
+    a.archiveOldest = st.oldest;
+    a.archiveError = st.error;
+    a.emitEquipmentChange();
 }
-
-async function runAutoSwgArchiveSync(): Promise<void> {
-    autoSwgArchiveTimer = undefined;
-    if (autoSwgArchiveRunning) return;
-    let cfg = sys.autoSwg;
-    if (!cfg.enabled || !cfg.shareCode) return;
-    autoSwgArchiveRunning = true;
-    let retryMs: number | undefined;
-    try {
-        let r = await syncPoolMathArchive(cfg.shareCode, cfg.poolName || undefined);
-        state.autoSwg.archiveSyncedAt = new Date().toISOString();
-        state.autoSwg.archiveCount = r.total;
-        state.autoSwg.archiveOldest = r.oldest;
-        state.autoSwg.archiveError = undefined;
-        logger.info(`SWG Assist: PoolMath history sync: ${r.fetched} entries returned (asked for ${r.requested}), ${r.added} new, ${r.total} archived back to ${r.oldest ? r.oldest.slice(0, 10) : 'n/a'}.`);
-    }
-    catch (err) {
-        retryMs = AUTO_SWG_ARCHIVE_RETRY_MS;
-        state.autoSwg.archiveError = err.message;
-        logger.warn(`SWG Assist: PoolMath history sync failed (${err.message}); trying again in ${retryMs / 60000} minutes.`);
-    }
-    finally {
-        autoSwgArchiveRunning = false;
-        state.autoSwg.emitEquipmentChange();
-        // After a failure, try again; after a success this is a no-op unless the share code changed
-        // while the sync was running (then it pulls the new one's history).
-        armAutoSwgArchiveSync(typeof retryMs !== 'undefined' ? retryMs : 60 * 1000);
-    }
+export function registerAutoSwgPoolMath() {
+    setOwnSwgEntriesSource(id => id === assistChlorinatorId()
+        ? toLocalSwgEntries(readAutoSwgHistory()).map(e => ({ ts: new Date(e.ts).getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }))
+        : []);
+    onPoolMathUpdated((kind, result) => {
+        showAutoSwgArchiveStatus();
+        // Whatever the mode, PoolMath is read at least once a day by the top-up; a new test ends Away protection.
+        if (kind === 'topUp' && typeof result !== 'undefined' && sys.autoSwg.enabled && sys.autoSwg.shareCode) {
+            let newest: { value: number; ts: Date } | undefined;
+            for (const f of archivedFcReadings()) if (!newest || f.ts.getTime() > newest.ts.getTime()) newest = f;
+            if (newest) endAwayOnNewReading({ value: newest.value, ts: newest.ts.toISOString() });
+        }
+    });
+    showAutoSwgArchiveStatus();
 }
 
 // The SWG % Away protection may apply: the recommendation (the glide to the target you set, plus what a storm or outage adds, which the calculation
@@ -1219,6 +1147,8 @@ export class StateRoute {
     public static initRoutes(app: express.Application) {
         // before anything below reads the settings that depend on the history gate (Equipment.ts: tuningAvailable, automationAvailable)
         registerAutoSwgReadiness();
+        // Moves what an install has of the old SWG Assist logging (data files, share code, cell settings) to the pool's logging feature, before that starts.
+        migrateToChlorinatorLog();
         ChlorinatorState.onPoolSetpointChanged = (chlor, previous, current) => {
             if (sys.autoSwg.chlorinatorId !== chlor.id) return;
             if (autoSwgApplyInFlight && autoSwgApplyInFlight.pct === current && Date.now() - autoSwgApplyInFlight.at < AUTO_SWG_APPLY_ECHO_MS) return;
@@ -1248,9 +1178,8 @@ export class StateRoute {
         };
         armAutoSwgStep(AUTO_SWG_STEP_MIN_DELAY_MS);
         armAutoSwgAutoCheck(AUTO_SWG_AUTO_CHECK_MIN_DELAY_MS);
-        armAutoSwgArchiveSync();
+        registerAutoSwgPoolMath();
         armAutoSwgSaltLog();
-        armAutoSwgArchiveTopUp();
         // The FC line of the Water panel: the FC tests (from the local PoolMath archive) and the projected FC at each point a calculation was used (see
         // AutoSwgProjection.ts), oldest first. It reads local files only and never contacts PoolMath: GET /state/autoSwg/fc?days=30
         app.get('/state/autoSwg/fc', (req, res, next) => {
@@ -1269,12 +1198,14 @@ export class StateRoute {
             }
             catch (err) { next(err); }
         });
-        // What the chlorinator actually did, hour by hour (see AutoSwgOutputLog.ts): GET /state/autoSwg/output?days=30
+        // What the chlorinator actually did, hour by hour: GET /state/autoSwg/output?days=30. The old path of GET /state/chlorinator/outputLog, for the chlorinator
+        // SWG Assist controls.
         app.get('/state/autoSwg/output', (req, res, next) => {
             try {
                 let days = parseInt(req.query.days as string, 10);
                 if (isNaN(days) || days < 1 || days > 548) days = 30;
-                return res.status(200).send({ days: days, hours: outputLog.read(days) });
+                const id = assistChlorinatorId();
+                return res.status(200).send({ days: days, hours: typeof id === 'number' ? chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) : [] });
             }
             catch (err) { next(err); }
         });

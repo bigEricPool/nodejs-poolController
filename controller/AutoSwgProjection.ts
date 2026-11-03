@@ -34,7 +34,7 @@ import * as path from 'path';
 import { logger } from '../logger/Logger';
 import { cachedPageHtml, computeRecommendation } from './AutoSwgService';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSwgEvents, archivedWaterTemps } from './AutoSwgPoolMathArchive';
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSwgEvents, archivedWaterTemps } from './PoolMathArchive';
 
 const KEEP_MONTHS = 18;
 const PRUNE_EVERY_MS = 24 * 3600000;

@@ -31,7 +31,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import { AutoSwg, setAutoSwgReadinessProvider } from './Equipment';
 import { manualTuneApplies } from './AutoSwgAutoTune';
-import { archivedFcReadings, archivedSwgEvents } from './AutoSwgPoolMathArchive';
+import { archivedFcReadings, archivedSwgEvents } from './PoolMathArchive';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
 
 export interface AutoSwgReadiness {

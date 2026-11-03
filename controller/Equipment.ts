@@ -2599,17 +2599,27 @@ export class AutoSwg extends EqItem {
     public get scheduleId(): number { return this.data.scheduleId; }
     public set scheduleId(val: number) { this.setDataVal('scheduleId', val); }
     // PoolMath (troublefreepool.com) share code, e.g. 'tfp-452124', or a full share URL.
-    public get shareCode(): string { return this.data.shareCode; }
-    public set shareCode(val: string) { this.setDataVal('shareCode', val); }
+    // The PoolMath share and the cell's rating are the pool's and the chlorinator's now (sys.poolMath, and the chlorinator's cellLbsPerDay); they are read and
+    // written here under the old names so the calculation and the settings screen do not change. The old keys stay in poolConfig.json for one release.
+    public get shareCode(): string { return sys.poolMath.shareCode; }
+    public set shareCode(val: string) { sys.poolMath.shareCode = val; }
     // Restricts parsing to this water body's section on the share page (e.g. 'Kentshire').
-    public get poolName(): string { return this.data.poolName; }
-    public set poolName(val: string) { this.setDataVal('poolName', val); }
+    public get poolName(): string { return sys.poolMath.poolName; }
+    public set poolName(val: string) { sys.poolMath.poolName = val; }
     public get gallons(): number { return this.data.gallons; }
     public set gallons(val: number) { this.setDataVal('gallons', val); }
     // SWG's manufacturer-rated chlorine production in lbs/day, at 100% duty cycle over a
     // full 24h day (the standard spec-sheet basis) -- not scoped to the run window below.
-    public get swgLbsPerDay(): number { return this.data.swgLbsPerDay; }
-    public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val); }
+    // The chlorinator SWG Assist controls: the one chosen in its settings, otherwise the first there is.
+    private assistChlorinator() {
+        const chlors = sys.chlorinators.toArray();
+        return chlors.find(c => c.id === this.chlorinatorId) || chlors[0];
+    }
+    public get swgLbsPerDay(): number { const c = this.assistChlorinator(); return c ? c.cellLbsPerDay : 0; }
+    public set swgLbsPerDay(val: number) { const c = this.assistChlorinator(); if (c) c.cellLbsPerDay = val; }
+    // When the logging settings and files were moved to the pool's logging feature (see AutoSwgMigration.ts); empty before that.
+    public get chlorinatorLogMigrated(): string { return typeof this.data.chlorinatorLogMigrated === 'string' ? this.data.chlorinatorLogMigrated : ''; }
+    public set chlorinatorLogMigrated(val: string) { this.setDataVal('chlorinatorLogMigrated', typeof val === 'string' ? val : ''); }
     // Daily SWG run window, e.g. '07:00' to '19:00', interpreted in `timezone`.
     public get swgStartTime(): string { return this.data.swgStartTime; }
     public set swgStartTime(val: string) { this.setDataVal('swgStartTime', val); }

@@ -4007,7 +4007,7 @@ export class AutoSwgState extends EqState {
     public set autoTuneAt(val: string) { this.setDataVal('autoTuneAt', val); }
     public get nextAutoCheckAt(): string { return this.data.nextAutoCheckAt; }
     public set nextAutoCheckAt(val: string) { this.setDataVal('nextAutoCheckAt', val); }
-    // Background PoolMath history sync (see AutoSwgPoolMathArchive): when it last succeeded, how
+    // Background PoolMath history sync (see PoolMathSync.ts): when it last succeeded, how
     // many entries and how far back the archive goes, and the last failure (cleared on success).
     public get archiveSyncedAt(): string { return this.data.archiveSyncedAt; }
     public set archiveSyncedAt(val: string) { this.setDataVal('archiveSyncedAt', val); }
