@@ -152,11 +152,16 @@ describe('schedule characterization without controller startup', () => {
         expect(schedule.triggered).toBe(true);
     });
 
-    it('characterizes deferred board results as a remaining outcome-contract gap', async () => {
+    it('leaves a schedule untriggered when the board resolves without turning the circuit on, and retries next pass', async () => {
         const schedule = addSchedule(1, 8);
-        fixtures.setCircuit.mockImplementation(async (id: number) => fixtures.circuits.get(id));
+        // A deferred board result (e.g. a relay manager that is not answering yet) resolves without the circuit on.
+        fixtures.setCircuit.mockImplementationOnce(async (id: number) => fixtures.circuits.get(id));
         await tick();
         expect(fixtures.circuits.get(8).isOn).toBe(false);
+        expect(schedule.triggered).toBe(false);
+        await tick();
+        expect(fixtures.setCircuit).toHaveBeenCalledTimes(2);
+        expect(fixtures.circuits.get(8).isOn).toBe(true);
         expect(schedule.triggered).toBe(true);
     });
 });
