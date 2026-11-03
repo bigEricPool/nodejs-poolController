@@ -15,15 +15,75 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import { Inbound, Protocol } from "../Messages";
+import { Inbound, Message, Outbound, Protocol } from "../Messages";
 import { state, BodyTempState, ChlorinatorState } from "../../../State";
 import { sys, ControllerType, Chlorinator } from "../../../Equipment";
 import { logger } from "../../../../logger/Logger";
 
+// The most recent message of one kind (by action) received from a chlorinator.
+export interface ChlorinatorRxRecord {
+    action: number;
+    receivedAt: string;     // ISO
+    packet: number[];       // the full packet as received
+    payload: number[];
+    description: string;    // what the payload means, where it is known
+}
 export class ChlorinatorStateMessage {
     // Ephemeral, session-only set of model strings we have already warned about.  Prevents the unrecognized-model
     // log below from repeating on every poll cycle, since getModelAsync() runs inside the Nixie poll loop.
     private static _loggedUnknownModels: Set<string> = new Set<string>();
+    // Ephemeral, session-only: the latest message of each action seen on the bus for each chlorinator
+    // (keyed by chlorinator id), in EITHER direction -- OCP->Chlorinator commands (e.g. Set Output,
+    // the SWG % setpoint) as well as Chlorinator->OCP responses (e.g. Salt level).  This is a
+    // diagnostic view of the RS485 traffic and is intentionally not persisted.
+    private static _lastReceived: Map<number, Map<number, ChlorinatorRxRecord>> = new Map<number, Map<number, ChlorinatorRxRecord>>();
+    public static getLastReceived(chlorId: number): ChlorinatorRxRecord[] {
+        let recs = ChlorinatorStateMessage._lastReceived.get(chlorId);
+        return typeof recs === 'undefined' ? [] : Array.from(recs.values()).sort((a, b) => a.action - b.action);
+    }
+    private static record(chlorId: number, msg: Message) {
+        let recs = ChlorinatorStateMessage._lastReceived.get(chlorId);
+        if (typeof recs === 'undefined') { recs = new Map<number, ChlorinatorRxRecord>(); ChlorinatorStateMessage._lastReceived.set(chlorId, recs); }
+        recs.set(msg.action, { action: msg.action, receivedAt: new Date().toISOString(), packet: msg.toPacket(), payload: msg.payload.slice(), description: ChlorinatorStateMessage.describeReceived(msg) });
+    }
+    // Nixie/virtual-controller boards originate commands to the chlorinator themselves (see
+    // controller/nixie/chemistry/Chlorinator.ts) by writing an Outbound directly to the port --
+    // unlike an OCP's commands, these never come back around through process() below as a
+    // received message, so they have to be recorded here at the point they're sent instead.
+    public static recordSent(chlorId: number, msg: Outbound) {
+        ChlorinatorStateMessage.record(chlorId, msg);
+    }
+    // extractPayloadByte/extractPayloadString are only defined on Inbound, but describeReceived
+    // also has to handle Outbound (Nixie-originated commands -- see recordSent above), so these
+    // read straight off msg.payload (a plain number[] on both) instead, replicating the same logic.
+    private static byteAt(payload: number[], ndx: number): number {
+        return ndx < payload.length ? payload[ndx] : undefined;
+    }
+    private static stringAt(payload: number[], start: number, length: number): string {
+        let s = '';
+        for (let i = start; i < payload.length && i < start + length; i++) {
+            if (payload[i] <= 0) break;
+            s += String.fromCharCode(payload[i]);
+        }
+        return s;
+    }
+    private static describeReceived(msg: Message): string {
+        try {
+            const p = msg.payload;
+            switch (msg.action) {
+                case 0: return `Set control: ${ChlorinatorStateMessage.byteAt(p, 0)}`;
+                case 1: return 'Ack of a control command';
+                case 3: return `Model: ${ChlorinatorStateMessage.stringAt(p, 1, 16).trimEnd()}`;
+                case 17: return `Set output to ${ChlorinatorStateMessage.byteAt(p, 0)}% (SWG % setpoint)`;
+                case 18: return `Salt level ${ChlorinatorStateMessage.byteAt(p, 0) * 50} ppm; status: ${sys.board.valueMaps.chlorinatorStatus.transform(ChlorinatorStateMessage.byteAt(p, 1) & 0x007F).desc}`;
+                case 19: return 'Keep alive (no payload)';
+                case 20: return 'Get model (request)';
+                case 21: return `Set output to ${(ChlorinatorStateMessage.byteAt(p, 0) / 10).toFixed(1)}% (SWG % setpoint)`;
+                case 22: return `Output ${ChlorinatorStateMessage.byteAt(p, 1)}%; water temp ${ChlorinatorStateMessage.byteAt(p, 2)}`;
+                default: return `Action ${msg.action}`;
+            }
+        } catch (err) { return `Action ${msg.action}`; }
+    }
     public static process(msg: Inbound) {
         if (msg.protocol === Protocol.Chlorinator) {
             // RKS: 03-29-22 A lot of water has gone under the bridge at this point and we know much more.  First there are two types of messages.  Those inbound
@@ -59,6 +119,10 @@ export class ChlorinatorStateMessage {
                     state.equipment.messages.removeItemByCode(`chlorinator:${chlor.id}:comms`);
                 }
             }
+            // Diagnostic view of the RS485 traffic: record every message seen for this chlorinator,
+            // regardless of direction, so the "recent messages" popup shows the full conversation
+            // (OCP->Chlorinator commands like Set Output/SWG % setpoint, not just responses).
+            ChlorinatorStateMessage.record(chlor.id, msg);
             cstate.body = chlor.body;
             switch (msg.action) {
                 case 0: // Set control OCP->Chlorinator: [16,2,80,0][0][98,16,3]
