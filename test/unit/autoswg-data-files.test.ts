@@ -8,6 +8,7 @@ vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {
 
 import { moveDataFile } from '../../controller/AutoSwgDataFiles';
 
+const LINE = '{"t":"2026-07-01T12:00:00.000Z","n":6}\n';
 let dir: string, from: string, to: string;
 beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'datafiles-'));
@@ -18,14 +19,11 @@ afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('moveDataFile', () => {
     it('copies the file under the new name and keeps the old one as .bak', () => {
-        fs.writeFileSync(from, '{"t":"2026-07-01T12:00:00.000Z","n":6}
-');
+        fs.writeFileSync(from, LINE);
         expect(moveDataFile(from, to)).toBe('moved');
-        expect(fs.readFileSync(to, 'utf8')).toBe('{"t":"2026-07-01T12:00:00.000Z","n":6}
-');
+        expect(fs.readFileSync(to, 'utf8')).toBe(LINE);
         expect(fs.existsSync(from)).toBe(false);
-        expect(fs.readFileSync(`${from}.bak`, 'utf8')).toBe('{"t":"2026-07-01T12:00:00.000Z","n":6}
-');
+        expect(fs.readFileSync(`${from}.bak`, 'utf8')).toBe(LINE);
         expect(fs.existsSync(`${to}.tmp`)).toBe(false);
     });
     it('does nothing when there is no old file', () => {
