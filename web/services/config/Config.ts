@@ -1033,7 +1033,7 @@ export class ConfigRoute {
         // feature. The computed recommendation itself is runtime state, exposed
         // under /state/autoSwg/* (see web/services/state/State.ts).
         app.get('/config/autoSwg', (req, res) => {
-            return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, swgLbsPerDay: sys.autoSwg.swgLbsPerDay, automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
+            return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, swgLbsPerDay: sys.autoSwg.swgLbsPerDay, gallons: sys.autoSwg.gallons, gallonsSource: sys.autoSwg.gallonsSource, automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
         });
         app.put('/config/autoSwg', async (req, res, next) => {
             try {
@@ -1083,7 +1083,7 @@ export class ConfigRoute {
                 // and the dashboard show it within seconds rather than at the next check.
                 if (awayWasActive !== sys.autoSwg.awayActive) noteAutoSwgAwayToggled(sys.autoSwg.awayActive);
                 armAutoSwgAutoCheck(0, (!awayWasActive && sys.autoSwg.awayActive) || (awayWasActive && !sys.autoSwg.awayActive) ? 3 * 1000 : undefined);
-                return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, swgLbsPerDay: sys.autoSwg.swgLbsPerDay, automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
+                return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, swgLbsPerDay: sys.autoSwg.swgLbsPerDay, gallons: sys.autoSwg.gallons, gallonsSource: sys.autoSwg.gallonsSource, automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
             }
             catch (err) { next(err); }
         });
