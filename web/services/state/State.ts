@@ -27,6 +27,9 @@ import { conn } from "../../../controller/comms/Comms";
 import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
+import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
+import { cellUsageInfo, firstChlorinatorId, recountCellUsage } from "../../../controller/ChlorinatorLogService";
+import { poolMathSyncStatus } from "../../../controller/PoolMathSync";
 
 export class StateRoute {
     public static initRoutes(app: express.Application) {
@@ -476,6 +479,66 @@ export class StateRoute {
                 let schlor = await sys.board.chlorinator.setChlorAsync(req.body);
                 return res.status(200).send(schlor.get(true));
             } catch (err) { next(err); }
+        });
+        // What each chlorinator actually did, hour by hour (see ChlorinatorLog.ts): GET /state/chlorinator/outputLog?days=30[&id=1]
+        app.get('/state/chlorinator/outputLog', (req, res, next) => {
+            try {
+                let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
+                if (isNaN(days) || days < 1) days = 30;
+                days = Math.min(days, 548);
+                const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
+                if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send({ days: days, id: id, hours: chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) });
+            } catch (err) { next(err); }
+        });
+        // The cell's totals: GET /state/chlorinator/usage?id=1
+        app.get('/state/chlorinator/usage', (req, res, next) => {
+            try {
+                const u = cellUsageInfo(parseInt(req.query.id as string, 10));
+                if (!u) return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send(u);
+            } catch (err) { next(err); }
+        });
+        // Counts the cell's totals again from its install date: PUT /state/chlorinator/recountUsage { id }
+        app.put('/state/chlorinator/recountUsage', (req, res, next) => {
+            try {
+                const id = Number(req.body.id);
+                const chlor = sys.chlorinators.find(c => c.id === id);
+                if (!chlor) return res.status(404).send({ error: 'Chlorinator not found.' });
+                if (!chlor.cellInstalledDate) return res.status(400).send({ error: 'The chlorinator has no cell install date.' });
+                recountCellUsage(id);
+                return res.status(200).send(cellUsageInfo(id));
+            } catch (err) { next(err); }
+        });
+        // Sets the cell's totals by hand: PUT /state/chlorinator/resetUsage { id, usageHours, usagePounds?, usageRunHours? }
+        app.put('/state/chlorinator/resetUsage', (req, res, next) => {
+            try {
+                const id = Number(req.body.id);
+                if (!Number.isInteger(id) || id <= 0)
+                    return res.status(400).send({ error: 'A valid chlorinator id is required.' });
+                const chlor = sys.chlorinators.find(c => c.id === id);
+                if (!chlor) return res.status(404).send({ error: 'Chlorinator not found.' });
+                const schlor = state.chlorinators.getItemById(id, false);
+                const hours = typeof req.body.usageHours === 'undefined' ? 0 : req.body.usageHours;
+                if (typeof hours !== 'number' || !Number.isFinite(hours) || hours < 0)
+                    return res.status(400).send({ error: 'Cell usage must be a non-negative number of hours.' });
+                // The pounds are given, or worked out from the hours at the cell's rating.
+                const lbs = chlor.cellLbsPerDay;
+                const pounds = typeof req.body.usagePounds === 'undefined' ? (lbs > 0 ? hours * lbs / 24 : 0) : req.body.usagePounds;
+                if (typeof pounds !== 'number' || !Number.isFinite(pounds) || pounds < 0)
+                    return res.status(400).send({ error: 'Cell usage must be a non-negative number of pounds.' });
+                const runHours = typeof req.body.usageRunHours === 'undefined' ? 0 : req.body.usageRunHours;
+                if (typeof runHours !== 'number' || !Number.isFinite(runHours) || runHours < 0)
+                    return res.status(400).send({ error: 'Cell run time must be a non-negative number of hours.' });
+                schlor.resetUsage(hours, pounds, Date.now(), runHours);
+                schlor.emitEquipmentChange();
+                return res.status(200).send(schlor.getExtended());
+            } catch (err) { next(err); }
+        });
+        // The PoolMath history archive: when it was pulled, how many entries, how far back, and the pool's details from PoolMath.
+        app.get('/state/poolMath', (req, res, next) => {
+            try { return res.status(200).send(poolMathSyncStatus()); } catch (err) { next(err); }
         });
         // this ../setChlor should really be EOL for PUT /state/chlorinator above
         app.put('/state/chlorinator/setChlor', async (req, res, next) => {
