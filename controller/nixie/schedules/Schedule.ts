@@ -166,6 +166,10 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                         for (let j = 0; j < c.sscheds.length; j++) {
                             let ssched = c.sscheds[j];
                             ssched.triggered = ssched.scheduleTime.shouldBeOn;
+                            ssched.resumeAfterRestart = false;
+                            // The circuit is on again, so an earlier stand-down is over: a restart from here resumes it.
+                            ssched.divergedSince = undefined;
+                            this._suppressionLogged.delete(ssched.id);
                             if (mOP && ssched.manualPriorityActive) {
                                 ssched.isOn = false;
                                 // Not sure what setting a delay for this does but ok.
@@ -191,7 +195,23 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             // if the schedule has already been triggered.
                             else if (!ssched.triggered) untriggered = true;
                         }
-                        if (!untriggered) {
+                        // A schedule that was running when njsPC stopped is not a divergence: nothing turned its circuit off,
+                        // Nixie just starts with the relays off.  Put the relay back on once, without the one-time heat push.
+                        if (!untriggered && c.sscheds.some(elem => elem.resumeAfterRestart && elem.scheduleTime.shouldBeOn)) {
+                            await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
+                            // The relay manager may not be answering yet at startup, and then the circuit stays off without an
+                            // error.  The flag stays set in that case, so the next pass tries again.
+                            if (c.cstate.isOn) {
+                                c.cstate.priority = 'scheduled';
+                                for (let j = 0; j < c.sscheds.length; j++) {
+                                    let ssched = c.sscheds[j];
+                                    if (!ssched.scheduleTime.shouldBeOn) continue;
+                                    ssched.isOn = true;
+                                    ssched.manualPriorityActive = ssched.resumeAfterRestart = false;
+                                }
+                            }
+                        }
+                        else if (!untriggered) {
                             // POLICY (#1243 / ISSUE-232): an off circuit stands the schedule down for
                             // the remainder of the occurrence, whatever turned it off.  Do NOT add a
                             // re-assert or retry here.
@@ -274,10 +294,13 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                 if (!ssched.triggered && ssched.scheduleTime.shouldBeOn) {
                                     if (!c.cstate.isOn) {
                                         await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
+                                        // Not on means the relay manager did not take the command.  Marking the schedule triggered
+                                        // would stand it down for the day, so it stays untriggered and the next pass tries again.
+                                        if (!c.cstate.isOn) continue;
                                     }
                                     c.cstate.priority = 'scheduled';
                                     ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
-                                    ssched.manualPriorityActive = false;
+                                    ssched.manualPriorityActive = ssched.resumeAfterRestart = false;
                                     ssched.divergedSince = undefined;
                                     this._suppressionLogged.delete(ssched.id);
                                 }

@@ -164,17 +164,9 @@ export class State implements IState {
             if (this._timerDirty) clearTimeout(this._timerDirty);
             if (this._emitTimerDirty) { clearTimeout(this._emitTimerDirty); this._emitTimerDirty = null; }
             this.persist();
-/*             if (sys.controllerType === ControllerType.Virtual) {
-                for (let i = 0; i < state.temps.bodies.length; i++) {
-                    state.temps.bodies.getItemByIndex(i).isOn = false;
-                }
-                for (let i = 0; i < state.circuits.length; i++) {
-                    state.circuits.getItemByIndex(i).isOn = false;
-                }
-                for (let i = 0; i < state.features.length; i++) {
-                    state.features.getItemByIndex(i).isOn = false;
-                }
-            } */
+            // Circuit/feature/body isOn is reset on the next startup instead (see the Nixie
+            // controller block in init()) so it also covers an ungraceful restart/crash, not
+            // just a clean shutdown.
             logger.info('State process shut down');
         } catch (err) { logger.error(`Error shutting down state process: ${err.message}`); }
     }
@@ -386,13 +378,41 @@ export class State implements IState {
         EqStateCollection.removeNullIds(sdata.filters);
         // Initialize the schedules.
         if (typeof sdata.schedules !== 'undefined') {
+            let nowMs = new Date().getTime();
             for (let i = 0; i < sdata.schedules.length; i++) {
                 let ssched = sdata.schedules[i];
-                ssched.manualPriorityActive = ssched.isOn = ssched.triggered = false;
+                let st = ssched.scheduleTime;
+                // A schedule that started and is still inside its last-calculated window is resuming after a
+                // restart, not starting fresh -- keep `triggered` so its one-time heat mode/setpoint push is not
+                // run again over whatever the user set since it started.  `resumeAfterRestart` asks
+                // triggerSchedules() to put its relay back on once.  A schedule that had stood down (a circuit
+                // turned off in its window) keeps standing down, and one that never started starts normally.
+                let withinWindow = st && typeof st.startTime === 'string' && st.startTime !== '' && typeof st.endTime === 'string' && st.endTime !== ''
+                    && new Date(st.startTime).getTime() <= nowMs && nowMs <= new Date(st.endTime).getTime();
+                let resuming = !!withinWindow && ssched.triggered === true;
+                ssched.resumeAfterRestart = resuming && (ssched.isOn === true || ssched.resumeAfterRestart === true) && !ssched.divergedSince;
+                ssched.manualPriorityActive = false;
+                ssched.isOn = false;
+                ssched.triggered = resuming;
                 // divergedSince is a diagnostic condition, not control state.  A value carried
                 // across a restart would report a stranded schedule that no longer exists.
                 ssched.divergedSince = undefined;
-                if (typeof ssched.scheduleTime !== 'undefined') ssched.scheduleTime.calculated = false;
+                if (typeof st !== 'undefined') st.calculated = false;
+            }
+        }
+        // On a Nixie (virtual) controller, circuit/feature/body "isOn" is our own bookkeeping --
+        // there is no physical board to report the real relay state back to us on reconnect like
+        // IntelliCenter/*Touch do. If a persisted "isOn: true" survives a restart, triggerSchedules()
+        // (see controller/nixie/schedules/Schedule.ts) sees the circuit as already on and never
+        // re-issues the command to actually energize the relay -- e.g. a sunrise-to-sunset SWG
+        // schedule restarted mid-day never re-triggers. Clearing isOn here (a schedule that was running
+        // is marked resumeAfterRestart above) forces a real re-assertion of the relay state on every
+        // startup, regardless of whether the previous process exited cleanly.
+        if (sys.controllerType === ControllerType.Nixie) {
+            if (typeof sdata.circuits !== 'undefined') for (let i = 0; i < sdata.circuits.length; i++) sdata.circuits[i].isOn = false;
+            if (typeof sdata.features !== 'undefined') for (let i = 0; i < sdata.features.length; i++) sdata.features[i].isOn = false;
+            if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') {
+                for (let i = 0; i < sdata.temps.bodies.length; i++) sdata.temps.bodies[i].isOn = false;
             }
         }
         var self = this;
@@ -1476,6 +1496,9 @@ export class ScheduleState extends EqState {
     // can show how long it has been stranded.  (#1243 / ISSUE-232)
     public get divergedSince(): Date { return typeof this.data.divergedSince !== 'undefined' && this.data.divergedSince !== '' ? new Date(this.data.divergedSince) : undefined; }
     public set divergedSince(val: Date) { this.setDataVal('divergedSince', typeof val === 'undefined' ? undefined : Timestamp.toISOLocal(val)); }
+    // Set at startup for a schedule that was running when njsPC stopped; triggerSchedules() puts its relay back on once.
+    public get resumeAfterRestart(): boolean { return this.data.resumeAfterRestart === true; }
+    public set resumeAfterRestart(val: boolean) { this.setDataVal('resumeAfterRestart', val); }
     public get scheduleType(): number { return typeof (this.data.scheduleType) !== 'undefined' ? this.data.scheduleType.val : undefined; }
     public set scheduleType(val: number) {
         if (this.scheduleType !== val) {
