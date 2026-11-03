@@ -213,6 +213,7 @@ export class PoolSystem implements IPoolSystem {
         this.lightGroups = new LightGroupCollection(this.data, 'lightGroups');
         this.remotes = new RemoteCollection(this.data, 'remotes');
         this.security = new Security(this.data, 'security');
+        this.poolMath = new PoolMathSettings(this.data, 'poolMath');
         this.alerts = new Alerts(this.data, 'alerts');
         this.customNames = new CustomNameCollection(this.data, 'customNames');
         this.eggTimers = new EggTimerCollection(this.data, 'eggTimers');
@@ -442,6 +443,7 @@ export class PoolSystem implements IPoolSystem {
     public lightGroups: LightGroupCollection;
     public remotes: RemoteCollection;
     public security: Security;
+    public poolMath: PoolMathSettings;
     public alerts: Alerts;
     public customNames: CustomNameCollection;
     public chemControllers: ChemControllerCollection;
@@ -1805,6 +1807,37 @@ export class Chlorinator extends EqItem {
         let model = sys.board.valueMaps.chlorinatorModel.get(this.model);
         return typeof model.chlorinePerSec !== 'undefined' ? model.chlorinePerSec : 0;
     }
+    // The cell's rating in lb of chlorine a day at 100% output, used to count what the cell has made (see ChlorinatorUsage.ts). A value
+    // set here wins; otherwise the rating PoolMath has for the pool's SWG (when there is one chlorinator), otherwise the model's rating.
+    public get cellLbsPerDaySetting(): number | undefined { return this.data.cellLbsPerDay > 0 ? this.data.cellLbsPerDay : undefined; }
+    public get cellLbsPerDay(): number {
+        if (this.data.cellLbsPerDay > 0) return this.data.cellLbsPerDay;
+        if (sys.chlorinators.length === 1 && sys.poolMath.swgLbsPerDay > 0) return sys.poolMath.swgLbsPerDay;
+        let model = sys.board.valueMaps.chlorinatorModel.get(this.model);
+        return model && model.chlorinePerDay > 0 ? model.chlorinePerDay : 0;
+    }
+    // A number above 0 sets the rating; 0, null or an empty value clears it so the default applies again.
+    public set cellLbsPerDay(val: number) {
+        if (typeof val === 'number' && val > 0) this.setDataVal('cellLbsPerDay', val);
+        else if (typeof this.data.cellLbsPerDay !== 'undefined') { delete this.data.cellLbsPerDay; this.hasChanged = true; }
+    }
+    // The day the current cell went into service (YYYY-MM-DD), or '' when not set. The cell usage is counted from it.
+    public get cellInstalledDate(): string { return typeof this.data.cellInstalledDate === 'string' ? this.data.cellInstalledDate : ''; }
+    public set cellInstalledDate(val: string) { this.setDataVal('cellInstalledDate', typeof val === 'string' ? val : ''); }
+}
+// The pool's PoolMath share (a pool-level section of poolConfig.json): the share code and pool name the history is read for, and what
+// PoolMath says about the pool, kept from the last read of its share (volume in gallons, the SWG rating).
+export class PoolMathSettings extends EqItem {
+    public dataName = 'poolMathConfig';
+    public initData() { }
+    public get shareCode(): string { return this.data.shareCode || ''; }
+    public set shareCode(val: string) { this.setDataVal('shareCode', typeof val === 'string' ? val.trim() : ''); }
+    public get poolName(): string { return this.data.poolName || ''; }
+    public set poolName(val: string) { this.setDataVal('poolName', typeof val === 'string' ? val.trim() : ''); }
+    public get gallons(): number { return this.data.gallons > 0 ? this.data.gallons : 0; }
+    public set gallons(val: number) { this.setDataVal('gallons', val > 0 ? val : 0); }
+    public get swgLbsPerDay(): number { return this.data.swgLbsPerDay > 0 ? this.data.swgLbsPerDay : 0; }
+    public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val > 0 ? val : 0); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }

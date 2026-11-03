@@ -37,6 +37,8 @@ import { release } from "os";
 import { ScreenLogicComms, sl } from "../../../controller/comms/ScreenLogic";
 import { IntelliCenterWSComms, icws } from "../../../controller/comms/IntelliCenterWS";
 import { screenlogic } from "node-screenlogic";
+import { checkCellSettings, setCellSettings } from "../../../controller/ChlorinatorLogService";
+import { setPoolMathSettings } from "../../../controller/PoolMathSync";
 
 export class ConfigRoute {
     private static securitySessions: Map<string, any> = new Map<string, any>();
@@ -580,6 +582,13 @@ export class ConfigRoute {
                 return res.status(200).send(opts);
             } catch (err) { next(err); }
         });
+        // The pool's PoolMath share (the history archive is read for it): GET/PUT /config/poolMath { shareCode, poolName }
+        app.get('/config/poolMath', (req, res, next) => {
+            try { return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
+        });
+        app.put('/config/poolMath', (req, res, next) => {
+            try { setPoolMathSettings(req.body); return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
+        });
         app.get('/config/options/chlorinators', async (req, res, next) => {
             try {
                 let opts = {
@@ -1005,7 +1014,10 @@ export class ConfigRoute {
         });
         app.put('/config/chlorinator', async (req, res, next) => {
             try {
+                // the cell settings are checked before anything is saved
+                if (req.body && (typeof req.body.cellLbsPerDay !== 'undefined' || typeof req.body.cellInstalledDate !== 'undefined')) checkCellSettings(req.body);
                 let chlor = await sys.board.chlorinator.setChlorAsync(req.body);
+                setCellSettings(chlor.id, req.body);
                 return res.status(200).send(sys.chlorinators.getItemById(chlor.id).get(true));
             }
             catch (err) { next(err); }
