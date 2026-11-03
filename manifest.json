@@ -106,6 +106,15 @@
       "build": true
     },
     {
+      "name": "feature/chlorinator-log",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Chlorinator logging: an hourly output log for every chlorinator, cell usage (lb of chlorine made, full-output hours, run hours) with per-chlorinator cellLbsPerDay and cellInstalledDate, and a PoolMath history import (poolMath section in poolConfig.json). Cut from upstream master, intended for upstream; SWG Assist builds on it.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "feature/dashboard-enhancements",
       "kind": "feature",
       "status": "legacy",

@@ -19,6 +19,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `fix/nonblocking-state-save` | fix | poolState and poolConfig are saved without blocking the process, so slow storage cannot stop relay refreshes. | none | follows upstream #1240; not yet reported |
 | `fix/heater-command-inflight` | fix | One command at a time per Nixie heater. | none | related: relayEquipmentManager#126 |
 | `feature/chlorinator-rs485-diag` | feature | RS485 diagnostic view of chlorinator messages in both directions, with the Details popup. | none | tagyoureit/nodejs-poolController#1250 (closed) |
+| `feature/chlorinator-log` | feature | Chlorinator logging: an hourly output log for every chlorinator, cell usage (lb of chlorine made, full-output hours, run hours) with per-chlorinator cellLbsPerDay and cellInstalledDate, and a PoolMath history import (poolMath section in poolConfig.json). Cut from upstream master, intended for upstream; SWG Assist builds on it. | none | none |
 | `feature/temp-average-24h` | feature | 24 hour average water temperature for each body. | none | none |
 | `feature/pump-status-log` | feature | At log level verbose, why and when a relay pump's status changes. | none | none |
 | `feature/pump-priming` | feature | Priming for relay driven pumps (two speed, relay switched variable speed); off by default. | none | none |
