@@ -204,17 +204,6 @@
       "build": true
     },
     {
-      "name": "feature/swg-cell-usage",
-      "kind": "feature",
-      "status": "active",
-      "purpose": "Salt cell tracking for SWG Assist: chlorine made (lb), full-output hours and hours running, worked out from the hourly output log, with a Cell In Service Since setting. Includes Kevin Montagne's chlorinator usage commit, adapted. Merged after feature/swg-assist in pool-next.",
-      "depends": [
-        "feature/swg-assist"
-      ],
-      "upstream": "",
-      "build": true
-    },
-    {
       "name": "feature/power-tracking",
       "kind": "feature",
       "status": "active",
@@ -272,7 +261,7 @@
       "name": "archive/2026-11-03/*",
       "kind": "archive",
       "status": "archive",
-      "purpose": "Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03; their content is in feature/swg-assist and pool.",
+      "purpose": "Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03, and feature/swg-cell-usage, whose content moved to feature/chlorinator-log and feature/swg-assist; their content is in feature/swg-assist and pool.",
       "depends": [],
       "upstream": "",
       "build": false
