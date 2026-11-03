@@ -55,6 +55,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
 | `archive/2026-10-11/*` | archive | Tips of branches as they were before being re-cut on current master on 2026-10-11. | none | none |
 | `archive/2026-11-03/*` | archive | Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03; their content is in feature/swg-assist and pool. | none | none |
-| `docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide and release notes. | none | none |
+| `archive/2026-11-03/docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide, advanced modes and release notes (tools/autoswg-check/). Unique work, not in pool: keep until the SWG Assist release notes and wiki are written. | none | none |
 
 The code in this fork and this page are written with the help of an AI assistant (Claude) and reviewed and run by the owner.

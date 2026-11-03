@@ -269,10 +269,10 @@
       "build": false
     },
     {
-      "name": "docs/autoswg-drafts",
+      "name": "archive/2026-11-03/docs/autoswg-drafts",
       "kind": "archive",
       "status": "archive",
-      "purpose": "Drafts of the AutoSwg guide and release notes.",
+      "purpose": "Drafts of the AutoSwg guide, advanced modes and release notes (tools/autoswg-check/). Unique work, not in pool: keep until the SWG Assist release notes and wiki are written.",
       "depends": [],
       "upstream": "",
       "build": false
