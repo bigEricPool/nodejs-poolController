@@ -24,7 +24,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import { logger } from '../logger/Logger';
 import { sys } from './Equipment';
 import { archivedSwgEvents, isPoolMathArchiveCurrent, poolMathArchiveSummary, PoolMathPoolInfo, PoolMathTopUpResult, readPoolMathArchive, syncPoolMathArchive, topUpPoolMathArchive } from './PoolMathArchive';
-import { setPoolLogSwgEntriesSource } from './ChlorinatorLogService';
+import { recountCellUsage, setPoolLogSwgEntriesSource } from './ChlorinatorLogService';
 
 const SYNC_FIRST_DELAY_MS = 3 * 60 * 1000;
 const SYNC_RETRY_MS = 30 * 60 * 1000;
@@ -52,10 +52,24 @@ function notify(kind: 'sync' | 'topUp', result?: PoolMathTopUpResult) {
     for (const fn of listeners) { try { fn(kind, result); } catch (err) { logger.warn(`PoolMath: a listener failed: ${err.message}`); } }
 }
 
-function applyPoolInfo(info: PoolMathPoolInfo | undefined) {
-    if (!info) return;
-    if (info.gallons > 0 && sys.poolMath.gallons !== info.gallons) sys.poolMath.gallons = info.gallons;
+// Copies the pool's volume and SWG rating from PoolMath into the poolMath section. When that changes the rating a chlorinator counts at
+// (it has no rating of its own), or the volume the estimate before the output log uses, its cell usage is counted again from its
+// install date, so the totals are not a mix of the old and new values. Returns the ids recounted.
+export function applyPoolInfo(info: PoolMathPoolInfo | undefined): number[] {
+    if (!info) return [];
+    const chlors = sys.chlorinators.toArray();
+    const before = new Map<number, number>(chlors.map(c => [c.id, c.cellLbsPerDay] as [number, number]));
+    let volumeChanged = false;
+    if (info.gallons > 0 && sys.poolMath.gallons !== info.gallons) { sys.poolMath.gallons = info.gallons; volumeChanged = true; }
     if (info.swgLbsPerDay > 0 && sys.poolMath.swgLbsPerDay !== info.swgLbsPerDay) sys.poolMath.swgLbsPerDay = info.swgLbsPerDay;
+    const recounted: number[] = [];
+    for (const c of chlors) {
+        if (!c.cellInstalledDate) continue;
+        if (!volumeChanged && before.get(c.id) === c.cellLbsPerDay) continue;
+        try { recountCellUsage(c.id); recounted.push(c.id); }
+        catch (err) { logger.warn(`PoolMath: could not recount the cell usage of chlorinator ${c.id}: ${err.message}`); }
+    }
+    return recounted;
 }
 
 export function armPoolMathSync(delayMs: number = SYNC_FIRST_DELAY_MS) {
