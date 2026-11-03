@@ -41,7 +41,7 @@ class Logger {
     private slMessages: any[];
     private pktPath: string;
     private consoleToFilePath: string;
-    private transports: { console: winston.transports.ConsoleTransportInstance, file?: winston.transports.FileTransportInstance, consoleFile?: winston.transports.FileTransportInstance } = {
+    private transports: { console: winston.transports.ConsoleTransportInstance, file?: winston.transports.FileTransportInstance, consoleFile?: winston.transports.FileTransportInstance, solarFile?: winston.transports.FileTransportInstance } = {
         console: new winston.transports.Console({ level: 'silly' })
     };
     private captureForReplayBaseDir: string;
@@ -65,6 +65,42 @@ class Logger {
         return this.currentTimestamp;
     } 
 
+    // log.solar.alwaysShow: solar messages (logger.solar) are shown in the normal log whatever the log level is. They are
+    // written at info, so only the levels error and warn would hide them. winston levels are a plain ladder with no
+    // category filter, so for those two the transports run at 'info' and this filter drops every other info, verbose,
+    // debug and silly message. While a replay capture is running everything is kept, because the capture needs the
+    // full log. A level of 'warn-solar' is still understood, as an older spelling of level warn with alwaysShow on.
+    private get appLevel(): string { const level = this.cfg.app.level; return level === 'warn-solar' ? 'warn' : level; }
+    private get alwaysShowSolar(): boolean { return this.cfg.app.level === 'warn-solar' || (typeof this.cfg.solar !== 'undefined' && utils.makeBool(this.cfg.solar.alwaysShow)); }
+    private get solarOnly(): boolean {
+        return typeof this.cfg !== 'undefined' && typeof this.cfg.app !== 'undefined' && this.alwaysShowSolar && (this.appLevel === 'warn' || this.appLevel === 'error');
+    }
+    private transportLevel(): string { return this.solarOnly ? 'info' : this.appLevel; }
+    private solarFilter = winston.format((info) => {
+        if (!this.solarOnly || this._captureInProgress) return info;
+        if (info.level === 'error' || info.level === 'warn' || info.solar === true) return info;
+        return false;
+    });
+    // The solar log file: every logger.solar() message, whatever the log level is set to, in logs/solarLog(<time>).log.
+    // Turn it on with log.solar.logToFile in config.json.
+    private getSolarLogPath(): string { return 'solarLog(' + this.getLogTimestamp() + ').log'; }
+    private solarMessagesOnly = winston.format((info) => info.solar === true ? info : false);
+    private updateSolarFile() {
+        const wanted = typeof this.cfg !== 'undefined' && typeof this.cfg.solar !== 'undefined' && utils.makeBool(this.cfg.solar.logToFile);
+        if (wanted && typeof this.transports.solarFile === 'undefined') {
+            this.transports.solarFile = new winston.transports.File({
+                filename: path.join(process.cwd(), '/logs', this.getSolarLogPath()),
+                level: 'info',
+                format: winston.format.combine(this.solarMessagesOnly(), winston.format.splat(), winston.format.uncolorize(), this.myFormat)
+            });
+            this._logger.add(this.transports.solarFile);
+        }
+        else if (!wanted && typeof this.transports.solarFile !== 'undefined') {
+            this._logger.remove(this.transports.solarFile);
+            this.transports.solarFile.close();
+            this.transports.solarFile = undefined;
+        }
+    }
     private myFormat = winston.format.printf(({ level, message, label }) => {
         return `[${new Date().toLocaleString()}] ${level}: ${message}`;
     });
@@ -73,10 +109,10 @@ class Logger {
     public init() {
         this.cfg = config.getSection('log');
         logger._logger = winston.createLogger({
-            format: winston.format.combine(winston.format.timestamp({format: 'MMMM DD YYYY'}), winston.format.colorize(), winston.format.splat(), this.myFormat),
+            format: winston.format.combine(this.solarFilter(), winston.format.timestamp({format: 'MMMM DD YYYY'}), winston.format.colorize(), winston.format.splat(), this.myFormat),
             transports: [this.transports.console]
         });
-        this.transports.console.level = this.cfg.app.level;
+        this.transports.console.level = this.transportLevel();
         // Only start capture if not already capturing (prevents duplicate transports when config watcher triggers init())
         if (this.cfg.app.captureForReplay && !this._captureInProgress) {
             this.startCaptureForReplay(false);
@@ -87,13 +123,24 @@ class Logger {
                 level: 'silly',
                 format: winston.format.combine(winston.format.splat(), winston.format.uncolorize(), this.myFormat)
             });
-            this.transports.consoleFile.level = this.cfg.app.level;
+            this.transports.consoleFile.level = this.transportLevel();
             this._logger.add(this.transports.consoleFile);
         }
+        // The winston logger was just created, so a solar file transport from an earlier init() is not attached to it.
+        if (typeof this.transports.solarFile !== 'undefined') {
+            try { this.transports.solarFile.close(); } catch (err) { /* already closed */ }
+            this.transports.solarFile = undefined;
+        }
+        this.updateSolarFile();
     }
     public async stopAsync() {
         try {
             this.info(`Stopping logger Process.`);
+            if (typeof this.transports.solarFile !== 'undefined') {
+                this._logger.remove(this.transports.solarFile);
+                this.transports.solarFile.close();
+                this.transports.solarFile = undefined;
+            }
             if (this.cfg.app.captureForReplay) {
                 return await this.stopCaptureForReplayAsync();
             }
@@ -114,6 +161,11 @@ class Logger {
     public verbose(...args: any[]) { logger._logger.verbose.apply(logger._logger, arguments); }
     public error(...args: any[]): Error { logger._logger.error.apply(logger._logger, arguments); return new Error(arguments[0]); }
     public silly(...args: any[]) { logger._logger.silly.apply(logger._logger, arguments); }
+    // A solar heater message. It is written at info, so it shows at the info level and every more verbose one, and the
+    // log.solar.alwaysShow shows it at the levels error and warn too.
+    public solar(message: string) { logger._logger.log({ level: 'info', message: message, solar: true }); }
+    // log.solar.explain: also say why solar heating or nocturnal cooling is enabled but not running (off unless turned on).
+    public get solarExplain(): boolean { return typeof this.cfg !== 'undefined' && typeof this.cfg.solar !== 'undefined' && utils.makeBool(this.cfg.solar.explain); }
     public reject(sError: string): Promise<Error> {
         logger.error(sError);
         return Promise.reject(new Error(sError));
@@ -271,8 +323,9 @@ class Logger {
                 this.transports.consoleFile = undefined;
             }
         }
+        this.updateSolarFile();
         for (let [key, transport] of Object.entries(this.transports)) {
-            if(typeof transport !== 'undefined') transport.level = this.cfg.app.level;
+            if(typeof transport !== 'undefined' && key !== 'solarFile') transport.level = this.transportLevel();
         }
     }
     public startCaptureForReplay(bResetLogs:boolean) {
@@ -446,7 +499,7 @@ class Logger {
                 this.transports.file.close();
                 this.transports.file = undefined;
             }
-            this.transports.console.level = this.cfg.app.level;
+            this.transports.console.level = this.transportLevel();
             this._captureInProgress = false;
             return backupFile.filePath;
         }
