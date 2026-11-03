@@ -184,52 +184,12 @@
       "build": true
     },
     {
-      "name": "feature/auto-swg",
-      "kind": "feature",
-      "status": "active",
-      "purpose": "AutoSwg: a recommended SWG % from PoolMath readings, with Away protection. AutoSwg code only. The tagged releases autoswg-v0.1.x are the earlier form of this branch.",
-      "depends": [
-        "optional: fix/chlorinator-poll-stall"
-      ],
-      "upstream": "",
-      "build": true
-    },
-    {
-      "name": "feature/auto-swg-clean",
-      "kind": "feature",
-      "status": "legacy",
-      "purpose": "Earlier AutoSwg-only branch; replaced by feature/auto-swg.",
-      "depends": [],
-      "upstream": "",
-      "build": true
-    },
-    {
-      "name": "feature/auto-swg-automation",
-      "kind": "feature",
-      "status": "legacy",
-      "purpose": "Former working branch (AutoSwg plus solar, average, tools). Kept for history; no new work.",
-      "depends": [],
-      "upstream": "",
-      "build": true
-    },
-    {
-      "name": "feature/auto-swg-tools",
-      "kind": "feature",
-      "status": "active",
-      "purpose": "tools/autoswg-check and the AutoSwg documents.",
-      "depends": [
-        "feature/auto-swg"
-      ],
-      "upstream": "",
-      "build": true
-    },
-    {
       "name": "feature/swg-assist",
       "kind": "feature",
       "status": "active",
-      "purpose": "SWG Assist, the first AutoSwg release: feature/auto-swg plus the rename (user-facing text only) and the FC range control mode. Not yet in pool or pool-next.",
+      "purpose": "SWG Assist: a recommended SWG % from PoolMath readings, with Away protection and the FC range control mode. User-facing text says SWG Assist; code, the autoSwg config key, data files and API routes keep the internal name AutoSwg. In pool and pool-next.",
       "depends": [
-        "feature/auto-swg"
+        "optional: fix/chlorinator-poll-stall"
       ],
       "upstream": "",
       "build": true
@@ -295,6 +255,15 @@
       "kind": "archive",
       "status": "archive",
       "purpose": "Tips of branches as they were before being re-cut on current master on 2026-10-11.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "archive/2026-11-03/*",
+      "kind": "archive",
+      "status": "archive",
+      "purpose": "Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03; their content is in feature/swg-assist and pool.",
       "depends": [],
       "upstream": "",
       "build": false

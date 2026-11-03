@@ -25,8 +25,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `feature/pws-weather` | feature | Hourly weather log from a personal weather station, and a Weather panel. | none | none |
 | `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls; in dashPanel also the Nocturnal Cooling toggle. Stacked on fix/solar-restart in njsPC. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
 | `feature/pi-status` | feature | The condition of the computer njsPC runs on: processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, installed software, and how late njsPC itself runs, with a longer log (njsPC: GET /state/system). dashPanel: a System panel showing it. | none | none |
-| `feature/auto-swg` | feature | AutoSwg: a recommended SWG % from PoolMath readings, with Away protection. AutoSwg code only. The tagged releases autoswg-v0.1.x are the earlier form of this branch. | optional: fix/chlorinator-poll-stall | none |
-| `feature/auto-swg-tools` | feature | tools/autoswg-check and the AutoSwg documents. | feature/auto-swg | none |
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
@@ -40,7 +38,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `feature/swg-assist` | feature | feature/auto-swg plus the rename to SWG Assist (user-facing text only). | feature/auto-swg | none |
+| `feature/swg-assist` | feature | SWG Assist: a recommended SWG % from PoolMath readings, with Away protection and the FC range control mode. User-facing text says SWG Assist; code, the autoSwg config key, data files and API routes keep the internal name AutoSwg. In pool and pool-next. | optional: fix/chlorinator-poll-stall | none |
 
 ## Being replaced
 
@@ -48,8 +46,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 |---|---|---|---|---|
 | `fix/schedule-defects` | fix | Older combined branch; replaced by fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
 | `feature/dashboard-enhancements` | feature | Older combined branch; replaced by feature/chlorinator-rs485-diag and, in dashPanel, feature/dashboard-sun-times. | none | #1250 |
-| `feature/auto-swg-clean` | feature | Earlier AutoSwg-only branch; replaced by feature/auto-swg. | none | none |
-| `feature/auto-swg-automation` | feature | Former working branch (AutoSwg plus solar, average, tools). Kept for history; no new work. | none | none |
 
 ## Kept for history
 
@@ -58,6 +54,7 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `audit-fix-pi` | archive | Snapshot of an earlier install; fully contained in pool. | none | none |
 | `feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
 | `archive/2026-10-11/*` | archive | Tips of branches as they were before being re-cut on current master on 2026-10-11. | none | none |
+| `archive/2026-11-03/*` | archive | Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03; their content is in feature/swg-assist and pool. | none | none |
 | `docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide and release notes. | none | none |
 
 The code in this fork and this page are written with the help of an AI assistant (Claude) and reviewed and run by the owner.
