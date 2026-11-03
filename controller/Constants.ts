@@ -847,6 +847,35 @@ export class Utils {
         }
         catch (err) { }
     }
+    /**
+     * writeFileAtomicSync without holding up the process.
+     *
+     * The flush to disk is what takes the time, and on an SD card it can take many
+     * seconds now and then. Done synchronously, nothing else in the process runs
+     * for that long: relays are not refreshed (a relay manager with a latch then
+     * switches the pump off), packets are not answered. Here the write, the flush,
+     * the rename and the directory flush are all awaited, so a slow disk only makes
+     * this save slow. The result on disk is the same: either the previous contents
+     * or the new ones, never a truncated file.
+     *
+     * Two of these for the same file must not run at the same time (they share the
+     * temporary file). The callers run one save at a time.
+     */
+    public async writeFileAtomicAsync(filePath: string, data: string): Promise<void> {
+        const tmpPath = `${filePath}.tmp`;
+        const file = await fs.promises.open(tmpPath, 'w');
+        try {
+            await file.writeFile(data);
+            await file.sync();
+        }
+        finally { await file.close(); }
+        await fs.promises.rename(tmpPath, filePath);
+        try {
+            const dir = await fs.promises.open(path.dirname(filePath), 'r');
+            try { await dir.sync(); } finally { await dir.close(); }
+        }
+        catch (err) { }
+    }
 }
 
 export const utils = new Utils();
