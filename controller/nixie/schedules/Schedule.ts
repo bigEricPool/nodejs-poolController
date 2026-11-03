@@ -203,7 +203,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                             // error.  The flag stays set in that case, so the next pass tries again.
                             if (c.cstate.isOn) {
                                 // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
-                                await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
+                                // Priming must never stop the resumed schedule from being marked as started, or the circuit is sent again every pass.
+                                try { await (this.controlPanel as NixieControlPanel)?.pumps?.primeForScheduleAsync(c.circuitId); }
+                                catch (err) { logger.error(`Error priming pump for resumed schedule circuit ${c.circuitId}: ${err.message}`); }
                                 c.cstate.priority = 'scheduled';
                                 for (let j = 0; j < c.sscheds.length; j++) {
                                     let ssched = c.sscheds[j];
@@ -300,7 +302,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                         // would stand it down for the day, so it stays untriggered and the next pass tries again.
                                         if (!c.cstate.isOn) continue;
                                         // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
-                                        await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
+                                        // Priming must never stop the schedule from being marked as started, or the circuit is sent again every pass.
+                                        try { await (this.controlPanel as NixieControlPanel)?.pumps?.primeForScheduleAsync(c.circuitId); }
+                                        catch (err) { logger.error(`Error priming pump for schedule circuit ${c.circuitId}: ${err.message}`); }
                                     }
                                     c.cstate.priority = 'scheduled';
                                     ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
