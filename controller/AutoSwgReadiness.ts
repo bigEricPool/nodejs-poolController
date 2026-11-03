@@ -94,4 +94,6 @@ export function autoSwgGateInfo(cfg: AutoSwg): AutoSwgReadiness & { tuningAvaila
     return Object.assign({}, r, { advanced: cfg.mode !== 'standard', automatic: cfg.mode === 'automatic' || cfg.mode === 'developer', autoTuneAvailable: cfg.autoTuneAvailable, manualTuneApplies: manualTuneApplies(cfg), manualTuneAppliesNeeded: cfg.autoTuneApplyAfterManual, tuningAvailable: cfg.tuningAvailable, tuneAccepted: typeof cfg.tuneAcceptedAt === 'string' && cfg.tuneAcceptedAt.length > 0, automationAvailable: cfg.automationAvailable });
 }
 
-setAutoSwgReadinessProvider(cfg => getAutoSwgReadiness(cfg));
+// Called when the web service starts (StateRoute.initRoutes), not when this module is loaded: loading it must not touch the Equipment module's exports, because a
+// unit test that mocks Equipment with a fixed object does not have them.
+export function registerAutoSwgReadiness() { setAutoSwgReadinessProvider(cfg => getAutoSwgReadiness(cfg)); }
