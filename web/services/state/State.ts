@@ -33,7 +33,7 @@ import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgSer
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
 import { evaluateAutoTuneApply } from "../../../controller/AutoSwgAutoTune";
-import { getAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
+import { getAutoSwgReadiness, registerAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
 import { outputLog } from "../../../controller/AutoSwgOutputLog";
@@ -1214,6 +1214,8 @@ async function runAutoSwgAutoCheck() {
 
 export class StateRoute {
     public static initRoutes(app: express.Application) {
+        // before anything below reads the settings that depend on the history gate (Equipment.ts: tuningAvailable, automationAvailable)
+        registerAutoSwgReadiness();
         ChlorinatorState.onPoolSetpointChanged = (chlor, previous, current) => {
             if (sys.autoSwg.chlorinatorId !== chlor.id) return;
             if (autoSwgApplyInFlight && autoSwgApplyInFlight.pct === current && Date.now() - autoSwgApplyInFlight.at < AUTO_SWG_APPLY_ECHO_MS) return;
