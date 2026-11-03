@@ -275,7 +275,9 @@ export class NixieScheduleCollection extends NixieEquipmentCollection<NixieSched
                                     if (!c.cstate.isOn) {
                                         await sys.board.circuits.setCircuitStateAsync(c.circuitId, true);
                                         // A pump that this circuit runs is primed when it has priming set up (relay pumps; see NixiePump.startPrimingAsync).
-                                        await (this.controlPanel as NixieControlPanel).pumps.primeForScheduleAsync(c.circuitId);
+                                        // Priming must never stop the schedule from being marked as started, or the circuit is sent again every pass.
+                                        try { await (this.controlPanel as NixieControlPanel).pumps?.primeForScheduleAsync(c.circuitId); }
+                                        catch (err) { logger.error(`Error priming pump for schedule circuit ${c.circuitId}: ${err.message}`); }
                                     }
                                     c.cstate.priority = 'scheduled';
                                     ssched.triggered = ssched.isOn = ssched.scheduleTime.shouldBeOn;
