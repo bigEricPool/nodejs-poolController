@@ -2469,7 +2469,7 @@ export class AutoSwg extends EqItem {
         if (typeof this.data.swgStartTime === 'undefined') this.data.swgStartTime = '07:00';
         if (typeof this.data.swgStopTime === 'undefined') this.data.swgStopTime = '19:00';
         if (typeof this.data.timezone === 'undefined') this.data.timezone = 'America/New_York';
-        if (typeof this.data.windowDays === 'undefined') this.data.windowDays = 21;
+        if (typeof this.data.windowDays === 'undefined') this.data.windowDays = 14;
         if (typeof this.data.targetFc === 'undefined') this.data.targetFc = 9.0;
         // Days to take reaching targetFc, depending on which side of it the projected FC
         // is on: coming down from above is the slow, gentle direction, building back up
@@ -2609,6 +2609,10 @@ export class AutoSwg extends EqItem {
         if (typeof this.data.bandBiasPerDay === 'undefined') this.data.bandBiasPerDay = 0.05;
         // How many run periods (run windows of SWG on-time, so about a day each) a boost takes to bring FC back to the middle of the range: 1 is a firm push, more is gentler.
         if (typeof this.data.bandBoostPeriods === 'undefined') this.data.bandBoostPeriods = 1;
+        // Two corrections to the range control's hold (see SwgAssistBand.ts), each on its own switch: the peak cap keeps the afternoon peak under the top of the range, and
+        // the integral correction trims the hold by what the last readings say about the maintenance %.
+        if (typeof this.data.bandPeakCap === 'undefined') this.data.bandPeakCap = true;
+        if (typeof this.data.bandIntegral === 'undefined') this.data.bandIntegral = true;
     }
     public get enabled(): boolean { return this.data.enabled; }
     public set enabled(val: boolean) { this.setDataVal('enabled', val); }
@@ -2700,6 +2704,10 @@ export class AutoSwg extends EqItem {
     public set fcHigh(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('fcHigh', isFinite(n) ? Math.min(30, Math.max(0, n)) : 10.5); }
     public get bandBoostPeriods(): number { return this.data.bandBoostPeriods; }
     public set bandBoostPeriods(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBoostPeriods', isFinite(n) ? Math.min(5, Math.max(0.5, n)) : 1); }
+    public get bandPeakCap(): boolean { return this.data.bandPeakCap !== false; }
+    public set bandPeakCap(val: boolean) { this.setDataVal('bandPeakCap', val); }
+    public get bandIntegral(): boolean { return this.data.bandIntegral !== false; }
+    public set bandIntegral(val: boolean) { this.setDataVal('bandIntegral', val); }
     public get bandBiasPerDay(): number { return this.data.bandBiasPerDay; }
     public set bandBiasPerDay(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBiasPerDay', isFinite(n) ? Math.min(0.3, Math.max(0, n)) : 0.05); }
     // Range control is in use: the mode is 'band' and Away protection is not on (it steers to its own vacation target).

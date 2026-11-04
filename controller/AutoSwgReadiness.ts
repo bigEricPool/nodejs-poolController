@@ -52,7 +52,7 @@ let cache: { at: number; value: AutoSwgReadiness } | undefined;
 function num(v: any, fallback: number): number { const n = typeof v === 'number' ? v : parseFloat(v); return isFinite(n) && n >= 0 ? n : fallback; }
 
 export function computeAutoSwgReadiness(cfg: AutoSwg, now: Date = new Date()): AutoSwgReadiness {
-    const windowDays = num(cfg.windowDays, 21);
+    const windowDays = num(cfg.windowDays, 14);
     const result: AutoSwgReadiness = {
         ready: false, off: cfg.gateOff === true, scorable: 0, scorableNeeded: num(cfg.gateMinFcReadings, 15), swgEntries: 0,
         swgNeeded: num(cfg.gateMinSwgEntries, 1), days: 0, daysNeeded: num(cfg.gateMinDays, 42), windowDays: windowDays
