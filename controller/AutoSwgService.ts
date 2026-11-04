@@ -136,7 +136,7 @@ export interface AutoSwgParams {
     away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
     // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
     // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
-    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean; peakCap?: boolean; integral?: number };
+    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean; peakCap?: boolean; integral?: number; scaledBias?: boolean };
     // An already-committed target (a previous apply's FC and deadline) to stay on course
     // for instead of starting a new one, as long as the projected FC is within strayPpm of
     // targetFc. Infinity always stays on course (an explicit refresh); a finite value lets
@@ -1428,6 +1428,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
             const recentReadings = fcEvents.filter(e => e.ts.getTime() <= rightNow.getTime()).slice(-3).map(e => e.value);
             const decision = bandDecision({
                 peakCap: band.peakCap === true, peakRunHours: peakRunHours, peakDayEq: peakDayEq, integral: typeof band.integral === 'number' ? band.integral : 0, recentReadings: recentReadings,
+                scaledBias: band.scaledBias === true, lastReading: lastFc.value,
                 projectedFc: projectedCurrentFc, avgPerDay: avgPerDay, elapsedDays: elapsedDays, low: band.low, high: band.high,
                 trim: typeof band.trim === 'number' ? band.trim : 0.2, biasPerDay: typeof band.biasPerDay === 'number' ? band.biasPerDay : 0.05,
                 guardPerDay: typeof band.guardPerDay === 'number' ? band.guardPerDay : 0.3, guardCap: typeof band.guardCap === 'number' ? band.guardCap : 2,

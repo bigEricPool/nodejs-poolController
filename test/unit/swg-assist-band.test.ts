@@ -1,4 +1,4 @@
-// SWG Assist range control (controller/SwgAssistBand.ts): the hold, and its two corrections (the peak cap and the integral correction).
+// SWG Assist range control (controller/SwgAssistBand.ts): the hold, its two corrections (the peak cap and the integral correction), and the scaled old-reading bias.
 import { describe, expect, it } from 'vitest';
 import { bandDecision, BandInput } from '../../controller/SwgAssistBand';
 
@@ -29,11 +29,11 @@ describe('peak cap', () => {
     const peak = { peakCap: true, peakRunHours: 7, peakDayEq: 0.4 };
 
     it('lowers the hold so the afternoon peak stays under the top of the range', () => {
-        // FC 9.5 now: the trim alone would give 17.3%, and the run would add 0.042 ppm per % less 0.336 ppm of burn, so the peak under 9.75 allows 13.95%
+        // FC 9.5 now: the trim alone would give 17.3%, and the run would add 0.042 ppm per % less 0.336 ppm of burn, so the peak under 9.5 allows 8.0%
         const plain = bandDecision(input({ projectedFc: 9.5 }));
         const capped = bandDecision(input(Object.assign({ projectedFc: 9.5 }, peak)));
         expect(plain.pct).toBeCloseTo(17.33, 1);
-        expect(capped.pct).toBeCloseTo(13.95, 1);
+        expect(capped.pct).toBeCloseTo(8.0, 1);
         expect(capped.peakCapped).toBe(true);
         expect(capped.note).toContain('peak');
     });
@@ -55,6 +55,32 @@ describe('peak cap', () => {
         const without = bandDecision(input({ projectedFc: 6, elapsedDays: 1 }));
         expect(withCap.mode).toBe('boost');
         expect(withCap.pct).toBeCloseTo(without.pct, 6);
+    });
+});
+
+describe('scaled old-reading bias', () => {
+    // A 5 day old reading: the plain bias raises the maintenance % of 20 by 0.05 x 3 days = 15%, to 23%.
+    const old = { elapsedDays: 5, projectedFc: 8.5 };
+
+    it('raises the hold in full without the switch, whatever the last reading', () => {
+        expect(bandDecision(input(Object.assign({}, old))).pct).toBeCloseTo(23, 6);
+        expect(bandDecision(input(Object.assign({ scaledBias: false, lastReading: 10 }, old))).pct).toBeCloseTo(23, 6);
+    });
+
+    it('does not raise the hold when the last reading was at the top of the range', () => {
+        const d = bandDecision(input(Object.assign({ scaledBias: true, lastReading: 10 }, old)));
+        expect(d.pct).toBeCloseTo(20, 6);
+        expect(d.note).toContain('scaled down to 0%');
+    });
+
+    it('raises the hold in full when the last reading was at the middle of the range', () => {
+        expect(bandDecision(input(Object.assign({ scaledBias: true, lastReading: 8.5 }, old))).pct).toBeCloseTo(23, 6);
+    });
+
+    it('raises the hold by half when the last reading was halfway between the middle and the top', () => {
+        const d = bandDecision(input(Object.assign({ scaledBias: true, lastReading: 9.25 }, old)));
+        expect(d.pct).toBeCloseTo(21.5, 6);
+        expect(d.note).toContain('scaled down to 50%');
     });
 });
 

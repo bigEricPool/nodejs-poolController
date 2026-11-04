@@ -2613,6 +2613,8 @@ export class AutoSwg extends EqItem {
         // the integral correction trims the hold by what the last readings say about the maintenance %.
         if (typeof this.data.bandPeakCap === 'undefined') this.data.bandPeakCap = true;
         if (typeof this.data.bandIntegral === 'undefined') this.data.bandIntegral = true;
+        // The old-reading bias scaled by where the last reading sat in the range (see SwgAssistBand.ts).
+        if (typeof this.data.bandScaledBias === 'undefined') this.data.bandScaledBias = true;
     }
     public get enabled(): boolean { return this.data.enabled; }
     public set enabled(val: boolean) { this.setDataVal('enabled', val); }
@@ -2708,6 +2710,8 @@ export class AutoSwg extends EqItem {
     public set bandPeakCap(val: boolean) { this.setDataVal('bandPeakCap', val); }
     public get bandIntegral(): boolean { return this.data.bandIntegral !== false; }
     public set bandIntegral(val: boolean) { this.setDataVal('bandIntegral', val); }
+    public get bandScaledBias(): boolean { return this.data.bandScaledBias !== false; }
+    public set bandScaledBias(val: boolean) { this.setDataVal('bandScaledBias', val); }
     public get bandBiasPerDay(): number { return this.data.bandBiasPerDay; }
     public set bandBiasPerDay(val: number) { const n = typeof val === 'number' ? val : parseFloat(val as any); this.setDataVal('bandBiasPerDay', isFinite(n) ? Math.min(0.3, Math.max(0, n)) : 0.05); }
     // Range control is in use: the mode is 'band' and Away protection is not on (it steers to its own vacation target).
