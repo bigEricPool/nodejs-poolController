@@ -136,7 +136,7 @@ export interface AutoSwgParams {
     away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
     // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
     // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
-    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean };
+    band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean; peakCap?: boolean; integral?: number };
     // An already-committed target (a previous apply's FC and deadline) to stay on course
     // for instead of starting a new one, as long as the projected FC is within strayPpm of
     // targetFc. Infinity always stays on course (an explicit refresh); a finite value lets
@@ -1416,7 +1416,18 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
             const bandEq = dayEquivalents(rightNow, bandDeadline);
             const bandRun = runWindowHoursBetween(rightNow, bandDeadline, swgStart, swgStop, params.timezone);
             const bandMargin = typeof params.overshootPpmPerDay === 'number' && params.overshootPpmPerDay > 0 ? Math.min(OVERSHOOT_MARGIN_CAP_PPM, params.overshootPpmPerDay * elapsedDays) : 0;
+            // The peak cap needs the hours the SWG is on, and the burn, from now to the end of the next (or current) run window: that is when FC peaks.
+            let peakRunHours = 0, peakDayEq = 0;
+            if (band.peakCap === true) {
+                const winLen = durationHours(swgStart, swgStop);
+                const winStart = nextRunStartAfter(new Date(rightNow.getTime() - winLen * 3600000), swgStart, params.timezone);
+                const winEnd = new Date(winStart.getTime() + winLen * 3600000);
+                peakRunHours = runWindowHoursBetween(rightNow, winEnd, swgStart, swgStop, params.timezone);
+                peakDayEq = dayEquivalents(rightNow, winEnd);
+            }
+            const recentReadings = fcEvents.filter(e => e.ts.getTime() <= rightNow.getTime()).slice(-3).map(e => e.value);
             const decision = bandDecision({
+                peakCap: band.peakCap === true, peakRunHours: peakRunHours, peakDayEq: peakDayEq, integral: typeof band.integral === 'number' ? band.integral : 0, recentReadings: recentReadings,
                 projectedFc: projectedCurrentFc, avgPerDay: avgPerDay, elapsedDays: elapsedDays, low: band.low, high: band.high,
                 trim: typeof band.trim === 'number' ? band.trim : 0.2, biasPerDay: typeof band.biasPerDay === 'number' ? band.biasPerDay : 0.05,
                 guardPerDay: typeof band.guardPerDay === 'number' ? band.guardPerDay : 0.3, guardCap: typeof band.guardCap === 'number' ? band.guardCap : 2,
