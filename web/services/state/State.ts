@@ -1203,7 +1203,7 @@ export class StateRoute {
         app.get('/state/autoSwg/output', (req, res, next) => {
             try {
                 let days = parseInt(req.query.days as string, 10);
-                if (isNaN(days) || days < 1 || days > 548) days = 30;
+                if (isNaN(days) || days < 1 || days > 1461) days = 30;   // the log keeps 48 months
                 const id = assistChlorinatorId();
                 return res.status(200).send({ days: days, hours: typeof id === 'number' ? chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) : [] });
             }
