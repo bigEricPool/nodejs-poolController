@@ -1774,7 +1774,7 @@ export class StateRoute {
             return res.status(200).send(state.autoSwg.get(true));
         });
         // SWG % changes -- applied recommendations (with the inputs/outputs behind
-        // each) and manual changes -- oldest first; kept for 18 months. See
+        // each) and manual changes -- oldest first; kept for 48 months. See
         // controller/AutoSwgHistory.ts.
         app.get('/state/autoSwg/history', (req, res) => {
             return res.status(200).send(readAutoSwgHistory());

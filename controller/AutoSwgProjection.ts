@@ -17,7 +17,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 // The projected FC points behind the FC line of the Water panel, kept in data/autoSwgProjection.jsonl next to poolConfig.json, one JSON line per point,
-// for 18 months (the length of the PoolMath archive). A point is the FC the calculation expected at a moment it mattered:
+// for 48 months (the length of the PoolMath archive). A point is the FC the calculation expected at a moment it mattered:
 //   after    the projected FC a calculation gave when its result was applied (a check, a refresh, a refresh and apply). `run` is that apply's id (its time
 //            in ms), `tf` and `td` the target FC and deadline (ms) it aimed at, so the planned path can be drawn out to the deadline.
 //   before   the FC the PREVIOUS run expected at the time of the next apply, from only what it knew (the FC readings up to its time), so the step between
@@ -36,7 +36,7 @@ import { cachedPageHtml, computeRecommendation } from './AutoSwgService';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSwgEvents, archivedWaterTemps } from './PoolMathArchive';
 
-const KEEP_MONTHS = 18;
+const KEEP_MONTHS = 48;
 const PRUNE_EVERY_MS = 24 * 3600000;
 const LOOKBACK_DAYS = 45;              // how far back the points that need a calculation are filled in
 const HTML_MAX_AGE_MS = 24 * 3600000;  // the cached PoolMath page is used for the calculations while it is no older than this

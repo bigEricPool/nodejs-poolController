@@ -34,7 +34,7 @@ import * as path from 'path';
 import { logger } from '../logger/Logger';
 import type { LocalSwgEntry } from './AutoSwgService';
 
-export const AUTO_SWG_HISTORY_MONTHS = 18;
+export const AUTO_SWG_HISTORY_MONTHS = 48;
 
 // What caused an SWG Assist apply: the periodic check, the Refresh and Apply button, Check Now or Refresh: Adjust % with
 // Auto-Apply on, a person pressing Apply after reviewing the number, or the step to the maintenance % after a target.
