@@ -68,7 +68,7 @@ export interface PoolMathArchiveEntry {
 }
 
 export interface PoolMathArchive {
-    shareCode?: string;         // what the entries were pulled for; a change discards them
+    shareCode?: string;         // what the entries were pulled for; a different pool starts fresh (see archiveIsForPool)
     poolName?: string;
     syncedAt?: string;          // ISO time of the last successful sync
     toppedUpAt?: string;        // ISO time of the last top-up (see topUpPoolMathArchive)
@@ -125,6 +125,28 @@ export function retentionCutoff(now: Date): number {
     return cutoff.getTime();
 }
 
+// Whether the archived entries are the pool a full sync just read: the same share code and pool name, or else any log id PoolMath
+// returned (including deleted ones) already in the archive. Log ids belong to one pool, so a renamed pool or a new share link for it
+// keeps its history, and only a different pool starts fresh.
+export function archiveIsForPool(archive: PoolMathArchive, shareCode: string, poolName: string | undefined, returnedIds: any[]): boolean {
+    if (!archive || !Array.isArray(archive.entries) || !archive.entries.length) return true;
+    if (archive.shareCode === shareCode && (archive.poolName || '') === (poolName || '')) return true;
+    const have = new Set(archive.entries.map(e => e.id));
+    return (returnedIds || []).some(id => typeof id === 'string' && have.has(id));
+}
+
+// Copies the archive aside before it is replaced by another pool's (data/poolMathArchive.json.<time>.bak); never overwrites a copy.
+export function backUpPoolMathArchive(): string | undefined {
+    const file = archivePath();
+    try {
+        if (!fs.existsSync(file)) return undefined;
+        const bak = `${file}.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`;
+        fs.copyFileSync(file, bak, fs.constants.COPYFILE_EXCL);
+        logger.info(`PoolMath archive: the archived entries are another pool's; the old archive was copied to ${bak}.`);
+        return bak;
+    } catch (err) { logger.warn(`PoolMath archive: could not copy the old archive aside: ${err.message}`); return undefined; }
+}
+
 // True when the archive was pulled for this share code and pool, so no sync is needed.
 export function isPoolMathArchiveCurrent(shareCode: string, poolName?: string): boolean {
     const a = readPoolMathArchive();
@@ -173,6 +195,29 @@ export function saltAdditionPpm(pounds: number, gallons: number): number {
 }
 export function isChlorineEntry(e: PoolMathArchiveEntry): boolean {
     return e.type === 'chemlog' && e.chemical === POOLMATH_LIQUID_CHLORINE && typeof e.percent === 'number' && typeof e.normalizedAmount === 'number';
+}
+
+// The archived entries a full sync keeps before adding what PoolMath returned: an entry whose id PoolMath did not return is dropped
+// when PoolMath returned an entry of the same kind (test log, or the same chemical) within two minutes of it. That entry was added
+// from elsewhere under an id of its own, and PoolMath's own entry for the same reading replaces it instead of standing beside it.
+const SUPERSEDE_MS = 2 * 60 * 1000;
+export function dropSupersededEntries(archived: PoolMathArchiveEntry[], fetched: PoolMathArchiveEntry[]): PoolMathArchiveEntry[] {
+    const kindOf = (e: PoolMathArchiveEntry) => e.type === 'chemlog' ? `chemlog:${e.chemical}` : e.type;
+    const fetchedIds = new Set(fetched.map(e => e.id));
+    const timesByKind = new Map<string, number[]>();
+    for (const e of fetched) {
+        const t = new Date(e.ts).getTime();
+        if (isNaN(t)) continue;
+        const k = kindOf(e);
+        if (!timesByKind.has(k)) timesByKind.set(k, []);
+        timesByKind.get(k).push(t);
+    }
+    return archived.filter(e => {
+        if (fetchedIds.has(e.id)) return true;
+        const t = new Date(e.ts).getTime();
+        const times = timesByKind.get(kindOf(e));
+        return isNaN(t) || !times || !times.some(ft => Math.abs(ft - t) <= SUPERSEDE_MS);
+    });
 }
 
 // What a top-up adds to the archive: salt additions it has not got, the extra numbers a new test carried (pH, TA, CH, salt, water
@@ -403,10 +448,14 @@ export async function syncPoolMathArchive(shareCode: string, poolName?: string):
     }
 
     let archive = readPoolMathArchive();
-    // A different share code or pool means the archived entries aren't this pool's.
-    if (archive.shareCode !== shareCode || (archive.poolName || '') !== (poolName || '')) archive = { entries: [] };
+    // Entries of another pool are not kept; a new share code or pool name for the same pool keeps them (see archiveIsForPool).
+    if (!archiveIsForPool(archive, shareCode, poolName, logs.map(l => l && l.id))) {
+        // never replaced without a copy: if the copy fails the archive is left as it is
+        if (archive.entries.length && !backUpPoolMathArchive()) throw new Error('The old PoolMath archive could not be copied aside, so it was not replaced.');
+        archive = { entries: [] };
+    }
     const byId = new Map<string, PoolMathArchiveEntry>();
-    for (const e of archive.entries) if (!deletedIds.has(e.id) && new Date(e.ts).getTime() >= cutoff) byId.set(e.id, e);
+    for (const e of dropSupersededEntries(archive.entries, fetched)) if (!deletedIds.has(e.id) && new Date(e.ts).getTime() >= cutoff) byId.set(e.id, e);
     const before = byId.size;
     for (const e of fetched) byId.set(e.id, e);
     const entries = Array.from(byId.values()).sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
