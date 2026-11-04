@@ -35,7 +35,7 @@ import * as https from 'https';
 import * as path from 'path';
 import { logger } from '../logger/Logger';
 
-export const POOLMATH_ARCHIVE_MONTHS = 18;
+export const POOLMATH_ARCHIVE_MONTHS = 48;
 
 // The time of the last request to PoolMath's share endpoint, from this module or any other reader of it (call noteShareRequest before
 // each request), so the requests stay outside PoolMath's rate limit.
@@ -45,7 +45,7 @@ export function msSinceLastShareRequest(): number { return Date.now() - lastShar
 
 // How many log entries to ask for, smallest first: it stops at the first size that reaches back far
 // enough (see syncPoolMathArchive), so a small account is one small request.
-const RECENT_LOGS_SIZES = [500, 2000, 5000];
+const RECENT_LOGS_SIZES = [500, 2000, 5000, 10000];
 // PoolMath allows roughly one share request per minute; stay comfortably outside that.
 const MIN_GAP_MS = 90 * 1000;
 const RATE_LIMIT_RETRIES = 3;
