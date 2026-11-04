@@ -14,7 +14,9 @@
 #   REMOTE=user@host:/folder/        where --daily also copies the newest archive (scp, with a key and no password prompt)
 #   INCLUDE_LOGS=0                   leaves the njsPC and REM logs folders out of every backup (the default, 1, includes them)
 #   KEEP_DAILY=14                    how many --daily archives to keep on the Pi
-#   BACKUP_NAME=backyard             the name offered for a full backup; without it, the PoolMath pool name set in AutoSwg, or "mypool"
+#   BACKUP_NAME=backyard             the name offered for a full backup; without it, the PoolMath pool name, or "mypool"
+#
+# To keep copies off the Pi with no server on the other machine, a Windows PC can pull the daily archives: see pool-backup-pull.ps1.
 set -u
 MODE=full
 REMOTE=""
@@ -30,12 +32,13 @@ for arg in "$@"; do
   esac
 done
 
-# The PoolMath pool name set in AutoSwg, when there is one (njsPC data/poolConfig.json, autoSwgConfig.poolName).
+# The PoolMath pool name, when there is one (njsPC data/poolConfig.json: poolMath.poolName, else the older autoSwgConfig.poolName).
 poolmath_name() {
   python3 - "$HOME/nodejs-poolController/data/poolConfig.json" 2>/dev/null <<'PY'
 import json, sys
 try:
-    print((json.load(open(sys.argv[1])).get("autoSwgConfig") or {}).get("poolName") or "")
+    c = json.load(open(sys.argv[1]))
+    print((c.get("poolMath") or {}).get("poolName") or (c.get("autoSwgConfig") or {}).get("poolName") or "")
 except Exception:
     pass
 PY
