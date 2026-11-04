@@ -16,7 +16,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-// A local record of what each chlorinator actually did, one line per chlorinator an hour, kept for 18 months in
+// A local record of what each chlorinator actually did, one line per chlorinator an hour, kept for 48 months in
 // data/chlorinatorOutputLog.jsonl next to poolConfig.json. It is written at all times whenever a chlorinator is configured: the nights
 // and the hours outside the run window are the baseline, and an output where there should be none (or none where there should be some)
 // is the evidence. It changes nothing about how the chlorinators are controlled.
@@ -30,14 +30,14 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //          stale output looks like production when njsPC has lost the chlorinator
 // A line without `id` was written before the log recorded more than one chlorinator; it belongs to the first chlorinator (see `idOf`).
 // Two lines can have the same `t` and `id` (njsPC restarted within the hour); add them, weighting by n. Appended as lines, never rewritten,
-// except when the oldest hour passes the 18 months, which rewrites the file once.
+// except when the oldest hour passes the 48 months, which rewrites the file once.
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger/Logger';
 
 const HOUR_MS = 3600000;
-export const CHLORINATOR_LOG_KEEP_MONTHS = 18;
+export const CHLORINATOR_LOG_KEEP_MONTHS = 48;
 const PRUNE_EVERY_MS = 24 * HOUR_MS;
 // The hours in which the chlorinator went more than this long without reporting are counted as stale.
 export const CHLORINATOR_STALE_SEC = 15 * 60;
@@ -162,7 +162,7 @@ export class ChlorinatorOutputLog {
             return out;
         } catch (err) { logger.warn(`Chlorinator log: could not read the output log: ${err.message}`); return []; }
     }
-    // Drops the hours older than 18 months; rewrites the file only when there are any.
+    // Drops the hours older than 48 months; rewrites the file only when there are any.
     public prune(now: number = Date.now()) {
         this.lastPrune = now;
         try {
