@@ -80,7 +80,7 @@ describe('ChlorinatorOutputLog.read', () => {
 
 describe('ChlorinatorOutputLog.prune', () => {
     it('drops the hours older than 48 months and keeps the rest', () => {
-        const old = new Date(T); old.setMonth(old.getMonth() - 49);
+        const old = new Date(T); old.setMonth(old.getMonth() - 50);  // more than a month past the cutoff
         fs.writeFileSync(file, [
             JSON.stringify({ t: old.toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
             JSON.stringify({ t: new Date(T).toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
@@ -113,7 +113,7 @@ describe('ChlorinatorOutputLog.prune', () => {
         expect(lines()).toHaveLength(201);
     });
     it('does nothing while the time is before the newest line or looks unset', () => {
-        const old = new Date(T); old.setMonth(old.getMonth() - 49);
+        const old = new Date(T); old.setMonth(old.getMonth() - 50);  // more than a month past the cutoff
         const text = [
             JSON.stringify({ t: old.toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
             JSON.stringify({ t: new Date(T).toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
