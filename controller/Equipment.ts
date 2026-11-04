@@ -2627,8 +2627,19 @@ export class AutoSwg extends EqItem {
     // Restricts parsing to this water body's section on the share page (e.g. 'Kentshire').
     public get poolName(): string { return sys.poolMath.poolName; }
     public set poolName(val: string) { sys.poolMath.poolName = val; }
-    public get gallons(): number { return this.data.gallons; }
-    public set gallons(val: number) { this.setDataVal('gallons', val); }
+    // The pool volume is PoolMath's now: what PoolMath says (sys.poolMath.gallons, read from the share), else the largest body's capacity. This is the choice
+    // poolGallons makes in ChlorinatorLogService.ts, which this file cannot import (it imports this one). The stored autoSwg gallons key stays in poolConfig.json
+    // for one release as the roll-back value and is not read; a volume sent to the settings is ignored.
+    public get gallons(): number {
+        if (sys.poolMath.gallons > 0) return sys.poolMath.gallons;
+        let cap = 0;
+        for (const b of sys.bodies.toArray()) if (b.capacity > cap) cap = b.capacity;
+        return cap;
+    }
+    public set gallons(val: number) { /* the volume is PoolMath's: see the getter */ }
+    // Where the volume comes from, for the settings screen.
+    public get gallonsSource(): string { return sys.poolMath.gallons > 0 ? 'poolmath' : 'body'; }
+    public set gallonsSource(val: string) { /* read-only: see the getter */ }
     // SWG's manufacturer-rated chlorine production in lbs/day, at 100% duty cycle over a
     // full 24h day (the standard spec-sheet basis) -- not scoped to the run window below.
     // The chlorinator SWG Assist controls: the one chosen in its settings, otherwise the first there is.
