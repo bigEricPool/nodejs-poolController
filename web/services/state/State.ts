@@ -278,7 +278,7 @@ export class StateRoute {
             try {
                 let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
                 if (isNaN(days) || days < 1) days = 30;
-                days = Math.min(days, 548);
+                days = Math.min(days, 1461); // 48 months, what the log keeps
                 const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
                 if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
                     return res.status(404).send({ error: 'Chlorinator not found.' });

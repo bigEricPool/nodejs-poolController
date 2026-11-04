@@ -88,6 +88,75 @@ describe('ChlorinatorOutputLog.prune', () => {
         log.prune(T);
         expect(lines().map(l => l.t)).toEqual([new Date(T).toISOString()]);
     });
+    it('does not rewrite the file for an hour only just past the cutoff', () => {
+        const old = new Date(T); old.setMonth(old.getMonth() - 48); old.setDate(old.getDate() - 10);
+        const text = [
+            JSON.stringify({ t: old.toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
+            JSON.stringify({ t: new Date(T).toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
+        ].join('\n') + '\n';
+        fs.writeFileSync(file, text);
+        log.prune(T);
+        expect(fs.readFileSync(file, 'utf8')).toBe(text);
+    });
+    it('reads the first and last lines of a file larger than 4 KB', () => {
+        const old = new Date(T); old.setMonth(old.getMonth() - 50);
+        const ls = [JSON.stringify({ t: old.toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 })];
+        for (let i = 200; i >= 0; i--) ls.push(JSON.stringify({ t: new Date(T - i * H).toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }));
+        fs.writeFileSync(file, ls.join('\n') + '\n');
+        expect(fs.statSync(file).size).toBeGreaterThan(8192);
+        log.prune(T);
+        expect(lines()).toHaveLength(201);
+        expect(lines()[0].t).toBe(new Date(T - 200 * H).toISOString());
+        // the newest hour came from the end of the file: a sample an hour before it is skipped
+        log.record(sample({}), T - H);
+        log.flush();
+        expect(lines()).toHaveLength(201);
+    });
+    it('does nothing while the time is before the newest line or looks unset', () => {
+        const old = new Date(T); old.setMonth(old.getMonth() - 49);
+        const text = [
+            JSON.stringify({ t: old.toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
+            JSON.stringify({ t: new Date(T).toISOString(), id: 1, n: 6, on: 6, out: 40, max: 40, set: 40, tgt: 40, salt: 3200 }),
+        ].join('\n') + '\n';
+        fs.writeFileSync(file, text);
+        log.prune(T - 2 * H);
+        expect(fs.readFileSync(file, 'utf8')).toBe(text);
+        log.prune(Date.UTC(2020, 0, 1));
+        expect(fs.readFileSync(file, 'utf8')).toBe(text);
+    });
+});
+
+describe('ChlorinatorOutputLog clock guards', () => {
+    it('takes no sample while the time looks unset', () => {
+        log.record(sample({}), Date.UTC(1970, 0, 2));
+        log.record(sample({}), Date.UTC(2024, 11, 31, 23));
+        log.flush();
+        expect(lines()).toEqual([]);
+    });
+    it('skips a sample from an hour before the newest one written', () => {
+        log.record(sample({}), T);
+        log.record(sample({}), T + H);   // writes the T hour
+        log.record(sample({}), T - 2 * H);
+        log.flush();
+        expect(lines().map(l => l.t)).toEqual([new Date(T).toISOString(), new Date(T + H).toISOString()]);
+    });
+    it('skips it after a restart too, reading the newest hour from the file', () => {
+        log.record(sample({}), T);
+        log.flush();
+        const again = new ChlorinatorOutputLog(file);
+        again.record(sample({}), T - 3 * H);
+        again.record(sample({}), T + 10 * 60000);   // the same hour as the newest line: kept (a restart within the hour)
+        again.flush();
+        expect(lines().map(l => l.t)).toEqual([new Date(T).toISOString(), new Date(T).toISOString()]);
+    });
+    it('takes the time as right when the newest line is more than 7 days ahead of it', () => {
+        log.record(sample({}), T);
+        log.flush();
+        const again = new ChlorinatorOutputLog(file);
+        again.record(sample({}), T - 8 * 86400000);
+        again.flush();
+        expect(lines()).toHaveLength(2);
+    });
 });
 
 describe('summarizeOutput', () => {

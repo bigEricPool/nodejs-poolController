@@ -24,7 +24,7 @@ import { logger } from '../logger/Logger';
 import { ServiceParameterError } from './Errors';
 import { sys } from './Equipment';
 import { state } from './State';
-import { chlorinatorLog, ChlorinatorOutputHour } from './ChlorinatorLog';
+import { chlorinatorLog, ChlorinatorOutputHour, clockLooksSet } from './ChlorinatorLog';
 import { cellUsageForHour, cellUsageFromInstall, mergeSwgEntries, SwgEntry } from './ChlorinatorUsage';
 
 const SAMPLE_MS = 10 * 60 * 1000;
@@ -85,11 +85,16 @@ export function recountCellUsage(id: number) {
     if (!chlor || !s || !chlor.cellInstalledDate) return undefined;
     const fromMs = new Date(chlor.cellInstalledDate + 'T00:00:00').getTime();
     if (!isFinite(fromMs)) return undefined;
+    const now = Date.now();
+    // a clock that has not been set yet would count the wrong span; the totals are left as they are
+    if (!clockLooksSet(now)) { logger.warn(`Chlorinator ${id}: cell usage not recounted, the time (${new Date(now).toISOString()}) looks unset.`); return undefined; }
     chlorinatorLog.flush();
-    const hours = chlorinatorLog.read(548, Date.now(), id, firstChlorinatorId());
-    const u = cellUsageFromInstall(hours, swgEntriesFor(id), fromMs, Date.now(), poolGallons(), chlor.cellLbsPerDay);
+    // every hour from the install date on (the log keeps up to CHLORINATOR_LOG_KEEP_MONTHS)
+    const days = Math.max(1, Math.ceil((now - fromMs) / 86400000) + 1);
+    const hours = chlorinatorLog.read(days, now, id, firstChlorinatorId());
+    const u = cellUsageFromInstall(hours, swgEntriesFor(id), fromMs, now, poolGallons(), chlor.cellLbsPerDay);
     const before = { hours: s.usageHours, pounds: s.usagePounds };
-    s.resetUsage(u.hours, u.pounds, Date.now(), u.runHours, u.estimatedPounds);
+    s.resetUsage(u.hours, u.pounds, now, u.runHours, u.estimatedPounds);
     s.emitEquipmentChange();
     logger.info(`Chlorinator ${id}: cell usage counted from ${chlor.cellInstalledDate} at ${chlor.cellLbsPerDay} lb/day: ${u.hours.toFixed(1)} full-output hours, ` +
         `${u.runHours.toFixed(1)} h enabled, ${u.pounds.toFixed(2)} lb (was ${before.hours.toFixed(1)} h, ${before.pounds.toFixed(2)} lb), ` +
