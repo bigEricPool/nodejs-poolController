@@ -338,7 +338,7 @@ function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTa
 // Range control for the calculation (see SwgAssistBand.ts): only while the mode is 'band' and Away protection is off. The coasting state is the one the last apply left.
 function autoSwgBandParams(cfg: typeof sys.autoSwg): AutoSwgParams['band'] | undefined {
     if (!cfg.bandActive) return undefined;
-    return { low: cfg.fcLow, high: cfg.fcHigh, biasPerDay: cfg.bandBiasPerDay, boostPeriods: cfg.bandBoostPeriods, coasting: state.autoSwg.bandCoasting, peakCap: cfg.bandPeakCap, integral: cfg.bandIntegral ? 0.3 : 0 };
+    return { low: cfg.fcLow, high: cfg.fcHigh, biasPerDay: cfg.bandBiasPerDay, boostPeriods: cfg.bandBoostPeriods, coasting: state.autoSwg.bandCoasting, peakCap: cfg.bandPeakCap, integral: cfg.bandIntegral ? 0.3 : 0, scaledBias: cfg.bandScaledBias };
 }
 function autoSwgSettingsKey(): string {
     let cfg = sys.autoSwg;
@@ -346,7 +346,7 @@ function autoSwgSettingsKey(): string {
     try { const win = resolveAutoSwgRunWindow(cfg); start = win.swgStartTime; stop = win.swgStopTime; }
     catch (err) { /* the typed-in window is the fallback */ }
     return [
-        cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.bandBoostPeriods, cfg.bandPeakCap, cfg.bandIntegral, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
+        cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.bandBoostPeriods, cfg.bandPeakCap, cfg.bandIntegral, cfg.bandScaledBias, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
         cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus,
         cfg.shareCode, cfg.poolName, cfg.scheduleId, windowKeyTime(start), windowKeyTime(stop)
     ].join('|');

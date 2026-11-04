@@ -25,7 +25,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   Above the range the SWG is held at 0% (coasting) until the projected FC is half a ppm below the high value. The coasting state is kept between
 //     checks by the caller (`coasting`), and it never lasts past a reading 2 days old.
 //   A reading older than 2 days adds a bias above the maintenance % (biasPerDay for each day beyond 2, at most 40%), so that a projection that has stopped
-//     following the pool cannot leave the SWG below what the burn needs.
+//     following the pool cannot leave the SWG below what the burn needs. With `scaledBias` on, that bias is scaled by where the last reading sat: full at or
+//     below the middle of the range, none at or above the top, linear between, so a long gap after a high reading does not push FC further above the range.
 //   Two corrections to the hold, each with its own switch (a closed-loop backtest of them is in the project notes):
 //     Peak cap: the SWG makes all of its chlorine in the run window, faster than the burn takes it away, so FC climbs about half a ppm from the morning low to the
 //       afternoon peak. The hold is capped so that the peak, worked out from the projected FC now, stays at or under the top of the range (less a margin).
@@ -51,11 +52,13 @@ export interface BandInput {
     ppmPerHourAtFull: number;   // ppm the cell adds per run-window hour at 100%
     coasting: boolean;          // the state returned by the last decision that was applied
     peakCap?: boolean;          // keep the afternoon peak at or under the top of the range (off when absent)
-    peakMarginPpm?: number;     // how far under the top the peak is kept (default 0.25)
+    peakMarginPpm?: number;     // how far under the top the peak is kept (default 0.5)
     peakRunHours?: number;      // hours the SWG is on from now to the end of the next (or current) run window
     peakDayEq?: number;         // days of consumption (daylight weighted) over that span
     integral?: number;          // gain of the integral correction, 0 to 1 (0 or absent = off; 0.3 in the settings)
     recentReadings?: number[];  // the last FC readings, oldest first; the last three count
+    scaledBias?: boolean;       // scale the old-reading bias by where the last reading sat in the range (off when absent)
+    lastReading?: number;       // the last FC reading (ppm), used by scaledBias
 }
 
 export type BandMode = 'coast' | 'boost' | 'hold';
@@ -110,7 +113,7 @@ export function bandDecision(i: BandInput): BandDecision {
         pct = uncapped; mode = 'hold';
         let capText = '';
         if (i.peakCap === true && typeof i.peakRunHours === 'number' && i.peakRunHours > 0.05 && typeof i.peakDayEq === 'number' && i.ppmPerHourAtFull > 0) {
-            const margin = typeof i.peakMarginPpm === 'number' ? i.peakMarginPpm : 0.25;
+            const margin = typeof i.peakMarginPpm === 'number' ? i.peakMarginPpm : 0.5;
             const riseAt = (p: number) => i.ppmPerHourAtFull * i.peakRunHours! * p / 100 - i.avgPerDay * i.peakDayEq!;
             const allowed = (hi - margin - i.projectedFc - riseAt(0)) / (i.ppmPerHourAtFull * i.peakRunHours!) * 100;
             if (allowed < uncapped) {
@@ -124,10 +127,16 @@ export function bandDecision(i: BandInput): BandDecision {
         else note = `FC is projected at ${i.projectedFc.toFixed(2)} ppm, inside the range (${lo} to ${hi} ppm), so the SWG holds the maintenance % of ${i.maintenancePct.toFixed(1)}%${trimText}${integralText}.${capText}`;
     }
     if (i.elapsedDays > 2) {
-        const floor = i.maintenancePct * (1 + Math.min(0.4, i.biasPerDay * (i.elapsedDays - 2)));
+        let scale = 1;
+        if (i.scaledBias === true && typeof i.lastReading === 'number' && hi > mid) scale = clamp((hi - i.lastReading) / (hi - mid), 0, 1);
+        const floor = i.maintenancePct * (1 + Math.min(0.4, i.biasPerDay * scale * (i.elapsedDays - 2)));
         if (pct < floor) {
             pct = floor;
-            note += ` The last reading is ${i.elapsedDays.toFixed(1)} days old, so the SWG runs at no less than ${floor.toFixed(1)}% (the maintenance % plus a bias for the age of the reading).`;
+            const scaleText = scale < 1 ? `, scaled down to ${Math.round(scale * 100)}% of the full bias because the last reading was ${i.lastReading!.toFixed(1)} ppm` : '';
+            note += ` The last reading is ${i.elapsedDays.toFixed(1)} days old, so the SWG runs at no less than ${floor.toFixed(1)}% (the maintenance % plus a bias for the age of the reading${scaleText}).`;
+        }
+        else if (scale < 1 && pct < i.maintenancePct * (1 + Math.min(0.4, i.biasPerDay * (i.elapsedDays - 2)))) {
+            note += ` The last reading is ${i.elapsedDays.toFixed(1)} days old, but it was ${i.lastReading!.toFixed(1)} ppm, so the raise for an old reading is scaled down to ${Math.round(scale * 100)}% of the full bias and does not lift the SWG here.`;
         }
     }
     return { pct: clamp(pct, 0, 100), mode: mode, coasting: coasting, middle: mid, note: note, peakCapped: peakCapped, integralTrim: integralTrim };
