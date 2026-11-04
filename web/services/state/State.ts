@@ -1098,7 +1098,7 @@ export function armAutoSwgSaltLog() {
     autoSwgSaltTimer.unref();
 }
 
-// The PoolMath history (the one-time pull of up to 18 months and the daily top-up) is read and kept current by PoolMathSync.ts, the pool's own feature, which
+// The PoolMath history (the one-time pull of up to 48 months and the daily top-up) is read and kept current by PoolMathSync.ts, the pool's own feature, which
 // works without SWG Assist. SWG Assist shows its status on its own state, ends Away protection when a top-up brings a new FC test, and gives the cell usage the
 // SWG entries it wrote itself.
 let autoSwgArchiveRunning = false;   // a sync started by hand: POST /state/autoSwg/history/poolmath/sync
@@ -1846,7 +1846,7 @@ export class StateRoute {
             return res.status(200).send(state.autoSwg.get(true));
         });
         // SWG % changes -- applied recommendations (with the inputs/outputs behind
-        // each) and manual changes -- oldest first; kept for 18 months. See
+        // each) and manual changes -- oldest first; kept for 48 months. See
         // controller/AutoSwgHistory.ts.
         app.get('/state/autoSwg/history', (req, res) => {
             return res.status(200).send(readAutoSwgHistory());

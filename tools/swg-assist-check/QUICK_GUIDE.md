@@ -108,7 +108,7 @@ week is workable and daily is ideal, and more readings make the recommendation s
   protection ends, one more record summarizes the period: the checks, the lowest and highest % applied, the outages, the alerts
   seen, the last check's projection and the reading that ended it. Alerts raised and cleared are also written to the njsPC log. Separately, in every mode and at all times,
   njsPC logs what the chlorinator actually did, one line an hour (the set %, the output it reported, minutes producing, any
-  status other than OK, the salt reading, and whether it stopped reporting), kept for 18 months in `data/chlorinatorOutputLog.jsonl`
+  status other than OK, the salt reading, and whether it stopped reporting), kept for 48 months in `data/chlorinatorOutputLog.jsonl`
   and available at `/state/autoSwg/output?days=30`. The summary written when Away protection ends includes it, so the
   hours the SWG really produced can be compared with what the plan assumed.
 * None of this tests FC for you. Heavy rain, debris or an equipment failure can still lower it; the raised target is your margin.
