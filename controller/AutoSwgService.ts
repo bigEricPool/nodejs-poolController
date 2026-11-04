@@ -516,7 +516,7 @@ function parseCardsCached(html: string, heading?: string): ParsedCards {
 }
 
 // The share page lists only recent history, so the reports (projection accuracy and the what-if sweep) can also
-// draw on the PoolMath archive -- up to 18 months of FC readings, SWG entries, CYA and liquid chlorine pulled from
+// draw on the PoolMath archive -- up to 48 months of FC readings, SWG entries, CYA and liquid chlorine pulled from
 // the JSON interface. Where both have an entry within two minutes the page's wins, so an edit isn't listed twice.
 // The merge is remembered for the last (page, archive) pair, since the reports re-run the calculation many times.
 let mergeCache: { base: ParsedCards; archive: ArchivedHistory; merged: ParsedCards } | undefined;
