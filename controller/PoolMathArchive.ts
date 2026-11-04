@@ -175,6 +175,29 @@ export function isChlorineEntry(e: PoolMathArchiveEntry): boolean {
     return e.type === 'chemlog' && e.chemical === POOLMATH_LIQUID_CHLORINE && typeof e.percent === 'number' && typeof e.normalizedAmount === 'number';
 }
 
+// The archived entries a full sync keeps before adding what PoolMath returned: an entry whose id PoolMath did not return is dropped
+// when PoolMath returned an entry of the same kind (test log, or the same chemical) within two minutes of it. That entry was added
+// from elsewhere under an id of its own, and PoolMath's own entry for the same reading replaces it instead of standing beside it.
+const SUPERSEDE_MS = 2 * 60 * 1000;
+export function dropSupersededEntries(archived: PoolMathArchiveEntry[], fetched: PoolMathArchiveEntry[]): PoolMathArchiveEntry[] {
+    const kindOf = (e: PoolMathArchiveEntry) => e.type === 'chemlog' ? `chemlog:${e.chemical}` : e.type;
+    const fetchedIds = new Set(fetched.map(e => e.id));
+    const timesByKind = new Map<string, number[]>();
+    for (const e of fetched) {
+        const t = new Date(e.ts).getTime();
+        if (isNaN(t)) continue;
+        const k = kindOf(e);
+        if (!timesByKind.has(k)) timesByKind.set(k, []);
+        timesByKind.get(k).push(t);
+    }
+    return archived.filter(e => {
+        if (fetchedIds.has(e.id)) return true;
+        const t = new Date(e.ts).getTime();
+        const times = timesByKind.get(kindOf(e));
+        return isNaN(t) || !times || !times.some(ft => Math.abs(ft - t) <= SUPERSEDE_MS);
+    });
+}
+
 // What a top-up adds to the archive: salt additions it has not got, the extra numbers a new test carried (pH, TA, CH, salt, water
 // temperature, weather), and tests it does not have at all. FC, CC, CYA, SWG runs and liquid chlorine already archived are left as
 // they are (another reader of the share page may keep those current). Matching is by time, within two minutes, never by id, because
@@ -406,7 +429,7 @@ export async function syncPoolMathArchive(shareCode: string, poolName?: string):
     // A different share code or pool means the archived entries aren't this pool's.
     if (archive.shareCode !== shareCode || (archive.poolName || '') !== (poolName || '')) archive = { entries: [] };
     const byId = new Map<string, PoolMathArchiveEntry>();
-    for (const e of archive.entries) if (!deletedIds.has(e.id) && new Date(e.ts).getTime() >= cutoff) byId.set(e.id, e);
+    for (const e of dropSupersededEntries(archive.entries, fetched)) if (!deletedIds.has(e.id) && new Date(e.ts).getTime() >= cutoff) byId.set(e.id, e);
     const before = byId.size;
     for (const e of fetched) byId.set(e.id, e);
     const entries = Array.from(byId.values()).sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
