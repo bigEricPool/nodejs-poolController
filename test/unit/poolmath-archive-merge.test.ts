@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: () => {}, verbose: () => {}, debug: () => {}, silly: () => {} } }));
 
-import { PoolMathArchiveEntry, dropSupersededEntries } from '../../controller/PoolMathArchive';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { PoolMathArchiveEntry, archiveIsForPool, backUpPoolMathArchive, dropSupersededEntries } from '../../controller/PoolMathArchive';
 
 const at = (iso: string, sec = 0) => new Date(new Date(iso).getTime() + sec * 1000).toISOString();
 const T = '2026-10-20T14:00:00.000Z';
@@ -29,5 +32,40 @@ describe('dropSupersededEntries', () => {
         const archived = [test('pm1', T), test('pm0', '2025-06-26T12:00:00.000Z')];
         const kept = dropSupersededEntries(archived, [test('pm1', T, 6), test('pm3', at(T, 60))]);
         expect(kept.map(e => e.id)).toEqual(['pm1', 'pm0']);
+    });
+});
+
+describe('archiveIsForPool', () => {
+    const archive = { shareCode: 'abc', poolName: 'Kentshire', entries: [test('pm1', T), test('pm0', '2025-06-26T12:00:00.000Z')] };
+    it('keeps the archive for the same share code and pool name', () => {
+        expect(archiveIsForPool(archive, 'abc', 'Kentshire', [])).toBe(true);
+    });
+    it('keeps it for a renamed pool or a new share link when PoolMath returns a log id it already has', () => {
+        expect(archiveIsForPool(archive, 'abc', 'Kentshire Pool', ['pm9', 'pm1'])).toBe(true);
+        expect(archiveIsForPool(archive, 'xyz', 'Kentshire', ['pm0'])).toBe(true);
+    });
+    it('starts fresh for a different pool', () => {
+        expect(archiveIsForPool(archive, 'abc', 'Other Pool', ['q1', 'q2'])).toBe(false);
+        expect(archiveIsForPool(archive, 'abc', 'Other Pool', [])).toBe(false);
+    });
+    it('has nothing to lose with an empty archive', () => {
+        expect(archiveIsForPool({ entries: [] }, 'abc', 'Other Pool', ['q1'])).toBe(true);
+    });
+});
+
+describe('backUpPoolMathArchive', () => {
+    it('copies the archive aside and leaves the archive in place', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pmarchive-'));
+        const cwd = vi.spyOn(process, 'cwd').mockReturnValue(dir);
+        try {
+            expect(backUpPoolMathArchive()).toBeUndefined();   // no archive yet
+            fs.mkdirSync(path.join(dir, 'data'));
+            const file = path.join(dir, 'data', 'poolMathArchive.json');
+            fs.writeFileSync(file, '{"entries":[{"id":"pm1"}]}');
+            const bak = backUpPoolMathArchive();
+            expect(bak).toBeDefined();
+            expect(fs.readFileSync(bak as string, 'utf8')).toBe('{"entries":[{"id":"pm1"}]}');
+            expect(fs.existsSync(file)).toBe(true);
+        } finally { cwd.mockRestore(); fs.rmSync(dir, { recursive: true, force: true }); }
     });
 });
