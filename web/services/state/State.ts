@@ -975,16 +975,17 @@ function detectAutoSwgOutage() {
     }
     catch (err) { logger.warn(`SWG Assist: could not check for an outage: ${err.message}`); }
 }
-// Whether the chlorinator should have power right now. When SWG Assist follows a schedule, that schedule's circuit is the SWG's power relay, so its
-// state is the answer (the SWG is only powered inside its run window, and is silent the rest of the day by design). With no schedule to follow,
-// fall back to the body running, as njsPC's own poll assumes.
+// Whether the chlorinator should have power right now. When SWG Assist follows a schedule, that schedule's circuit is the SWG's power relay, and the
+// body must be running too: the chlorinator only answers with its relay on AND the pump running (its power is wired through the pump, or it needs flow),
+// so a period with the relay on and the pump off (the Pool turned off by hand) is not silence. The SWG is only powered inside its run window, and is
+// silent the rest of the day by design. With no schedule to follow, fall back to the body running, as njsPC's own poll assumes.
 function autoSwgChlorinatorPowered(cfg: typeof sys.autoSwg, body: number): boolean {
     try {
         if (cfg.scheduleId >= 0) {
             const sched = sys.schedules.toArray().find(s => s.id === cfg.scheduleId);
             if (sched && !sched.disabled) {
                 const c: any = state.circuits.getInterfaceById(sched.circuit);
-                if (c) return c.isOn === true;
+                if (c) return c.isOn === true && sys.board.bodies.isBodyOn(body);
             }
         }
         return sys.board.bodies.isBodyOn(body);
