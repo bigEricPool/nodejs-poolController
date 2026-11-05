@@ -625,4 +625,74 @@ describe('ScheduleTime window calculation (ISSUE-240/241/242)', () => {
         expect(s.heliotrope.isValid).toBe(true);
         expect(s.data.sunrise).not.toBe('');
     });
+
+    // Fixed clock times on the days daylight saving time ends (2026-11-01, a 25 hour day) and starts
+    // (2027-03-14, a 23 hour day).  The zone is America/New_York (vitest.config.ts).  Windows must be
+    // counted by the clock and the calendar, not by elapsed hours from midnight.
+    describe('fixed times across daylight saving changes', () => {
+        const manual = (o: Record<string, any>) => sched({ startTimeType: 0, endTimeType: 0, ...o });
+        const calc = (now: Date, cfg: any) => {
+            at(now);
+            return makeSchedTime().calcScheduleDate(new Timestamp(now), cfg as any);
+        };
+        const t = (y: number, mo: number, d: number, h: number, mi: number, s = 0, ms = 0) => new Date(y, mo, d, h, mi, s, ms).getTime();
+
+        it('a 00:00-23:59 schedule still covers 23:30 on the day the clocks go back', () => {
+            const times = calc(new Date(2026, 10, 1, 23, 30), manual({ startTime: 0, endTime: 1439 }));
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 1, 0, 0));
+            expect(times.endTime.getTime()).toBe(t(2026, 10, 1, 23, 59, 59, 999));
+        });
+
+        it('a 00:00-23:59 schedule ends at 23:59 on the day the clocks go forward', () => {
+            const times = calc(new Date(2027, 2, 14, 23, 30), manual({ startTime: 0, endTime: 1439 }));
+            expect(times.startTime.getTime()).toBe(t(2027, 2, 14, 0, 0));
+            expect(times.endTime.getTime()).toBe(t(2027, 2, 14, 23, 59, 59, 999));
+        });
+
+        it('a start = end schedule runs without a break across the day the clocks go back', () => {
+            const cfg = manual({ startTime: 480, endTime: 480 });
+            let times = calc(new Date(2026, 10, 1, 9, 0), cfg);
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 1, 8, 0));
+            expect(times.endTime.getTime()).toBe(t(2026, 10, 2, 8, 0, 59, 999));
+            times = calc(new Date(2026, 10, 2, 7, 30), cfg);
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 1, 8, 0));
+            times = calc(new Date(2026, 10, 2, 8, 0, 30), cfg);
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 2, 8, 0));
+            expect(times.endTime.getTime()).toBe(t(2026, 10, 3, 8, 0, 59, 999));
+        });
+
+        it('an 08:00-17:00 schedule keeps its clock times on both change days', () => {
+            for (const [y, mo, d] of [[2026, 10, 1], [2027, 2, 14]]) {
+                const times = calc(new Date(y, mo, d, 12, 0), manual({ startTime: 480, endTime: 1020 }));
+                expect(times.startTime.getTime()).toBe(t(y, mo, d, 8, 0));
+                expect(times.endTime.getTime()).toBe(t(y, mo, d, 17, 0, 59, 999));
+            }
+        });
+
+        it('an ordinary day is unchanged', () => {
+            let times = calc(new Date(2026, 10, 5, 12, 0), manual({ startTime: 480, endTime: 1020 }));
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 5, 8, 0));
+            expect(times.endTime.getTime()).toBe(t(2026, 10, 5, 17, 0, 59, 999));
+            times = calc(new Date(2026, 10, 5, 12, 0), manual({ startTime: 1320, endTime: 120 }));
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 5, 22, 0));
+            expect(times.endTime.getTime()).toBe(t(2026, 10, 6, 2, 0, 59, 999));
+        });
+
+        it('just after midnight on the day the clocks go back, tomorrow is the next calendar day', () => {
+            // Monday only.  2026-11-01 is a Sunday; +24 h from 00:30 is still Sunday by the calendar.
+            const times = calc(new Date(2026, 10, 1, 0, 30), manual({ startTime: 480, endTime: 1020, scheduleDays: 1 << 1 }));
+            expect(times.startTime.getTime()).toBe(t(2026, 10, 2, 8, 0));
+        });
+
+        it('the next run day is found from the day the clocks go back', () => {
+            // Tuesday only: not today or tomorrow, so calcSchedule() steps forward day by day.
+            const now = new Date(2026, 10, 1, 0, 30);
+            at(now);
+            const st = makeSchedTime();
+            st.calcSchedule(new Timestamp(now), manual({ startTime: 480, endTime: 1020, scheduleDays: 1 << 2 }) as any);
+            expect(st.calculated).toBe(true);
+            expect(st.startTime.getTime()).toBe(t(2026, 10, 3, 8, 0));
+            expect(st.endTime.getTime()).toBe(t(2026, 10, 3, 17, 0, 59, 999));
+        });
+    });
 });
