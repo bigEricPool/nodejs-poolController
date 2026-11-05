@@ -4,7 +4,7 @@ This fork of [tagyoureit/nodejs-poolController](https://github.com/tagyoureit/no
 
 This page is the list of branches. `manifest.json` holds the same list for the build check, which runs `npm ci` and `npm run build` on every branch marked to build.
 
-Base for new branches: master at 10.0.2 (34c324cd).
+Base for new branches: master at 10.1.0 (2e7c1efb).
 
 ## In use
 
@@ -33,7 +33,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `feature/solar-nocturnal-cooling-check` | feature | A nocturnal cooling check is also made when the water would qualify at the solar pump speed. New behaviour, not yet run; to be looked at again later. | feature/solar-enhancements | none |
 
 ## Planned (not created yet)
 
@@ -57,5 +56,6 @@ Base for new branches: master at 10.0.2 (34c324cd).
 | `archive/2026-10-11/*` | archive | Tips of branches as they were before being re-cut on current master on 2026-10-11. | none | none |
 | `archive/2026-11-03/*` | archive | Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03, and feature/swg-cell-usage, whose content moved to feature/chlorinator-log and feature/swg-assist; their content is in feature/swg-assist and pool. | none | none |
 | `archive/2026-11-03/docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide, advanced modes and release notes (tools/autoswg-check/). Unique work, not in pool: keep until the SWG Assist release notes and wiki are written. | none | none |
+| `archive/2026-11-05/feature/solar-nocturnal-cooling-check` | archive | The parked nocturnal cooling check (91ffc271), moved here on 2026-11-05: superseded by the speed-offset check rules of 2026-10-12, which are in feature/solar-enhancements and pool. Never run. | none | none |
 
 The code in this fork and this page are written with the help of an AI assistant (Claude) and reviewed and run by the owner.

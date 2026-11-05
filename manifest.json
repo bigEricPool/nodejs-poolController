@@ -173,17 +173,6 @@
       "build": true
     },
     {
-      "name": "feature/solar-nocturnal-cooling-check",
-      "kind": "feature",
-      "status": "parked",
-      "purpose": "A nocturnal cooling check is also made when the water would qualify at the solar pump speed. New behaviour, not yet run; to be looked at again later.",
-      "depends": [
-        "feature/solar-enhancements"
-      ],
-      "upstream": "",
-      "build": true
-    },
-    {
       "name": "feature/pi-status",
       "kind": "feature",
       "status": "active",
@@ -271,6 +260,15 @@
       "kind": "archive",
       "status": "archive",
       "purpose": "Drafts of the AutoSwg guide, advanced modes and release notes (tools/autoswg-check/). Unique work, not in pool: keep until the SWG Assist release notes and wiki are written.",
+      "depends": [],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "archive/2026-11-05/feature/solar-nocturnal-cooling-check",
+      "kind": "archive",
+      "status": "archive",
+      "purpose": "The parked nocturnal cooling check (91ffc271), moved here on 2026-11-05: superseded by the speed-offset check rules of 2026-10-12, which are in feature/solar-enhancements and pool. Never run.",
       "depends": [],
       "upstream": "",
       "build": false
