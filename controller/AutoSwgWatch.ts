@@ -101,8 +101,13 @@ export class AutoSwgWatch {
         if (c && c.powered) { if (typeof this.poweredSince === 'undefined') this.poweredSince = i.now; }
         else this.poweredSince = undefined;
         if (c && c.powered && typeof this.poweredSince === 'number' && i.now - this.poweredSince >= WATCH_SILENT_MS && typeof c.commAgeSec === 'number' && c.commAgeSec * 1000 >= WATCH_SILENT_MS) {
-            found.push({ id: 'swg-silent', level: 'alarm', minMs: 0, since: new Date(i.now - c.commAgeSec * 1000).toISOString(),
-                text: `The chlorinator has not answered njsPC for ${Math.round(c.commAgeSec / 60)} minutes while it should have power, so njsPC cannot control it and it may be running at the % set on the unit itself.` });
+            // The silence counts from the later of the power coming on and the last answer: the hours it was off by design (the schedule turning the SWG relay off
+            // overnight) are not silence. poweredSince is kept in memory, so after njsPC restarts while the SWG is powered it starts at the restart.
+            const poweredMs = i.now - this.poweredSince;
+            const silentMs = Math.min(c.commAgeSec * 1000, poweredMs);
+            const sincePowerOn = c.commAgeSec * 1000 >= poweredMs;
+            found.push({ id: 'swg-silent', level: 'alarm', minMs: 0, since: new Date(i.now - silentMs).toISOString(),
+                text: `The chlorinator has not answered njsPC for ${Math.round(silentMs / 60000)} minutes${sincePowerOn ? ' since its power came on' : ''} while it should have power, so njsPC cannot control it and it may be running at the % set on the unit itself.` });
         }
         if (i.inRunWindow && c) {
             if (c.status !== 0 && typeof c.status === 'number') {
