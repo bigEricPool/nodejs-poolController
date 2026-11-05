@@ -1260,8 +1260,8 @@ export class ScheduleTime extends ChildEqState {
         let times: { startTime: Date, endTime: Date } = { startTime: null, endTime: null };
         try {
             let sod = ts.clone().startOfDay();
-            let ysod = ts.clone().addHours(-24).startOfDay();
-            let nsod = ts.clone().addHours(24).startOfDay();
+            let ysod = ScheduleTime.dayAt(sod, -1);
+            let nsod = ScheduleTime.dayAt(sod, 1);
             let ytimes: { startTime: Date, endTime: Date } = { startTime: null, endTime: null };  // Yesterday
             let ttimes: { startTime: Date, endTime: Date } = { startTime: null, endTime: null };  // Today
             let ntimes: { startTime: Date, endTime: Date } = { startTime: null, endTime: null };  // Tomorrow
@@ -1285,9 +1285,9 @@ export class ScheduleTime extends ChildEqState {
                     break;
                 }
                 default:
-                    ytimes.startTime = ysod.clone().addMinutes(sched.startTime).toDate();
-                    ttimes.startTime = sod.clone().addMinutes(sched.startTime).toDate();
-                    ntimes.startTime = nsod.clone().addMinutes(sched.startTime).toDate();
+                    ytimes.startTime = ScheduleTime.dayAt(ysod, 0, sched.startTime).toDate();
+                    ttimes.startTime = ScheduleTime.dayAt(sod, 0, sched.startTime).toDate();
+                    ntimes.startTime = ScheduleTime.dayAt(nsod, 0, sched.startTime).toDate();
                     break;
             }
             tt = sys.board.valueMaps.scheduleTimeTypes.transform(sched.endTimeType);
@@ -1309,12 +1309,12 @@ export class ScheduleTime extends ChildEqState {
                     break;
                 }
                 default:
-                    ytimes.endTime = ysod.clone().addMinutes(sched.endTime).toDate();
-                    if (ytimes.endTime <= ytimes.startTime) ytimes.endTime = ysod.clone().addHours(24).addMinutes(sched.endTime).toDate();
-                    ttimes.endTime = sod.clone().addMinutes(sched.endTime).toDate();
-                    if (ttimes.endTime <= ttimes.startTime) ttimes.endTime = sod.clone().addHours(24).addMinutes(sched.endTime).toDate();
-                    ntimes.endTime = nsod.clone().addMinutes(sched.endTime).toDate();
-                    if (ntimes.endTime <= ntimes.startTime) ntimes.endTime = nsod.clone().addHours(24).addMinutes(sched.endTime).toDate();
+                    ytimes.endTime = ScheduleTime.dayAt(ysod, 0, sched.endTime).toDate();
+                    if (ytimes.endTime <= ytimes.startTime) ytimes.endTime = ScheduleTime.dayAt(ysod, 1, sched.endTime).toDate();
+                    ttimes.endTime = ScheduleTime.dayAt(sod, 0, sched.endTime).toDate();
+                    if (ttimes.endTime <= ttimes.startTime) ttimes.endTime = ScheduleTime.dayAt(sod, 1, sched.endTime).toDate();
+                    ntimes.endTime = ScheduleTime.dayAt(nsod, 0, sched.endTime).toDate();
+                    if (ntimes.endTime <= ntimes.startTime) ntimes.endTime = ScheduleTime.dayAt(nsod, 1, sched.endTime).toDate();
                     break;
             }
             ttimes.startTime.setSeconds(0, 0);  // Set the start time to the beginning of the minute.
@@ -1413,7 +1413,7 @@ export class ScheduleTime extends ChildEqState {
                 // be the next scheduled run date.
                 if (schedType.name !== 'runonce' && sched.scheduleDays > 0) {
                     let schedDays = sys.board.valueMaps.scheduleDays.toArray();
-                    let day = sod.clone().addHours(24);
+                    let day = ScheduleTime.dayAt(sod, 1);
                     let dow = day.getDay();
                     while (dow !== sod.getDay()) {
                         let sd = schedDays.find(elem => elem.dow === day.getDay());
@@ -1421,7 +1421,7 @@ export class ScheduleTime extends ChildEqState {
                             times = this.calcScheduleDate(day, sched);
                             break;
                         }
-                        else day.addHours(24);
+                        else day = ScheduleTime.dayAt(day, 1);
                     }
                 }
                 this.startTime = times.startTime;
@@ -1447,6 +1447,13 @@ export class ScheduleTime extends ChildEqState {
         if (ScheduleTime._uncalcWarned.get(id) === sod) return;
         ScheduleTime._uncalcWarned.set(id, sod);
         logger.warn(`Schedule ${id} window not calculated (${reason}); will retry on the next pass.`);
+    }
+    // The local clock time `minutes` after midnight, `addDays` calendar days from `day`.  Timestamp.addHours
+    // and addMinutes add elapsed time, which is an hour off by the clock on the days daylight saving time
+    // starts or ends (a 23 or 25 hour day); the Date constructor counts by the calendar and the clock.
+    public static dayAt(day: Timestamp, addDays: number, minutes: number = 0): Timestamp {
+        let d = day.toDate();
+        return new Timestamp(new Date(d.getFullYear(), d.getMonth(), d.getDate() + addDays, 0, minutes));
     }
 }
 export class ScheduleState extends EqState {
