@@ -621,6 +621,32 @@ function swgGeneratedSinceLastReading(swgEvents: SwgEvent[], t1: Date, t2: Date,
 
 interface TimeOfDay { hour: number; minute: number; second: number; }
 
+// Building an Intl.DateTimeFormat is slow (a fraction of a millisecond, more on a Raspberry Pi), and one calculation used to build several hundred
+// of them in the helpers below (the deadline bisection alone calls runWindowHoursBetween 60 times, three formatters each); Tune runs thousands of
+// calculations. A formatter gives the same parts whichever call it serves, so one of each kind is kept per time zone and reused: a handful of
+// small objects in all (five kinds times the time zones used, normally one), never growing with the calculations. Tests switch the cache off to
+// check that the results are the same either way.
+const DTF_OPTIONS: { [kind: string]: Intl.DateTimeFormatOptions } = {
+    hm: { hourCycle: 'h23', hour: 'numeric', minute: 'numeric' } as any,                                                              // localMinutesOfDay
+    full: { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },   // tzOffsetMinutes
+    ymdhm: { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' },                    // formatLocalDateTime
+    ymd: { year: 'numeric', month: '2-digit', day: '2-digit' },                                                                       // localYmd
+    hms: { hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' },                                                 // localMinuteOfDay
+};
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+let dtfCacheEnabled = true;
+function dateTimeFormat(kind: string, timeZone: string): Intl.DateTimeFormat {
+    if (!dtfCacheEnabled) return new Intl.DateTimeFormat('en-US', Object.assign({ timeZone }, DTF_OPTIONS[kind]));
+    const key = `${kind}|${timeZone}`;
+    let f = dtfCache.get(key);
+    if (!f) {
+        f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone }, DTF_OPTIONS[kind]));   // an unknown time zone throws here, as before, and is not kept
+        dtfCache.set(key, f);
+    }
+    return f;
+}
+function setDateTimeFormatCache(on: boolean) { dtfCacheEnabled = on; dtfCache.clear(); }
+
 function parseTimeOfDay(s: string): TimeOfDay {
     const trimmed = s.trim().toUpperCase().replace(/\s+/g, '');
     let m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed); // 07:00 / 19:00 / 07:00:00 (24h)
@@ -643,7 +669,7 @@ function to24Hour(h: number, meridian: string): number {
 // into the next day (e.g. start 10pm, stop 6am -> 8.0 hours).
 // Minutes after local midnight (in `timeZone`) at `instant`.
 function localMinutesOfDay(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', hour: 'numeric', minute: 'numeric' } as any);
+    const dtf = dateTimeFormat('hm', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return (parseInt(parts.hour, 10) % 24) * 60 + parseInt(parts.minute, 10);
@@ -704,11 +730,7 @@ function durationHours(start: TimeOfDay, stop: TimeOfDay): number {
 
 // Offset (minutes) such that: utcMillis = wallClockAsUTCMillis - offset*60000
 function tzOffsetMinutes(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-        timeZone, hourCycle: 'h23',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
+    const dtf = dateTimeFormat('full', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
@@ -752,18 +774,14 @@ export function nextScheduledCheck(now: Date, startTime: string, hours: number, 
 
 // 'YYYY-MM-DD HH:mm' wall-clock time of `instant` in `timeZone`.
 export function formatLocalDateTime(instant: Date, timeZone: string): string {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-        timeZone, hourCycle: 'h23',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit',
-    });
+    const dtf = dateTimeFormat('ymdhm', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function localYmd(instant: Date, timeZone: string): { year: number; month: number; day: number } {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const dtf = dateTimeFormat('ymd', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return { year: +parts.year, month: +parts.month, day: +parts.day };
@@ -868,7 +886,7 @@ export function parabolicDaytimeShare(dayHours: number): number {
 
 // Local wall-clock minutes since midnight (0..1440) of `instant` in `timeZone`.
 function localMinuteOfDay(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dtf = dateTimeFormat('hms', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return (+parts.hour) * 60 + (+parts.minute) + (+parts.second) / 60;
@@ -2083,4 +2101,5 @@ export function minutesToHHMM(minutes: number): string {
 }
 
 // Exported for unit testing / offline debugging against a saved copy of the page.
-export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml, runWindowHoursBetween, deadlineAfterRunHours, nextRunStartAfter };
+export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml, runWindowHoursBetween, deadlineAfterRunHours, nextRunStartAfter,
+    tzOffsetMinutes, localMinutesOfDay, localMinuteOfDay, localYmd, zonedTimeToUtc, setDateTimeFormatCache };

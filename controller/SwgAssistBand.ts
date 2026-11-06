@@ -23,7 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   Below the range (the projected FC, less an allowance that grows with the age of the reading, is under the low value) the % is raised enough to bring FC
 //     to the middle of the range over one run period, never less than the maintenance %.
 //   Above the range the SWG is held at 0% (coasting) until the projected FC is half a ppm below the high value. The coasting state is kept between
-//     checks by the caller (`coasting`), and it never lasts past a reading 2 days old.
+//     checks by the caller (`coasting`), and it never lasts past a reading 3 days old.
 //   A reading older than 2 days adds a bias above the maintenance % (biasPerDay for each day beyond 2, at most 40%), so that a projection that has stopped
 //     following the pool cannot leave the SWG below what the burn needs. With `scaledBias` on, that bias is scaled by where the last reading sat: full at or
 //     below the middle of the range, none at or above the top, linear between, so a long gap after a high reading does not push FC further above the range.
