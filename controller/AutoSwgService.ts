@@ -1713,7 +1713,8 @@ export interface ProjectionAccuracy {
 // matches each apply's target FC and deadline with the FC measured nearest the deadline.
 // Limits: it reads the share page (so only what the page lists), and uses today's run window and
 // sunrise/sunset for past days.
-export async function buildProjectionAccuracy(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory }): Promise<ProjectionAccuracy> {
+// `onProgress`, if given, is told after each calculation how many of the readings to score are done (Tune shows it while it runs).
+export async function buildProjectionAccuracy(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<ProjectionAccuracy> {
     const html = options.html || await fetchHtml(params.shareCode);
     const parsedPage = parseWithArchive(html, params.poolName, options.archive);
     const fc = parsedPage.fcEvents;
@@ -1721,6 +1722,13 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
     const from = Date.now() - options.lookbackDays * 86400000;
     const rows: ProjectionAccuracyRow[] = [];
     let skipped = 0;
+    // how many readings the loop below will calculate (the same tests as in it), for the progress report
+    let total = 0, done = 0;
+    for (let k = Math.max(1, minK); k < fc.length; k++) {
+        const days = (fc[k].ts.getTime() - fc[k - 1].ts.getTime()) / 86400000;
+        if (fc[k].ts.getTime() >= from && days >= 0.1 && days <= 14) total++;
+    }
+    if (options.onProgress) options.onProgress('accuracy', 0, total);
     for (let k = 1; k < fc.length; k++) {
         const t1 = fc[k - 1].ts, t2 = fc[k].ts;
         if (t2.getTime() < from) continue;
@@ -1731,7 +1739,9 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
         // Tune) holds njsPC's event loop: REM's relay latches expire (the pump drops) and the serial port times out. Let everything else run between them.
         await yieldToEventLoop();
         try {
+            done++;
             const r = await computeRecommendation(Object.assign({}, params, { inFlight: undefined, asOf: new Date(t2.getTime() - 60000) }), html, options.localSwgEntries || [], undefined, options.archive);
+            if (options.onProgress) options.onProgress('accuracy', done, total);
             if (!r.mostRecentFc || r.mostRecentFc.ts !== t1.toISOString()) { skipped++; continue; }
             rows.push({
                 ts: t2.toISOString(), previousTs: t1.toISOString(), days: Math.round(days * 100) / 100,
@@ -1741,7 +1751,7 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
                 rangeLow: r.projectedFcRange.low, rangeHigh: r.projectedFcRange.high,
             });
         }
-        catch (err) { skipped++; } // too little history before this reading
+        catch (err) { skipped++; if (options.onProgress) options.onProgress('accuracy', done, total); } // too little history before this reading
     }
     const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : undefined;
     const round2 = (v: number | undefined) => typeof v === 'number' ? Math.round(v * 100) / 100 : undefined;
@@ -1869,8 +1879,9 @@ const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve
 // readings as the current settings, so the comparison is like for like. Each variant's change in
 // mean absolute error vs the current settings comes with a 90% bootstrap interval, and a verdict
 // ("better"/"worse" only when that interval excludes zero). Yields to the event loop between
-// calculations so it can't hold up the rest of njsPC.
-export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; archive?: ArchivedHistory }): Promise<WhatIfSweep> {
+// calculations so it can't hold up the rest of njsPC. `onProgress`, if given, is told after each calculation how many of the
+// variants x readings are done.
+export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<WhatIfSweep> {
     const html = options.html || await fetchHtml(params.shareCode);
     const parsedPage = parseWithArchive(html, params.poolName, options.archive);
     const fc = parsedPage.fcEvents;
@@ -1917,6 +1928,9 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
     }
     // error (projected - measured) per variant per reading
     const errors: Map<number, number>[] = variants.map(() => new Map<number, number>());
+    const total = candidates.length * variants.length;
+    let done = 0;
+    if (options.onProgress) options.onProgress('sweep', 0, total);
     for (const k of candidates) {
         for (let v = 0; v < variants.length; v++) {
             try {
@@ -1924,6 +1938,8 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
                 if (r.mostRecentFc && r.mostRecentFc.ts === fc[k - 1].ts.toISOString()) errors[v].set(k, r.projectedCurrentFc - fc[k].value);
             }
             catch (err) { /* too little history before this reading */ }
+            done++;
+            if (options.onProgress) options.onProgress('sweep', done, total);
             await yieldToEventLoop();
         }
     }
@@ -2012,11 +2028,12 @@ function describeNightBurn(variants: WhatIfVariant[], current: number): string |
 // alternatives, and boil it down to ONE recommendation. If a different averaging window is clearly better it comes
 // first (the window interacts with the weighting and taper, so those are judged after it is applied); otherwise the
 // best clearly-better alternative; otherwise the settings are fine. Fewer than 15 readings is too few to tune on.
-export async function buildTune(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory }): Promise<TuneResult> {
+// `onProgress` is passed on to both reports: the phase ('accuracy', then 'sweep') and how many of its calculations are done.
+export async function buildTune(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<TuneResult> {
     const html = options.html || await fetchHtml(params.shareCode);
     const score = async (days: number) => ({
         accuracy: await buildProjectionAccuracy(params, Object.assign({}, options, { html, lookbackDays: days })),
-        sweep: await buildWhatIfSweep(params, { lookbackDays: days, html, localSwgEntries: options.localSwgEntries, archive: options.archive }),
+        sweep: await buildWhatIfSweep(params, { lookbackDays: days, html, localSwgEntries: options.localSwgEntries, archive: options.archive, onProgress: options.onProgress }),
     });
     let lookbackDays = options.lookbackDays;
     let { accuracy, sweep } = await score(lookbackDays);
