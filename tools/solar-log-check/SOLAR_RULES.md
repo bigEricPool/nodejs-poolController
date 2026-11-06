@@ -29,8 +29,8 @@ setpoint at once. Without the rules below that produces short starts, over and o
 
 ## 2. Settings
 
-All are in `config.json` under `controller.solar`, and on the heater page of dashPanel under
-Solar Controls. A change takes effect on the next pass; no restart is needed.
+All are in `config.json` under `controller.solar`. All but `coolAnyTime` are also on the heater
+page of dashPanel under Solar Controls. A change takes effect on the next pass; no restart is needed.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -39,6 +39,9 @@ Solar Controls. A change takes effect on the next pass; no restart is needed.
 | `valveDelaySeconds` | 0 (off) | How long the pump runs at its solar speed, valve closed, before a start is judged (the check). 120 is a value to start with. |
 | `checkPeriodMinutes` | 60 | After the check turns a start down, how long before the next check. |
 | `returnSensor` | none | The temperature input on the pipe coming back from the panels. Shown and logged only. One-body systems only. |
+| `startMargin` | 2 | How much more than the run delta the collector must lead the water (warmer for heating, cooler for cooling) for a check to begin and pass. Room for the collector reading to move toward the water once water flows. |
+| `minRunMinutes` | 5 | For this long after solar turns on, it is not stopped because the collector lead fell to the run delta. A collector no warmer (cooling: no cooler) than the water, and the water stop, still apply. |
+| `coolAnyTime` | false | Nocturnal cooling may run at any hour, not only between sunset and sunrise. For testing; file only. See section 6. |
 
 The start delta and the run delta are the heater's own settings (6 and 3 on this pool).
 
@@ -137,6 +140,16 @@ solar is started by a check and by nothing else.
 Nocturnal cooling follows the same rules with the directions reversed: it runs at night, the
 collector must be cooler than the water, and the stop level is the cool setpoint plus the run
 delta minus the hysteresis.
+
+- **At sunrise a cooling run ends.** The night is part of the rule that keeps it running, so it
+  stops then as a plain stop: no reheat guard and no hysteresis wait.
+- **`coolAnyTime`** lifts the night rule, for cooling only. It exists to test what the night
+  cannot reach: a cooling run ended because the morning sun warms the collector until the water
+  leads it by no more than the run delta (a collector stop, so the reheat guard is set at that
+  collector reading), and heating after it, which may start only once the collector has risen more
+  than the start delta above that reading. With it on, cooling also runs on any cool or cloudy day
+  whose readings pass, so turn it off after the test. A Cool Point below the Heat Point then makes
+  morning cooling and afternoon heating undo each other. Heating wins when both would run.
 
 ## 7. What the dashboard shows as the pool temperature
 
