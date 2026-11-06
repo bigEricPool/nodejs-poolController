@@ -647,6 +647,15 @@ function dateTimeFormat(kind: string, timeZone: string): Intl.DateTimeFormat {
 }
 function setDateTimeFormatCache(on: boolean) { dtfCacheEnabled = on; dtfCache.clear(); }
 
+// Drops what the calculations keep between calls: the last page parse, the last page + archive merge (both hold the whole history) and the date
+// formatters. Called when a Tune ends, so nothing it built stays in memory afterwards; the next calculation builds again what it needs. The
+// results do not change.
+export function releaseCalculationCaches() {
+    parseCache = undefined;
+    mergeCache = undefined;
+    dtfCache.clear();
+}
+
 function parseTimeOfDay(s: string): TimeOfDay {
     const trimmed = s.trim().toUpperCase().replace(/\s+/g, '');
     let m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed); // 07:00 / 19:00 / 07:00:00 (24h)

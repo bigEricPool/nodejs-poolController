@@ -28,7 +28,7 @@ import { conn } from "../../../controller/comms/Comms";
 import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
-import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter } from "../../../controller/AutoSwgService";
+import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
 import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgService";
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
@@ -831,7 +831,10 @@ const autoSwgTuneRun = new SingleFlightTune<TuneResult>();
 function startAutoSwgTune(by: TuneRunBy, statusBefore?: ReturnType<typeof autoSwgTuneStatus>) {
     return autoSwgTuneRun.join(by, async (progress) => {
         let cfg = sys.autoSwg;
-        let tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports(), onProgress: progress });
+        let tune: TuneResult;
+        // whatever the calculations cached for this run is let go when it ends, also on an error, so a Tune leaves nothing behind in memory
+        try { tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports(), onProgress: progress }); }
+        finally { releaseCalculationCaches(); }
         recordAutoSwgTuneRun(cfg, tune, statusBefore || autoSwgTuneStatus(cfg), by);
         return tune;
     });

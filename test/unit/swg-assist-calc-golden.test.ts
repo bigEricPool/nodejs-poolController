@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: () => {}, verbose: () => {}, debug: () => {}, silly: () => {} } }));
 
-import { AutoSwgParams, ArchivedHistory, __testables, buildProjectionAccuracy, buildWhatIfSweep, computeRecommendation } from '../../controller/AutoSwgService';
+import { AutoSwgParams, ArchivedHistory, __testables, buildProjectionAccuracy, buildWhatIfSweep, computeRecommendation, releaseCalculationCaches } from '../../controller/AutoSwgService';
 
 const DAY = 86400000;
 const HTML = '<html><body></body></html>';   // no cards: the history comes from the archive below (a non-empty page, so nothing is fetched)
@@ -97,6 +97,14 @@ describe('the formatter cache changes no result', () => {
             }
         }
     }, 60000);
+
+    it('releasing the caches after a run changes no result', async () => {
+        const p = Object.assign({}, bandParams, { asOf: new Date(archive.fc[50].ts.getTime() - 60000) });
+        const before = await computeRecommendation(p, HTML, [], undefined, archive);
+        releaseCalculationCaches();
+        const after = await computeRecommendation(p, HTML, [], undefined, archive);
+        expect(after).toEqual(before);
+    });
 
     it('the projection accuracy report gives the same result', async () => {
         const [before, after] = await both(() => buildProjectionAccuracy(bandParams, { lookbackDays: 120, html: HTML, archive }));
