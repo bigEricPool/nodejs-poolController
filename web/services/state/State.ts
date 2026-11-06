@@ -30,11 +30,12 @@ import { conn } from "../../../controller/comms/Comms";
 import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
-import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter } from "../../../controller/AutoSwgService";
+import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
 import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgService";
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
 import { evaluateAutoTuneApply } from "../../../controller/AutoSwgAutoTune";
+import { SingleFlightTune, TuneRunBy } from "../../../controller/AutoSwgTuneRun";
 import { getAutoSwgReadiness, registerAutoSwgReadiness } from "../../../controller/AutoSwgReadiness";
 import { saltHistory, stormEventStatus } from "../../../controller/AutoSwgSaltHistory";
 import { AutoSwgWatch, inRunWindow, minutesOfDayIn } from "../../../controller/AutoSwgWatch";
@@ -843,20 +844,37 @@ function recordAutoSwgTuneRun(cfg: typeof sys.autoSwg, tune: TuneResult, status:
     catch (err) { logger.warn(`SWG Assist: could not record the Tune run: ${err.message}`); }
 }
 
+// One Tune at a time, shared by the Tune button and auto tune (see AutoSwgTuneRun.ts): a request while one runs gets that run's result, and the
+// run is recorded once, by whoever started it, even if the browser that asked has gone. `statusBefore` is the Tune status as it stood before the
+// run (auto tune works it out first); without it, it is read when the run ends, before the run is recorded.
+const autoSwgTuneRun = new SingleFlightTune<TuneResult>();
+function startAutoSwgTune(by: TuneRunBy, statusBefore?: ReturnType<typeof autoSwgTuneStatus>) {
+    return autoSwgTuneRun.join(by, async (progress) => {
+        let cfg = sys.autoSwg;
+        let tune: TuneResult;
+        // whatever the calculations cached for this run is let go when it ends, also on an error, so a Tune leaves nothing behind in memory
+        try { tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports(), onProgress: progress }); }
+        finally { releaseCalculationCaches(); }
+        recordAutoSwgTuneRun(cfg, tune, statusBefore || autoSwgTuneStatus(cfg), by);
+        return tune;
+    });
+}
+
 // Auto tune (the automatic mode): after a PoolMath read (an automatic check, or a Check Now), if enough new FC readings have arrived since the
 // last Tune, run Tune. What it recommends is applied only when Auto tune apply is on and every guard passes (see AutoSwgAutoTune.ts);
 // otherwise the recommendation is kept in the Tune history, with the reasons it was held, and a note is shown on the SWG Assist page.
 let autoSwgAutoTuneRunning = false;
 async function runAutoSwgAutoTune(): Promise<void> {
     let cfg = sys.autoSwg;
-    if (autoSwgAutoTuneRunning || !cfg.enabled || !cfg.autoTuneEnabled || !cfg.shareCode) return;
+    if (autoSwgAutoTuneRunning || autoSwgTuneRun.running || !cfg.enabled || !cfg.autoTuneEnabled || !cfg.shareCode) return;
     let status = autoSwgTuneStatus(cfg);
     if (typeof status.readingsSinceTune !== 'number' || status.readingsSinceTune < status.needed) return;
     autoSwgAutoTuneRunning = true;
     let note = '';
     try {
-        let tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports() });
-        recordAutoSwgTuneRun(cfg, tune, status, 'auto');
+        let run = startAutoSwgTune('auto', status);
+        if (!run.started) return;   // a Tune is already running (checked above; nothing has been awaited since, so this does not happen)
+        let tune = await run.promise;
         let at = cfg.lastTuneAt;
         let rec = tune.recommendation;
         if (tune.status === 'insufficient') note = `Auto tune: too few FC readings could be scored yet (${tune.readings}).`;
@@ -1918,13 +1936,14 @@ export class StateRoute {
         });
         // One guided recommendation from the saved settings and the FC history (see buildTune): the accuracy and
         // what-if reports boiled down to a single change, or "your settings look good".
+        // Only one Tune runs at a time: a request while one is running (a refresh, a retry, a second click, or auto tune) waits for that run and gets
+        // its result. With ?join=1 it only waits for a run already going (a page opened while one runs) and answers 204 if there is none.
         app.get('/state/autoSwg/tune', async (req, res, next) => {
             try {
                 let cfg = sys.autoSwg;
-                if (!cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
-                let tune = await buildTune(autoSwgReportParams(cfg), { lookbackDays: 365, localSwgEntries: toLocalSwgEntries(readAutoSwgHistory()), historyRecords: readAutoSwgHistory(), tuningChangedAt: cfg.tuningChangedAt, archive: autoSwgArchiveForReports() });
-                let status = autoSwgTuneStatus(cfg);   // as it stood before this run
-                recordAutoSwgTuneRun(cfg, tune, status, 'manual');
+                if (String(req.query.join) === '1' && !autoSwgTuneRun.running) return res.status(204).send();
+                if (!autoSwgTuneRun.running && !cfg.shareCode) throw new ServiceParameterError('SWG Assist is not configured: shareCode is required.', 'autoSwg', 'shareCode', cfg.shareCode);
+                let tune = await startAutoSwgTune('manual').promise;
                 return res.status(200).send(tune);
             }
             catch (err) { next(err); }
@@ -1932,8 +1951,13 @@ export class StateRoute {
         // Is another Tune worth it yet? Answered from what is stored locally (no PoolMath request): when Tune last
         // ran, how many FC readings have arrived since (from the archive, which every PoolMath read keeps current),
         // and whether the tuning settings were changed by hand since -- which would make tuning again worthwhile.
+        // Also says whether a Tune is running now, since when, who started it and how far it is (running, startedAt, by, phase, done, total).
+        // ?run=1 answers only that, without reading the archive, for a page that polls while a Tune runs.
         app.get('/state/autoSwg/tune/status', (req, res, next) => {
-            try { return res.status(200).send(autoSwgTuneStatus(sys.autoSwg)); }
+            try {
+                if (String(req.query.run) === '1') return res.status(200).send(autoSwgTuneRun.status());
+                return res.status(200).send(Object.assign(autoSwgTuneStatus(sys.autoSwg), autoSwgTuneRun.status()));
+            }
             catch (err) { next(err); }
         });
         // The recent Tune runs, newest first.

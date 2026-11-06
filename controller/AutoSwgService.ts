@@ -621,6 +621,41 @@ function swgGeneratedSinceLastReading(swgEvents: SwgEvent[], t1: Date, t2: Date,
 
 interface TimeOfDay { hour: number; minute: number; second: number; }
 
+// Building an Intl.DateTimeFormat is slow (a fraction of a millisecond, more on a Raspberry Pi), and one calculation used to build several hundred
+// of them in the helpers below (the deadline bisection alone calls runWindowHoursBetween 60 times, three formatters each); Tune runs thousands of
+// calculations. A formatter gives the same parts whichever call it serves, so one of each kind is kept per time zone and reused: a handful of
+// small objects in all (five kinds times the time zones used, normally one), never growing with the calculations. Tests switch the cache off to
+// check that the results are the same either way.
+const DTF_OPTIONS: { [kind: string]: Intl.DateTimeFormatOptions } = {
+    hm: { hourCycle: 'h23', hour: 'numeric', minute: 'numeric' } as any,                                                              // localMinutesOfDay
+    full: { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },   // tzOffsetMinutes
+    ymdhm: { hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' },                    // formatLocalDateTime
+    ymd: { year: 'numeric', month: '2-digit', day: '2-digit' },                                                                       // localYmd
+    hms: { hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' },                                                 // localMinuteOfDay
+};
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+let dtfCacheEnabled = true;
+function dateTimeFormat(kind: string, timeZone: string): Intl.DateTimeFormat {
+    if (!dtfCacheEnabled) return new Intl.DateTimeFormat('en-US', Object.assign({ timeZone }, DTF_OPTIONS[kind]));
+    const key = `${kind}|${timeZone}`;
+    let f = dtfCache.get(key);
+    if (!f) {
+        f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone }, DTF_OPTIONS[kind]));   // an unknown time zone throws here, as before, and is not kept
+        dtfCache.set(key, f);
+    }
+    return f;
+}
+function setDateTimeFormatCache(on: boolean) { dtfCacheEnabled = on; dtfCache.clear(); }
+
+// Drops what the calculations keep between calls: the last page parse, the last page + archive merge (both hold the whole history) and the date
+// formatters. Called when a Tune ends, so nothing it built stays in memory afterwards; the next calculation builds again what it needs. The
+// results do not change.
+export function releaseCalculationCaches() {
+    parseCache = undefined;
+    mergeCache = undefined;
+    dtfCache.clear();
+}
+
 function parseTimeOfDay(s: string): TimeOfDay {
     const trimmed = s.trim().toUpperCase().replace(/\s+/g, '');
     let m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed); // 07:00 / 19:00 / 07:00:00 (24h)
@@ -643,7 +678,7 @@ function to24Hour(h: number, meridian: string): number {
 // into the next day (e.g. start 10pm, stop 6am -> 8.0 hours).
 // Minutes after local midnight (in `timeZone`) at `instant`.
 function localMinutesOfDay(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', hour: 'numeric', minute: 'numeric' } as any);
+    const dtf = dateTimeFormat('hm', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return (parseInt(parts.hour, 10) % 24) * 60 + parseInt(parts.minute, 10);
@@ -704,11 +739,7 @@ function durationHours(start: TimeOfDay, stop: TimeOfDay): number {
 
 // Offset (minutes) such that: utcMillis = wallClockAsUTCMillis - offset*60000
 function tzOffsetMinutes(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-        timeZone, hourCycle: 'h23',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-    });
+    const dtf = dateTimeFormat('full', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
@@ -752,18 +783,14 @@ export function nextScheduledCheck(now: Date, startTime: string, hours: number, 
 
 // 'YYYY-MM-DD HH:mm' wall-clock time of `instant` in `timeZone`.
 export function formatLocalDateTime(instant: Date, timeZone: string): string {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-        timeZone, hourCycle: 'h23',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit',
-    });
+    const dtf = dateTimeFormat('ymdhm', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
 function localYmd(instant: Date, timeZone: string): { year: number; month: number; day: number } {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const dtf = dateTimeFormat('ymd', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return { year: +parts.year, month: +parts.month, day: +parts.day };
@@ -868,7 +895,7 @@ export function parabolicDaytimeShare(dayHours: number): number {
 
 // Local wall-clock minutes since midnight (0..1440) of `instant` in `timeZone`.
 function localMinuteOfDay(instant: Date, timeZone: string): number {
-    const dtf = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dtf = dateTimeFormat('hms', timeZone);
     const parts: any = {};
     for (const p of dtf.formatToParts(instant)) parts[p.type] = p.value;
     return (+parts.hour) * 60 + (+parts.minute) + (+parts.second) / 60;
@@ -1713,7 +1740,8 @@ export interface ProjectionAccuracy {
 // matches each apply's target FC and deadline with the FC measured nearest the deadline.
 // Limits: it reads the share page (so only what the page lists), and uses today's run window and
 // sunrise/sunset for past days.
-export async function buildProjectionAccuracy(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory }): Promise<ProjectionAccuracy> {
+// `onProgress`, if given, is told after each calculation how many of the readings to score are done (Tune shows it while it runs).
+export async function buildProjectionAccuracy(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<ProjectionAccuracy> {
     const html = options.html || await fetchHtml(params.shareCode);
     const parsedPage = parseWithArchive(html, params.poolName, options.archive);
     const fc = parsedPage.fcEvents;
@@ -1721,6 +1749,13 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
     const from = Date.now() - options.lookbackDays * 86400000;
     const rows: ProjectionAccuracyRow[] = [];
     let skipped = 0;
+    // how many readings the loop below will calculate (the same tests as in it), for the progress report
+    let total = 0, done = 0;
+    for (let k = Math.max(1, minK); k < fc.length; k++) {
+        const days = (fc[k].ts.getTime() - fc[k - 1].ts.getTime()) / 86400000;
+        if (fc[k].ts.getTime() >= from && days >= 0.1 && days <= 14) total++;
+    }
+    if (options.onProgress) options.onProgress('accuracy', 0, total);
     for (let k = 1; k < fc.length; k++) {
         const t1 = fc[k - 1].ts, t2 = fc[k].ts;
         if (t2.getTime() < from) continue;
@@ -1731,7 +1766,9 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
         // Tune) holds njsPC's event loop: REM's relay latches expire (the pump drops) and the serial port times out. Let everything else run between them.
         await yieldToEventLoop();
         try {
+            done++;
             const r = await computeRecommendation(Object.assign({}, params, { inFlight: undefined, asOf: new Date(t2.getTime() - 60000) }), html, options.localSwgEntries || [], undefined, options.archive);
+            if (options.onProgress) options.onProgress('accuracy', done, total);
             if (!r.mostRecentFc || r.mostRecentFc.ts !== t1.toISOString()) { skipped++; continue; }
             rows.push({
                 ts: t2.toISOString(), previousTs: t1.toISOString(), days: Math.round(days * 100) / 100,
@@ -1741,7 +1778,7 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
                 rangeLow: r.projectedFcRange.low, rangeHigh: r.projectedFcRange.high,
             });
         }
-        catch (err) { skipped++; } // too little history before this reading
+        catch (err) { skipped++; if (options.onProgress) options.onProgress('accuracy', done, total); } // too little history before this reading
     }
     const mean = (xs: number[]) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : undefined;
     const round2 = (v: number | undefined) => typeof v === 'number' ? Math.round(v * 100) / 100 : undefined;
@@ -1869,8 +1906,9 @@ const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve
 // readings as the current settings, so the comparison is like for like. Each variant's change in
 // mean absolute error vs the current settings comes with a 90% bootstrap interval, and a verdict
 // ("better"/"worse" only when that interval excludes zero). Yields to the event loop between
-// calculations so it can't hold up the rest of njsPC.
-export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; archive?: ArchivedHistory }): Promise<WhatIfSweep> {
+// calculations so it can't hold up the rest of njsPC. `onProgress`, if given, is told after each calculation how many of the
+// variants x readings are done.
+export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<WhatIfSweep> {
     const html = options.html || await fetchHtml(params.shareCode);
     const parsedPage = parseWithArchive(html, params.poolName, options.archive);
     const fc = parsedPage.fcEvents;
@@ -1885,25 +1923,31 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
         if (TUNING.every(k => (p as any)[k] === (params as any)[k])) return;
         variants.push({ key, label, params: p });
     };
-    for (const w of [7, 14, 21, 28, 42, 56]) if (w !== params.windowDays) add(`window${w}`, `Averaging window ${w} days`, Object.assign({}, params, { windowDays: w }));
+    // Each variant costs one calculation per reading (Tune scores about a hundred readings, at a few hundred ms each on a Raspberry Pi), so the list
+    // keeps the alternatives that can matter for a tuned pool, about 15 (it was about 25). Dropped, from the scoring on the author's pool: a 7 day
+    // window and weightings of 0 and 25% (clearly worse there), windows of 42 and 56 days (no different from 21 to 28, and slower to follow a
+    // season), the 3 to 8, 4 to 10 and 2 to 6 day tapers with and without a 50% weighting (one taper alternative now), the anomaly check off, and
+    // the night burn values furthest from the one in use.
+    for (const w of [10, 14, 21, 28]) if (w !== params.windowDays) add(`window${w}`, `Averaging window ${w} days`, Object.assign({}, params, { windowDays: w }));
     if (params.sunriseTime && params.sunsetTime) add('noDaylight', 'Daylight weighting off', Object.assign({}, params, { sunriseTime: undefined, sunsetTime: undefined }));
     add('creditToggle', params.creditChlorineAdditions !== false ? 'Liquid chlorine credit off' : 'Liquid chlorine credit on', Object.assign({}, params, { creditChlorineAdditions: params.creditChlorineAdditions === false }));
     const curWeight = typeof params.projectionWeight === 'number' ? params.projectionWeight : 1;
-    for (const d of [0, 0.25, 0.5, 0.75, 1]) if (d !== curWeight) add(`weight${d}`, `Projection weighting ${Math.round(d * 100)}%`, Object.assign({}, params, { projectionWeight: d }));
-    // Gap taper: the weight falls to zero as the last reading gets older (with the weighting as set, and at 50%).
-    for (const [ts, te] of [[3, 8], [4, 10], [2, 6]]) {
-        add(`taper${ts}_${te}`, `Taper off ${ts} to ${te} days`, Object.assign({}, params, { projectionTaperStartDays: ts, projectionTaperEndDays: te }));
-        add(`taper${ts}_${te}_50`, `Weighting 50% + taper ${ts} to ${te} days`, Object.assign({}, params, { projectionWeight: 0.5, projectionTaperStartDays: ts, projectionTaperEndDays: te }));
-    }
+    for (const d of [0.5, 0.65, 0.75, 0.85, 1]) if (Math.abs(d - curWeight) > 1e-9) add(`weight${d}`, `Projection weighting ${Math.round(d * 100)}%`, Object.assign({}, params, { projectionWeight: d }));
+    // Gap taper: the weight falls to zero as the last reading gets older. One alternative to what is set: a 5 to 14 day taper, and no taper when one is set.
+    add('taper5_14', 'Taper off 5 to 14 days', Object.assign({}, params, { projectionTaperStartDays: 5, projectionTaperEndDays: 14 }));
+    if (typeof params.projectionTaperEndDays === 'number' && params.projectionTaperEndDays > 0) add('noTaper', 'No taper', Object.assign({}, params, { projectionTaperEndDays: 0 }));
     // The water temperature adjustment, once there are temperatures logged with the tests to fit it to.
     if (parsedPage.tempEvents.length >= BURN_TEMP_MIN_INTERVALS) add('burnTemp', params.burnTempAdjust === true ? 'Water temperature adjustment off' : 'Water temperature adjustment on', Object.assign({}, params, { burnTempAdjust: params.burnTempAdjust !== true }));
     const curTol = typeof params.fcAnomalyTolerancePpm === 'number' ? params.fcAnomalyTolerancePpm : ANOMALY_TOLERANCE_PPM;
-    for (const t of [0, 1, 3]) if (t !== curTol) add(`tol${t}`, t === 0 ? 'FC anomaly check off' : `FC anomaly tolerance ${t} ppm`, Object.assign({}, params, { fcAnomalyTolerancePpm: t }));
+    for (const t of [1, 3]) if (t !== curTol) add(`tol${t}`, `FC anomaly tolerance ${t} ppm`, Object.assign({}, params, { fcAnomalyTolerancePpm: t }));
 
     // How much less is used at night than by day: the alternatives are scored on the same readings (see describeNightBurn for what Tune says about them).
+    // The nearest value below and above the one in use.
     const curNight = typeof params.nightBurnRatio === 'number' && params.nightBurnRatio > 0 ? params.nightBurnRatio : NIGHT_BURN_RATIO_DEFAULT;
     if (params.sunriseTime && params.sunsetTime && !(params.daytimeSharePct > 0)) {
-        for (const r of [0.25, 0.5, 0.75, 1]) if (Math.abs(r - curNight) > 1e-9) add(`night${r}`, `Night burn ${r} of the day rate`, Object.assign({}, params, { nightBurnRatio: r }));
+        const ratios = [0.25, 0.5, 0.75, 1];
+        const below = ratios.filter(r => r < curNight - 1e-9), above = ratios.filter(r => r > curNight + 1e-9);
+        for (const r of [below[below.length - 1], above[0]]) if (typeof r === 'number') add(`night${r}`, `Night burn ${r} of the day rate`, Object.assign({}, params, { nightBurnRatio: r }));
     }
 
     // Readings worth scoring: a previous reading 0.1 to 14 days earlier, within the lookback.
@@ -1917,6 +1961,9 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
     }
     // error (projected - measured) per variant per reading
     const errors: Map<number, number>[] = variants.map(() => new Map<number, number>());
+    const total = candidates.length * variants.length;
+    let done = 0;
+    if (options.onProgress) options.onProgress('sweep', 0, total);
     for (const k of candidates) {
         for (let v = 0; v < variants.length; v++) {
             try {
@@ -1924,6 +1971,8 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
                 if (r.mostRecentFc && r.mostRecentFc.ts === fc[k - 1].ts.toISOString()) errors[v].set(k, r.projectedCurrentFc - fc[k].value);
             }
             catch (err) { /* too little history before this reading */ }
+            done++;
+            if (options.onProgress) options.onProgress('sweep', done, total);
             await yieldToEventLoop();
         }
     }
@@ -2012,11 +2061,12 @@ function describeNightBurn(variants: WhatIfVariant[], current: number): string |
 // alternatives, and boil it down to ONE recommendation. If a different averaging window is clearly better it comes
 // first (the window interacts with the weighting and taper, so those are judged after it is applied); otherwise the
 // best clearly-better alternative; otherwise the settings are fine. Fewer than 15 readings is too few to tune on.
-export async function buildTune(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory }): Promise<TuneResult> {
+// `onProgress` is passed on to both reports: the phase ('accuracy', then 'sweep') and how many of its calculations are done.
+export async function buildTune(params: AutoSwgParams, options: { lookbackDays: number; html?: string; localSwgEntries?: LocalSwgEntry[]; historyRecords?: any[]; tuningChangedAt?: string; archive?: ArchivedHistory; onProgress?: (phase: string, done: number, total: number) => void }): Promise<TuneResult> {
     const html = options.html || await fetchHtml(params.shareCode);
     const score = async (days: number) => ({
         accuracy: await buildProjectionAccuracy(params, Object.assign({}, options, { html, lookbackDays: days })),
-        sweep: await buildWhatIfSweep(params, { lookbackDays: days, html, localSwgEntries: options.localSwgEntries, archive: options.archive }),
+        sweep: await buildWhatIfSweep(params, { lookbackDays: days, html, localSwgEntries: options.localSwgEntries, archive: options.archive, onProgress: options.onProgress }),
     });
     let lookbackDays = options.lookbackDays;
     let { accuracy, sweep } = await score(lookbackDays);
@@ -2066,4 +2116,5 @@ export function minutesToHHMM(minutes: number): string {
 }
 
 // Exported for unit testing / offline debugging against a saved copy of the page.
-export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml, runWindowHoursBetween, deadlineAfterRunHours, nextRunStartAfter };
+export const __testables = { parseCards, generatedBetween, dailyWindowOverlapHours, parseTimeOfDay, durationHours, fetchHtml, runWindowHoursBetween, deadlineAfterRunHours, nextRunStartAfter,
+    tzOffsetMinutes, localMinutesOfDay, localMinuteOfDay, localYmd, zonedTimeToUtc, setDateTimeFormatCache };
