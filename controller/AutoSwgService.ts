@@ -1914,25 +1914,31 @@ export async function buildWhatIfSweep(params: AutoSwgParams, options: { lookbac
         if (TUNING.every(k => (p as any)[k] === (params as any)[k])) return;
         variants.push({ key, label, params: p });
     };
-    for (const w of [7, 14, 21, 28, 42, 56]) if (w !== params.windowDays) add(`window${w}`, `Averaging window ${w} days`, Object.assign({}, params, { windowDays: w }));
+    // Each variant costs one calculation per reading (Tune scores about a hundred readings, at a few hundred ms each on a Raspberry Pi), so the list
+    // keeps the alternatives that can matter for a tuned pool, about 15 (it was about 25). Dropped, from the scoring on the author's pool: a 7 day
+    // window and weightings of 0 and 25% (clearly worse there), windows of 42 and 56 days (no different from 21 to 28, and slower to follow a
+    // season), the 3 to 8, 4 to 10 and 2 to 6 day tapers with and without a 50% weighting (one taper alternative now), the anomaly check off, and
+    // the night burn values furthest from the one in use.
+    for (const w of [10, 14, 21, 28]) if (w !== params.windowDays) add(`window${w}`, `Averaging window ${w} days`, Object.assign({}, params, { windowDays: w }));
     if (params.sunriseTime && params.sunsetTime) add('noDaylight', 'Daylight weighting off', Object.assign({}, params, { sunriseTime: undefined, sunsetTime: undefined }));
     add('creditToggle', params.creditChlorineAdditions !== false ? 'Liquid chlorine credit off' : 'Liquid chlorine credit on', Object.assign({}, params, { creditChlorineAdditions: params.creditChlorineAdditions === false }));
     const curWeight = typeof params.projectionWeight === 'number' ? params.projectionWeight : 1;
-    for (const d of [0, 0.25, 0.5, 0.75, 1]) if (d !== curWeight) add(`weight${d}`, `Projection weighting ${Math.round(d * 100)}%`, Object.assign({}, params, { projectionWeight: d }));
-    // Gap taper: the weight falls to zero as the last reading gets older (with the weighting as set, and at 50%).
-    for (const [ts, te] of [[3, 8], [4, 10], [2, 6]]) {
-        add(`taper${ts}_${te}`, `Taper off ${ts} to ${te} days`, Object.assign({}, params, { projectionTaperStartDays: ts, projectionTaperEndDays: te }));
-        add(`taper${ts}_${te}_50`, `Weighting 50% + taper ${ts} to ${te} days`, Object.assign({}, params, { projectionWeight: 0.5, projectionTaperStartDays: ts, projectionTaperEndDays: te }));
-    }
+    for (const d of [0.5, 0.65, 0.75, 0.85, 1]) if (Math.abs(d - curWeight) > 1e-9) add(`weight${d}`, `Projection weighting ${Math.round(d * 100)}%`, Object.assign({}, params, { projectionWeight: d }));
+    // Gap taper: the weight falls to zero as the last reading gets older. One alternative to what is set: a 5 to 14 day taper, and no taper when one is set.
+    add('taper5_14', 'Taper off 5 to 14 days', Object.assign({}, params, { projectionTaperStartDays: 5, projectionTaperEndDays: 14 }));
+    if (typeof params.projectionTaperEndDays === 'number' && params.projectionTaperEndDays > 0) add('noTaper', 'No taper', Object.assign({}, params, { projectionTaperEndDays: 0 }));
     // The water temperature adjustment, once there are temperatures logged with the tests to fit it to.
     if (parsedPage.tempEvents.length >= BURN_TEMP_MIN_INTERVALS) add('burnTemp', params.burnTempAdjust === true ? 'Water temperature adjustment off' : 'Water temperature adjustment on', Object.assign({}, params, { burnTempAdjust: params.burnTempAdjust !== true }));
     const curTol = typeof params.fcAnomalyTolerancePpm === 'number' ? params.fcAnomalyTolerancePpm : ANOMALY_TOLERANCE_PPM;
-    for (const t of [0, 1, 3]) if (t !== curTol) add(`tol${t}`, t === 0 ? 'FC anomaly check off' : `FC anomaly tolerance ${t} ppm`, Object.assign({}, params, { fcAnomalyTolerancePpm: t }));
+    for (const t of [1, 3]) if (t !== curTol) add(`tol${t}`, `FC anomaly tolerance ${t} ppm`, Object.assign({}, params, { fcAnomalyTolerancePpm: t }));
 
     // How much less is used at night than by day: the alternatives are scored on the same readings (see describeNightBurn for what Tune says about them).
+    // The nearest value below and above the one in use.
     const curNight = typeof params.nightBurnRatio === 'number' && params.nightBurnRatio > 0 ? params.nightBurnRatio : NIGHT_BURN_RATIO_DEFAULT;
     if (params.sunriseTime && params.sunsetTime && !(params.daytimeSharePct > 0)) {
-        for (const r of [0.25, 0.5, 0.75, 1]) if (Math.abs(r - curNight) > 1e-9) add(`night${r}`, `Night burn ${r} of the day rate`, Object.assign({}, params, { nightBurnRatio: r }));
+        const ratios = [0.25, 0.5, 0.75, 1];
+        const below = ratios.filter(r => r < curNight - 1e-9), above = ratios.filter(r => r > curNight + 1e-9);
+        for (const r of [below[below.length - 1], above[0]]) if (typeof r === 'number') add(`night${r}`, `Night burn ${r} of the day rate`, Object.assign({}, params, { nightBurnRatio: r }));
     }
 
     // Readings worth scoring: a previous reading 0.1 to 14 days earlier, within the lookback.

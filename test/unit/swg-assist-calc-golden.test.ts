@@ -110,3 +110,24 @@ describe('the formatter cache changes no result', () => {
         expect(after).toEqual(before);
     }, 120000);
 });
+
+describe('the what-if sweep variants', () => {
+    it('scores 15 alternatives for the live setup (window 14, weighting 65%, no taper, night burn 0.5, water temperatures logged)', async () => {
+        const sweep = await buildWhatIfSweep(bandParams, { lookbackDays: 20, html: HTML, archive });
+        expect(sweep.variants[0].key).toBe('current');
+        expect(sweep.variants.slice(1).map(v => v.key).sort()).toEqual([
+            'burnTemp', 'creditToggle', 'night0.25', 'night0.75', 'noDaylight', 'taper5_14', 'tol1', 'tol3',
+            'weight0.5', 'weight0.75', 'weight0.85', 'weight1', 'window10', 'window21', 'window28'].sort());
+        const taper = sweep.variants.find(v => v.key === 'taper5_14');
+        expect(taper.settings).toEqual({ projectionTaperStartDays: 5, projectionTaperEndDays: 14 });
+    }, 60000);
+
+    it('offers no taper when a taper is set, and leaves out the value in use', async () => {
+        const p = Object.assign({}, bandParams, { windowDays: 21, projectionWeight: 0.5, projectionTaperStartDays: 3, projectionTaperEndDays: 8, nightBurnRatio: 1 });
+        const keys = (await buildWhatIfSweep(p, { lookbackDays: 20, html: HTML, archive })).variants.map(v => v.key);
+        expect(keys).toContain('noTaper');
+        expect(keys).not.toContain('window21');
+        expect(keys).not.toContain('weight0.5');
+        expect(keys.filter(k => k.indexOf('night') === 0)).toEqual(['night0.75']);
+    }, 60000);
+});

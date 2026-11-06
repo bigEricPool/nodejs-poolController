@@ -103,7 +103,11 @@ future). The error is projected minus measured.
   error by gap since the previous reading, how often the next-test range held, and how often the measured FC was more than
   1 ppm below or above the projection.
 * **What-If Sweep.** Alternative settings are scored on the same readings. For each, the change in mean absolute error comes
-  with a 90% bootstrap range, and it is called better or worse only when that range excludes zero.
+  with a 90% bootstrap range, and it is called better or worse only when that range excludes zero. Since 6 November 2026 it
+  scores about 15 alternatives (it was about 25, which made a Tune take many minutes on a Raspberry Pi): averaging windows of
+  10, 14, 21 and 28 days, projection weightings of 50, 65, 75, 85 and 100%, a 5 to 14 day taper (and no taper when one is
+  set), daylight weighting off, the liquid chlorine credit toggled, the water temperature adjustment toggled, anomaly
+  tolerances of 1 and 3 ppm, and the night burn values next to the one in use. The measurements below used the older, wider set.
 * **Tune.** It needs at least 15 scorable readings, takes the best clearly better alternative, and asks you to wait for about
   10 new readings before tuning again, because every pass is scored on the same history.
 
