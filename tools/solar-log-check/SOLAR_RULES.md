@@ -138,8 +138,18 @@ solar is started by a check and by nothing else.
   the pump primed after a stop). An njsPC restart clears it too.
 
 Nocturnal cooling follows the same rules with the directions reversed: it runs at night, the
-collector must be cooler than the water, and the stop level is the cool setpoint plus the run
-delta minus the hysteresis.
+collector must be cooler than the water, and the Cool Point is its target as the Heat Point is
+heating's. It starts when the water is above the Cool Point, stops when the water falls to the
+Cool Point minus the hysteresis, and after that stop restarts only above the Cool Point plus the
+hysteresis.
+
+- **Changed from upstream.** Upstream (#925) cooled only while the water was above the Cool Point
+  plus the run delta, so a Cool Point of 80 with a run delta of 3 stopped near 83. An existing
+  Cool Point now cools about the run delta further.
+- **Heating and cooling can both run.** With the Cool Point below the Heat Point plus the
+  hysteresis, night cooling pulls the water under the level daytime heating restarts at, and the
+  two undo each other every day. That is allowed, for whoever wants it; dashPanel shows a note
+  beside the Cool Point when the setpoints are set that way.
 
 - **At sunrise a cooling run ends.** The night is part of the rule that keeps it running, so it
   stops then as a plain stop: no reheat guard and no hysteresis wait.
