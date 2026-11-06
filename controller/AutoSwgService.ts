@@ -1727,6 +1727,9 @@ export async function buildProjectionAccuracy(params: AutoSwgParams, options: { 
         if (k < minK) { skipped++; continue; } // no SWG record behind this reading yet
         const days = (t2.getTime() - t1.getTime()) / 86400000;
         if (days < 0.1 || days > 14) { skipped++; continue; }
+        // One calculation per reading takes a few hundred ms on a Raspberry Pi and none of it awaits anything, so without this the whole loop (about 35 s for a
+        // Tune) holds njsPC's event loop: REM's relay latches expire (the pump drops) and the serial port times out. Let everything else run between them.
+        await yieldToEventLoop();
         try {
             const r = await computeRecommendation(Object.assign({}, params, { inFlight: undefined, asOf: new Date(t2.getTime() - 60000) }), html, options.localSwgEntries || [], undefined, options.archive);
             if (!r.mostRecentFc || r.mostRecentFc.ts !== t1.toISOString()) { skipped++; continue; }
