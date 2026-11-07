@@ -1994,6 +1994,8 @@ export class BodyHeaterTypeState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
 }
+// When each body's tempTime was last sent out, by body id (BodyTempState objects are made afresh on each lookup, so this is kept here).
+const bodyTempTimeSent: Map<number, number> = new Map<number, number>();
 export class BodyTempState extends EqState {
     public dataName = 'bodyTempState';
     public initData() {
@@ -2013,10 +2015,21 @@ export class BodyTempState extends EqState {
     public set name(val: string) { this.setDataVal('name', val); }
     public get temp(): number { return this.data.temp; }
     public set temp(val: number) {
+        const changed = this.data.temp !== val;
         this.setDataVal('temp', val);
-        // When the temperature was last fed, to the minute (so it changes, and is sent out, once a minute at most). A dashboard shows it as the
-        // time the reading is as of: a body that is off, or a feed that has stopped, keeps its old time.
-        if (typeof val === 'number' && !isNaN(val)) { const fed = new Date(); fed.setSeconds(0, 0); this.setDataVal('tempTime', fed.toISOString()); }
+        // When the temperature was last fed, to the minute. A dashboard shows it as the time the reading is as of: a body that is off, or a feed
+        // that has stopped, keeps its old time. On Nixie, where njsPC reads the sensors itself, it goes out each minute. With an outdoor control
+        // panel it goes out with a changed reading, and on its own at most every 5 minutes, so a steady reading does not send every body out once
+        // a minute; in between it is kept up to date without being sent.
+        if (typeof val === 'number' && !isNaN(val)) {
+            const fed = new Date(); fed.setSeconds(0, 0);
+            const iso = fed.toISOString();
+            if (this.data.tempTime !== iso) {
+                const sent = bodyTempTimeSent.get(this.data.id);
+                if (changed || sys.controllerType === ControllerType.Nixie || typeof sent === 'undefined' || fed.getTime() - sent >= 5 * 60000) { this.setDataVal('tempTime', iso); bodyTempTimeSent.set(this.data.id, fed.getTime()); }
+                else this.data.tempTime = iso;
+            }
+        }
     }
     public get tempTime(): string { return this.data.tempTime; }
     // The average of the last 24 hours of readings while the body was on, and how many hours it covers (see TempHistory.ts and State.sampleTemps).

@@ -221,3 +221,33 @@ are the collector sensors of the other bodies.
 
 `solar_log_check.py` in this folder reads these lines and reports the runs, what held solar off
 and for how long, and what each check did.
+
+
+## 11. Other heaters on the same body
+
+These rules are for a solar heater njsPC controls itself (a Nixie or REM heater), in the Solar
+and Solar Preferred heat modes. Heaters an outdoor control panel runs are not touched, and the
+rules for gas, heat pump, UltraTemp, hybrid and MasterTemp heaters are as upstream. njsPC goes
+through a body's heaters solar first and stops at the first one that runs. Where solar meets the
+others:
+
+- **A pending solar start holds back the backup heater.** In Solar Preferred, while solar waits
+  out the settle delay, or its valve delay check runs or has decided to start, a gas, MasterTemp
+  or hybrid heater after it is not started. Without these delays solar would have started at once
+  and the backup heater would not have run. One that is already running stays on until solar
+  starts, so it is not stopped and started around each check. After a check turns a start down
+  the backup heater may run through the check period, since solar is not expected to run then.
+- **Nocturnal cooling keeps clear of a backup heater.** When another heater can heat the body in
+  the current heat mode (gas in Solar Preferred, which heats its Stop Temp Delta past the Heat
+  Point; MasterTemp, to the Heat Point; hybrid in any mode, 1 past it), cooling works to no lower
+  than the highest level that heater heats to plus the hysteresis, in place of a lower Cool Point.
+  Cooling then never starts at the level that heater leaves the water at, and never takes the
+  water under the Heat Point, where that heater would start again; otherwise the two would take
+  turns all night. The dashboard note and dashPanel's "cooling stops at" label say so when it
+  applies. On a body heated by solar only the Cool Point is used as set.
+- **The note on why solar is waiting** is not shown while another heater heats the body.
+- **Heat pumps and UltraTemp** cool to the same Cool Point in their own heat modes. Solar never
+  runs in those modes, so the two do not meet.
+- **dashPanel** lists in Solar Controls only the bodies a solar heater serves. A body that also
+  has another heater keeps its Cool Point at least the Heat Point + 1, as the Heat Settings popup
+  does; on a body heated by solar only it may be lower.
