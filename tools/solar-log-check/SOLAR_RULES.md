@@ -141,7 +141,9 @@ Nocturnal cooling follows the same rules with the directions reversed: it runs a
 collector must be cooler than the water, and the Cool Point is its target as the Heat Point is
 heating's. It starts when the water is above the Cool Point, stops when the water falls to the
 Cool Point minus the hysteresis, and after that stop restarts only above the Cool Point plus the
-hysteresis.
+hysteresis. A change to the Heat Point, the Cool Point or the heat mode clears a stop at the target
+and the reheat guard, so the new setting applies at the next check (upstream cleared them for the
+Heat Point and heat mode only).
 
 - **Changed from upstream.** Upstream (#925) cooled only while the water was above the Cool Point
   plus the run delta, so a Cool Point of 80 with a run delta of 3 stopped near 83. An existing

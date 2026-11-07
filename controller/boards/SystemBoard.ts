@@ -1825,6 +1825,8 @@ export class BodyCommands extends BoardCommands {
         let bdy = sys.bodies.getItemById(body.id);
         let bstate = state.temps.bodies.getItemById(body.id);
         bdy.coolSetpoint = bstate.coolSetpoint = setPoint;
+        // As a Heat Point change does: a new Cool Point clears a stop at the cooling target, so cooling is judged against it at the next check.
+        sys.board.heaters.clearPrevHeaterOffTemp();
         state.emitEquipmentChanges();
         sys.board.heaters.syncHeaterStates();
         return Promise.resolve(bstate);
