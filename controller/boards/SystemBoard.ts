@@ -4653,9 +4653,10 @@ export class HeaterCommands extends BoardCommands {
                                                 if (bh.id === heater.id || bh.master !== 1) continue;
                                                 const bt = sys.board.valueMaps.heaterTypes.transform(bh.type).name;
                                                 let over: number = undefined;
-                                                if ((bt === 'gas' || bt === 'maxetherm' || bt === 'jxi' || bt === 'lxi') && (mode === 'heater' || mode === 'solarpref' || mode === 'heatpumppref' || mode === 'ultratemppref')) over = typeof bh.stopTempDelta === 'number' ? bh.stopTempDelta : 0;
-                                                else if (bt === 'mastertemp' && (mode === 'mtheater' || mode === 'heatpumppref' || mode === 'ultratemppref' || mode === 'solarpref')) over = 0;
-                                                else if (bt === 'hybrid' && mode !== 'off') over = 1;
+                                                // Solar runs only in Solar and Solar Preferred: gas and MasterTemp heat in Solar Preferred, hybrid in any mode but off.
+                                                if ((bt === 'gas' || bt === 'maxetherm' || bt === 'jxi' || bt === 'lxi') && mode === 'solarpref') over = typeof bh.stopTempDelta === 'number' ? bh.stopTempDelta : 0;
+                                                else if (bt === 'mastertemp' && mode === 'solarpref') over = 0;
+                                                else if (bt === 'hybrid') over = 1;
                                                 if (typeof over === 'number' && (typeof backupTop === 'undefined' || cfgBody.heatSetpoint + over > backupTop)) { backupTop = cfgBody.heatSetpoint + over; backupName = bh.name; }
                                             }
                                             const coolPoint = typeof backupTop === 'number' ? Math.max(cfgBody.coolSetpoint, backupTop + hysteresis) : cfgBody.coolSetpoint;
