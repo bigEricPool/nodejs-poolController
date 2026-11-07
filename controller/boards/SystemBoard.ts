@@ -4583,11 +4583,15 @@ export class HeaterCommands extends BoardCommands {
                     });
 
                     // Alright so now we should have a sorted array that has preference type heaters first.
+                    // Set by solar when a start of its own is pending: waiting out the settle delay, or its valve delay check under way or decided. A heater
+                    // later in the list (gas, MasterTemp or hybrid in Solar Preferred) is then not started; see below.
+                    let solarHolds = false;
                     for (let j = 0; j < bodyHeaters.length; j++) {
                         let heater: Heater = bodyHeaters[j];
                         let isOn = false;
                         let htype = sys.board.valueMaps.heaterTypes.transform(heater.type);
                         let hstate = state.heaters.getItemById(heater.id, true);
+                        const statusBefore = body.heatStatus;
                         if (heater.master === 1) {
                             if (hstatus !== 'cooldown') {
                                 // We need to do our own calculation as to whether it is on.  This is for Nixie heaters.
@@ -4639,6 +4643,22 @@ export class HeaterCommands extends BoardCommands {
                                             // delay. The panels do the same: "The pump must be ON for a few minutes for operation."
                                             const settleMs = solarSettleMs();
                                             const hysteresis = solarHysteresis();
+                                            // The level nocturnal cooling works to: the Cool Point, unless another heater on the body can heat in this mode (gas, MasterTemp or
+                                            // hybrid, as the cases below start them). That heater heats past the Heat Point (gas by its Stop Temp Delta, hybrid by 1), and
+                                            // cooling that started below that level, or cooled under the Heat Point, would take turns with it all night. So with one, cooling
+                                            // works to no lower than the highest level it heats to plus the hysteresis: it starts above that and stops no lower than that level.
+                                            let backupTop: number = undefined, backupName = '';
+                                            for (let k = 0; k < bodyHeaters.length; k++) {
+                                                const bh = bodyHeaters[k];
+                                                if (bh.id === heater.id || bh.master !== 1) continue;
+                                                const bt = sys.board.valueMaps.heaterTypes.transform(bh.type).name;
+                                                let over: number = undefined;
+                                                if ((bt === 'gas' || bt === 'maxetherm' || bt === 'jxi' || bt === 'lxi') && (mode === 'heater' || mode === 'solarpref' || mode === 'heatpumppref' || mode === 'ultratemppref')) over = typeof bh.stopTempDelta === 'number' ? bh.stopTempDelta : 0;
+                                                else if (bt === 'mastertemp' && (mode === 'mtheater' || mode === 'heatpumppref' || mode === 'ultratemppref' || mode === 'solarpref')) over = 0;
+                                                else if (bt === 'hybrid' && mode !== 'off') over = 1;
+                                                if (typeof over === 'number' && (typeof backupTop === 'undefined' || cfgBody.heatSetpoint + over > backupTop)) { backupTop = cfgBody.heatSetpoint + over; backupName = bh.name; }
+                                            }
+                                            const coolPoint = typeof backupTop === 'number' ? Math.max(cfgBody.coolSetpoint, backupTop + hysteresis) : cfgBody.coolSetpoint;
                                             const valveMs = solarValveDelayMs();
                                             const nowMs = new Date().getTime();
                                             let blockStart = false, waitStop = false, stopNow = false, stopFar = false, holdWhy = '', holdLeftMs = 0, holdTotalMs = settleMs, stopAt = 0, settleHeld = false, failedHold = false;
@@ -4681,7 +4701,7 @@ export class HeaterCommands extends BoardCommands {
                                             // hysteresis, and at least a degree) is not the flow bias the delay is for, for example after the setpoint was changed, so it stops at once.
                                             if (hState.isOn) {
                                                 const wasCooling = hState.isCooling === true;
-                                                stopAt = wasCooling ? (cfgBody.coolSetpoint - hysteresis) : (cfgBody.heatSetpoint + hysteresis);
+                                                stopAt = wasCooling ? (coolPoint - hysteresis) : (cfgBody.heatSetpoint + hysteresis);
                                                 if (!(wasCooling ? waterTemp <= stopAt : waterTemp >= stopAt)) solarStopSince.delete(heater.id);
                                                 else {
                                                     if (!solarStopSince.has(heater.id)) solarStopSince.set(heater.id, nowMs);
@@ -4705,8 +4725,8 @@ export class HeaterCommands extends BoardCommands {
                                                 : (waterTemp < cfgBody.heatSetpoint && (hState.targetStop !== 'heating' || waterTemp < (cfgBody.heatSetpoint - hysteresis)));
                                             const coolWater = (hState.isOn && hState.isCooling === true)
                                                 ? !stopNow
-                                                : (waterTemp > cfgBody.coolSetpoint
-                                                    && (hState.targetStop !== 'cooling' || waterTemp > (cfgBody.coolSetpoint + hysteresis)));
+                                                : (waterTemp > coolPoint
+                                                    && (hState.targetStop !== 'cooling' || waterTemp > (coolPoint + hysteresis)));
                                             const heatOk = state.temps.solar > waterTemp // 1
                                                 && heatWater // 2 and 5
                                                 && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
@@ -4728,7 +4748,7 @@ export class HeaterCommands extends BoardCommands {
                                             const coolAtSpeed = heater.coolingEnabled
                                                 && coolTime
                                                 && state.temps.solar < waterTemp
-                                                && waterTemp > (cfgBody.coolSetpoint - hysteresis)
+                                                && waterTemp > (coolPoint - hysteresis)
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
                                                 && (waterTemp - state.temps.solar) > (heater.stopTempDelta + startMargin);
                                             // What the water is expected to read at the solar pump speed: the reading now plus the difference the last check saw between the two speeds
@@ -4749,8 +4769,8 @@ export class HeaterCommands extends BoardCommands {
                                             const coolPred = (margin: number) => heater.coolingEnabled
                                                 && coolTime
                                                 && state.temps.solar < waterPred
-                                                && waterPred > (cfgBody.coolSetpoint + margin)
-                                                && (hState.targetStop !== 'cooling' || waterPred > (cfgBody.coolSetpoint + hysteresis + margin))
+                                                && waterPred > (coolPoint + margin)
+                                                && (hState.targetStop !== 'cooling' || waterPred > (coolPoint + hysteresis + margin))
                                                 && (typeof hState.prevHeaterOffTemp === 'undefined' || ((hState.prevHeaterOffTemp - state.temps.solar) > heater.startTempDelta))
                                                 && (waterPred - state.temps.solar) > (heater.stopTempDelta + startMargin + margin);
                                             const heatBegin = valveMs > 0 ? (heatOk && heatPred(0)) : heatOk;
@@ -4874,6 +4894,10 @@ export class HeaterCommands extends BoardCommands {
                                                 isHeating = true;
                                                 isCooling = true;
                                             }
+                                            // A start that is pending holds back the heaters after solar in the list. Without the settle and valve delays solar would have
+                                            // started at once, and a backup heater was never started for those minutes. A start the valve delay check turned down does not
+                                            // hold them: the check period after it is time solar is not expected to run.
+                                            if (!isOn && !stopping && (valveWait || typeof committed !== 'undefined' || (blockStart && !failedHold && (heatBegin || coolBegin)))) solarHolds = true;
                                             if (isOn) {
                                                 // The heater reports on: this is a reading with solar running. (While it is still being switched on the reading is the check's.)
                                                 if (hState.isOn) solarRunReading.set(heater.id, { temp: body.temp, at: nowMs });
@@ -4924,7 +4948,7 @@ export class HeaterCommands extends BoardCommands {
                                                 if (firstOffPass) { if (collectorStop) solarGuardAt.set(heater.id, nowMs); else solarGuardAt.delete(heater.id); }
                                                 // A stop because the water stayed past the stop level waits for the hysteresis on the other side before the next start.
                                                 if (firstOffPass) hState.targetStop = (!collectorStop && stopNow) ? (hState.isCooling ? 'cooling' : 'heating') : undefined;
-                                                const restartAt = hState.isCooling ? (cfgBody.coolSetpoint + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
+                                                const restartAt = hState.isCooling ? (coolPoint + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
                                                 solarOffNoted.add(heater.id);
                                                 if (firstOffPass && typeof solarReturn !== 'undefined') logger.solar(`Solar ${heater.name} (${body.name}): as it turned off the return read ${solarReturn}, ${Math.abs(Math.round((solarReturn - body.temp) * 10) / 10)} ${solarReturn - body.temp >= 0 ? 'above' : 'below'} the water at ${Math.round(body.temp * 100) / 100}.`);
                                                 if (logger.solarExplain && firstOffPass) logger.solar(`Solar ${heater.name} (${body.name}) turned off because ${collectorStop ? 'the collector lead over the water fell to the run delta ' + heater.stopTempDelta + ' (reheat guard set: the collector must rise ' + heater.startTempDelta + ' above ' + (Math.round(solarT * 10) / 10) + ')' : 'the water was ' + (hState.isCooling ? 'at or below ' : 'at or above ') + stopAt + (stopFar ? ' by ' + Math.max(hysteresis, 1) + ' or more, so there was no wait' : ' for ' + Math.round(settleMs / 1000) + ' s') + ' (no reheat guard set; solar restarts when the water is ' + (hState.isCooling ? 'above ' : 'below ') + restartAt + ')'}.`);
@@ -4976,9 +5000,10 @@ export class HeaterCommands extends BoardCommands {
                                                     if (coolWanted && (!(waterT < cfgBody.heatSetpoint) || (night && (key === 'collector-not-warmer' || key === 'run-delta')))) {
                                                         kind = 'nocturnal cooling'; key = ''; why = '';
                                                         if (!night) { key = 'cool-daytime'; why = 'it is daytime (nocturnal cooling runs only at night)'; }
+                                                        else if (!(waterT > coolPoint)) { key = 'cool-backup'; why = `the water (${r1(waterT)}) is not above ${r1(coolPoint)}: ${backupName} can heat in this mode, to ${r1(backupTop)}, so cooling works to no lower than that plus the ${hysteresis} degree hysteresis, above the Cool Point ${cfgBody.coolSetpoint}, and the two do not take turns`; }
                                                         else if (!(solarT < waterT)) { key = 'cool-collector-not-cooler'; why = `the collector (${r1(solarT)}) is not cooler than the water (${r1(waterT)})`; }
                                                         else if (!((waterT - solarT) > heater.stopTempDelta)) { key = 'cool-run-delta'; why = `the water is only ${r1(waterT - solarT)} warmer than the collector and needs to be more than ${heater.stopTempDelta} (the run delta)`; }
-                                                        else if (hState.targetStop === 'cooling' && !(waterT > (cfgBody.coolSetpoint + hysteresis))) { key = 'cool-hysteresis'; why = `cooling stopped at its target and restarts only when the water (${r1(waterT)}) is above ${cfgBody.coolSetpoint + hysteresis}: the cool setpoint plus the ${hysteresis} degree hysteresis`; }
+                                                        else if (hState.targetStop === 'cooling' && !(waterT > (coolPoint + hysteresis))) { key = 'cool-hysteresis'; why = `cooling stopped at its target and restarts only when the water (${r1(waterT)}) is above ${r1(coolPoint + hysteresis)}: the ${coolPoint === cfgBody.coolSetpoint ? 'cool setpoint' : 'level cooling works to (kept clear of ' + backupName + ')'} plus the ${hysteresis} degree hysteresis`; }
                                                         else if (typeof prevOff !== 'undefined' && !((prevOff - solarT) > heater.startTempDelta)) { key = 'cool-reheat'; why = `the collector (${r1(solarT)}) has only dropped ${r1(prevOff - solarT)} below where it was when solar last turned off (${r1(prevOff)}); it must drop more than ${heater.startTempDelta} (the start delta), to below ${r1(prevOff - heater.startTempDelta)}`; }
                                                     }
                                                     else if (!(waterT < cfgBody.heatSetpoint)) { key = 'at-target'; repeat = false; kind = 'heating'; why = `the water (${r1(waterT)}) is not below the setpoint ${cfgBody.heatSetpoint}${heater.coolingEnabled ? ' and not above the cool setpoint ' + cfgBody.coolSetpoint : ''}`; }
@@ -4993,7 +5018,8 @@ export class HeaterCommands extends BoardCommands {
                                                         else if (key === 'collector-not-warmer') heatNote = 'Solar waiting: the collector is not warmer than the water';
                                                         else if (key === 'cool-run-delta') heatNote = `Cooling waiting: the water needs to be more than ${heater.stopTempDelta} above the collector`;
                                                         else if (key === 'cool-collector-not-cooler') heatNote = 'Cooling waiting: the collector is not cooler than the water';
-                                                        else if (key === 'cool-hysteresis') heatNote = `Cooling waiting: the water must rise above ${cfgBody.coolSetpoint + hysteresis} to restart`;
+                                                        else if (key === 'cool-hysteresis') heatNote = `Cooling waiting: the water must rise above ${r1(coolPoint + hysteresis)} to restart`;
+                                                        else if (key === 'cool-backup') heatNote = `Cooling waiting: the water must be above ${r1(coolPoint)} (${backupName} heats to ${r1(backupTop)})`;
                                                         else if (key === 'cool-reheat') heatNote = `Cooling waiting: the collector must fall below ${r1(prevOff - heater.startTempDelta)} (now ${r1(solarT)})`;
                                                     }
                                                     if (key !== '') {
@@ -5179,6 +5205,14 @@ export class HeaterCommands extends BoardCommands {
                                 }
                                 // logger.debug(`Heater Type: ${htype.name} Mode:${mode} Temp: ${body.temp} Setpoint: ${cfgBody.setPoint} Status: ${body.heatStatus}`);
                             }
+                            // While a solar start is pending another heater is not started. One that is already running is left on until solar starts, so it
+                            // is not stopped and restarted around each valve delay check.
+                            if (solarHolds && isOn && !hstate.isOn && htype.name !== 'solar') {
+                                isOn = false;
+                                isHeating = false;
+                                isCooling = false;
+                                body.heatStatus = statusBefore;
+                            }
                         }
                         else {
                             let mode = sys.board.valueMaps.heatModes.getName(body.heatMode);
@@ -5210,6 +5244,8 @@ export class HeaterCommands extends BoardCommands {
                                     break;
                             }
                         }
+                        // With another heater heating the body, a note on why solar is waiting would read as the state of the body: it is not shown.
+                        if (isOn === true && htype.name !== 'solar') heatNote = undefined;
                         if (isOn === true && typeof hon.find(elem => elem === heater.id) === 'undefined') {
                             hon.push(heater.id);
                             if (heater.master === 1 && isOn) (async () => {
@@ -5425,6 +5461,18 @@ export class ValveCommands extends BoardCommands {
                         else {
                             let circ = state.circuits.getInterfaceById(valve.circuit);
                             isDiverted = utils.makeBool(circ.isOn);
+                            // A valve on a virtual solar circuit is a solar valve. While the valve delay check runs the pump at its solar speed the circuit is on
+                            // but solar is not, so the valve stays closed until solar starts (solar1 to solar4 follow the solar heater on their own body).
+                            if (isDiverted && solarValveTrial.size > 0) {
+                                const vc = sys.board.valueMaps.virtualCircuits.getName(valve.circuit);
+                                if (typeof vc === 'string' && vc.indexOf('solar') === 0) {
+                                    const m = /^solar([1-4])$/.exec(vc);
+                                    const vcBody = m ? parseInt(m[1], 10) : undefined;
+                                    const solarType = sys.board.valueMaps.heaterTypes.encode('solar', -1);
+                                    const running = typeof state.heaters.find(x => x.type.val === solarType && x.isOn === true && (typeof vcBody === 'undefined' || x.bodyId === vcBody)) !== 'undefined';
+                                    if (!running) isDiverted = false;
+                                }
+                            }
                         }
                     }
                     else

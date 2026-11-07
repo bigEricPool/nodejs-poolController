@@ -394,12 +394,12 @@ export class State implements IState {
                 ssched.divergedSince = undefined;
                 if (typeof ssched.scheduleTime !== 'undefined') ssched.scheduleTime.calculated = false;
             }
-            // The virtual circuits (solar, heater, freeze ...) are worked out from the heaters and body states, so they start
-            // fresh too. A pump's circuit list can use one of them (for example the virtual solar circuit starting a pump speed),
-            // and a stale "solar: on" left over from before the restart would drive that pump speed for the few seconds before
-            // the first status pass recomputes it.
-            if (typeof sdata.virtualCircuits !== 'undefined') for (let i = 0; i < sdata.virtualCircuits.length; i++) sdata.virtualCircuits[i].isOn = false;
         }
+        // The virtual circuits (solar, heater, freeze ...) are worked out from the heaters and body states, so they start
+        // fresh too. A pump's circuit list can use one of them (for example the virtual solar circuit starting a pump speed),
+        // and a stale "solar: on" left over from before the restart would drive that pump speed for the few seconds before
+        // the first status pass recomputes it.
+        if (typeof sdata.virtualCircuits !== 'undefined') for (let i = 0; i < sdata.virtualCircuits.length; i++) sdata.virtualCircuits[i].isOn = false;
         // Solar's "reheat above this temp before turning back on" guard (see SystemBoard.ts's
         // syncHeaterStates()/clearPrevHeaterOffTemp(), #925) is only ever cleared reactively --
         // when a body circuit turns off, or the user touches the heat mode/setpoint. A value left
@@ -1808,6 +1808,8 @@ export class BodyHeaterTypeState extends EqState {
     public get name(): string { return this.data.name; }
     public set name(val: string) { this.setDataVal('name', val); }
 }
+// When each body's tempTime was last sent out, by body id (BodyTempState objects are made afresh on each lookup, so this is kept here).
+const bodyTempTimeSent: Map<number, number> = new Map<number, number>();
 export class BodyTempState extends EqState {
     public dataName = 'bodyTempState';
     public initData() {
@@ -1827,10 +1829,20 @@ export class BodyTempState extends EqState {
     public set name(val: string) { this.setDataVal('name', val); }
     public get temp(): number { return this.data.temp; }
     public set temp(val: number) {
+        const changed = this.data.temp !== val;
         this.setDataVal('temp', val);
-        // When the temperature was last fed, to the minute (so it changes, and is sent out, once a minute at most). A dashboard shows it as the
-        // time the reading is as of: a body that is off, or a feed that has stopped, keeps its old time.
-        if (typeof val === 'number' && !isNaN(val)) { const fed = new Date(); fed.setSeconds(0, 0); this.setDataVal('tempTime', fed.toISOString()); }
+        // When the temperature was last fed, to the minute. A dashboard shows it as the time the reading is as of: a body that is off, or a feed
+        // that has stopped, keeps its old time. It goes out with a changed reading; on its own, so a steady reading does not send every body out
+        // once a minute on every controller, at most every 5 minutes. In between it is kept up to date without being sent.
+        if (typeof val === 'number' && !isNaN(val)) {
+            const fed = new Date(); fed.setSeconds(0, 0);
+            const iso = fed.toISOString();
+            if (this.data.tempTime !== iso) {
+                const sent = bodyTempTimeSent.get(this.data.id);
+                if (changed || typeof sent === 'undefined' || fed.getTime() - sent >= 5 * 60000) { this.setDataVal('tempTime', iso); bodyTempTimeSent.set(this.data.id, fed.getTime()); }
+                else this.data.tempTime = iso;
+            }
+        }
     }
     public get tempTime(): string { return this.data.tempTime; }
     public get type(): number { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : -1; }
