@@ -1832,14 +1832,15 @@ export class BodyTempState extends EqState {
         const changed = this.data.temp !== val;
         this.setDataVal('temp', val);
         // When the temperature was last fed, to the minute. A dashboard shows it as the time the reading is as of: a body that is off, or a feed
-        // that has stopped, keeps its old time. It goes out with a changed reading; on its own, so a steady reading does not send every body out
-        // once a minute on every controller, at most every 5 minutes. In between it is kept up to date without being sent.
+        // that has stopped, keeps its old time. On Nixie, where njsPC reads the sensors itself, it goes out each minute. With an outdoor control
+        // panel it goes out with a changed reading, and on its own at most every 5 minutes, so a steady reading does not send every body out once
+        // a minute; in between it is kept up to date without being sent.
         if (typeof val === 'number' && !isNaN(val)) {
             const fed = new Date(); fed.setSeconds(0, 0);
             const iso = fed.toISOString();
             if (this.data.tempTime !== iso) {
                 const sent = bodyTempTimeSent.get(this.data.id);
-                if (changed || typeof sent === 'undefined' || fed.getTime() - sent >= 5 * 60000) { this.setDataVal('tempTime', iso); bodyTempTimeSent.set(this.data.id, fed.getTime()); }
+                if (changed || sys.controllerType === ControllerType.Nixie || typeof sent === 'undefined' || fed.getTime() - sent >= 5 * 60000) { this.setDataVal('tempTime', iso); bodyTempTimeSent.set(this.data.id, fed.getTime()); }
                 else this.data.tempTime = iso;
             }
         }
