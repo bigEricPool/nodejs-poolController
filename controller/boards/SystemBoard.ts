@@ -28,6 +28,7 @@ import { RestoreResults } from '../../web/Server';
 import { setTimeout } from 'timers/promises';
 import { setTimeout as setTimeoutSync } from 'timers';
 import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnSensor, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs } from '../solar/SolarSettings';
+import { solarRuntime as rt, SOLAR_START_WATCH_MS } from '../solar/SolarRuntime';
 
 
 export class byteValueMap extends Map<number, any> {
@@ -2434,8 +2435,8 @@ export class CircuitCommands extends BoardCommands {
                             }
                             // A start waiting out the valve delay runs the pump at its solar speed before the valve relay is switched on.
                             if (!bState) {
-                                for (let j = 0; j < poolStates.length && !bState; j++) bState = solarValveWaiting(poolStates[j].id);
-                                for (let j = 0; j < spaStates.length && !bState; j++) bState = solarValveWaiting(spaStates[j].id);
+                                for (let j = 0; j < poolStates.length && !bState; j++) bState = rt.isValveCheckRunning(poolStates[j].id);
+                                for (let j = 0; j < spaStates.length && !bState; j++) bState = rt.isValveCheckRunning(spaStates[j].id);
                             }
                         }
                         break;
@@ -2454,7 +2455,7 @@ export class CircuitCommands extends BoardCommands {
                                 let hstate: HeaterState;
                                 if (hstatus === 'solar') hstate = state.heaters.find(x => x.bodyId === bodyState.id && x.startupDelay !== true && x.type.val === solarType && x.isOn === true);
                                 else if (hstatus === 'cooling') hstate = state.heaters.find(x => x.bodyId === bodyState.id && x.startupDelay !== true && x.type.val === solarType && x.isCooling === true);
-                                bState = typeof hstate !== 'undefined' || solarValveWaiting(bodyState.id);
+                                bState = typeof hstate !== 'undefined' || rt.isValveCheckRunning(bodyState.id);
                                 if (bState) break;
                             }
                         }
@@ -2467,7 +2468,7 @@ export class CircuitCommands extends BoardCommands {
                                 let hstate: HeaterState;
                                 if (hstatus === 'solar') hstate = state.heaters.find(x => x.bodyId === bodyState.id && x.startupDelay !== true && x.type.val === solarType && x.isOn === true);
                                 else if (hstatus === 'cooling') hstate = state.heaters.find(x => x.bodyId === bodyState.id && x.startupDelay !== true && x.type.val === solarType && x.isCooling === true);
-                                bState = typeof hstate !== 'undefined' || solarValveWaiting(bodyState.id);
+                                bState = typeof hstate !== 'undefined' || rt.isValveCheckRunning(bodyState.id);
                                 if (bState) break;
                             }
                         }
@@ -3989,74 +3990,6 @@ export class ScheduleCommands extends BoardCommands {
     }
     public async updateSunriseSunsetAsync(): Promise<boolean> { return Promise.resolve(false); };
 }
-// The last solar decision logged for each heater id (see the 'warn-solar' log level), so only a change is logged.
-const solarLogged: Map<number, string> = new Map<number, string>();
-// What was last said about why solar is enabled but not running, per heater, so it is said when the reason changes and then
-// only every 15 minutes (see the 'warn-solar' log level).
-const solarWhyNot: Map<number, { key: string; at: number }> = new Map<number, { key: string; at: number }>();
-// A reason that differs from the one last logged, and since when it has held (it is logged once it has held for two minutes).
-const solarWhyNotPending: Map<number, { key: string; since: number }> = new Map<number, { key: string; since: number }>();
-// When each body's pump was first seen running by this process, and what was last logged about a solar settle delay, per heater.
-const solarBodyOnAt: Map<number, number> = new Map<number, number>();
-const solarSettleLog: Map<number, { key: string; at: number }> = new Map<number, { key: string; at: number }>();
-// When the water first reached the level that stops solar, per heater, and has stayed there since (see solarSettleMs).
-const solarStopSince: Map<number, number> = new Map<number, number>();
-// Heaters whose stop has been explained in the log, so repeated status passes while the relay manager answers do not log it again.
-const solarOffNoted: Set<number> = new Set<number>();
-// When the reheat guard was set, per heater, and whether it was night on the heater's last pass. The guard is there for a cloud or a dip in the
-// sun, a matter of minutes. A guard left from an evening stop held solar off the next morning until the collector passed that evening's
-// temperature plus the start delta, so it is cleared at sunset, and when the body's pump has started since it was set (the body was off, or a
-// pump primed after a stop).
-const solarGuardAt: Map<number, number> = new Map<number, number>();
-const solarWasNight: Map<number, boolean> = new Map<number, boolean>();
-// The pump start (solarBodyOnAt of the body) for which the first check has been made, per heater. See the first check in syncHeaterStates.
-const solarFirstCheck: Map<number, number> = new Map<number, number>();
-// Per body, the water reading at the end of a priming run and when priming ended, so that the reading a minute later at the normal speed can be
-// logged beside it: the difference priming shows between the speeds, for comparison with the one the solar checks measure.
-const solarPrimeWatch: Map<number, { high: number; endAt: number }> = new Map<number, { high: number; endAt: number }>();
-// The heaters whose start is waiting out the valve delay: when it began, the body, the status pass that last found the start wanted, whether the
-// delay is over and the valve relay is being switched on, the water and collector readings when the pump sped up (to show what the speed-up did to
-// them), when the progress was last logged, and the temperature a dashboard is to show while the check runs: the reading at the solar pump speed
-// from the check before, when that was still being shown (star), and otherwise the reading from just before the pump sped up.
-const solarValveTrial: Map<number, { at: number; bodyId: number; pass: number; done: boolean; water: number; solar: number; noteAt: number; cool?: boolean; shown: { temp: number; at: number; star: boolean } }> = new Map<number, { at: number; bodyId: number; pass: number; done: boolean; water: number; solar: number; noteAt: number; cool?: boolean; shown: { temp: number; at: number; star: boolean } }>();
-// The start the valve delay check last turned down, per heater: when, what the water read at the solar pump speed, and the setpoints it was judged
-// against. The start is not checked again until the solar check period is over (solarCheckPeriodMs), so the pump is not sped up again and again.
-const solarValveFailed: Map<number, { at: number; water: number; heatSet: number; coolSet: number }> = new Map<number, { at: number; water: number; heatSet: number; coolSet: number }>();
-// At log level verbose, the readings for the first ten minutes after solar turns on, every 30 s, with their change since it turned on: what opening
-// the valve does to the water and collector readings (the flow through the collector changes what reaches the sensor) shows whether a settle period
-// is needed after the valve opens too. Per heater: when solar turned on, the readings then, and when a line was last logged.
-const solarStartWatch: Map<number, { at: number; water: number; solar: number; noteAt: number }> = new Map<number, { at: number; water: number; solar: number; noteAt: number }>();
-const SOLAR_START_WATCH_MS = 10 * 60 * 1000;
-// The water reading from the last pass on which solar was running, per heater, and when that was. After solar turns off the pump goes back to its
-// normal speed and the sensor reads lower, so a dashboard is given this reading (marked, with its time) in place of the live one until the next
-// valve delay check replaces it, or for the solar check period at most.
-const solarRunReading: Map<number, { temp: number; at: number }> = new Map<number, { temp: number; at: number }>();
-// What the valve delay has done today, per heater, so the solar log shows what it costs and what it buys: the starts that went ahead, the starts it turned
-// down, the delays cancelled, and the seconds the pump ran at its solar speed with the valve closed (before a start, and with no start).
-const solarValveStats: Map<number, { day: string; started: number; turnedDown: number; cancelled: number; leadSecs: number; wastedSecs: number }> = new Map<number, { day: string; started: number; turnedDown: number; cancelled: number; leadSecs: number; wastedSecs: number }>();
-function solarValveTally(heaterId: number, outcome: string, secs: number): string {
-    const day = new Date().toDateString();
-    let st = solarValveStats.get(heaterId);
-    if (typeof st === 'undefined' || st.day !== day) {
-        st = { day: day, started: 0, turnedDown: 0, cancelled: 0, leadSecs: 0, wastedSecs: 0 };
-        solarValveStats.set(heaterId, st);
-    }
-    if (outcome === 'started') { st.started++; st.leadSecs += secs; }
-    else {
-        if (outcome === 'turnedDown') st.turnedDown++; else st.cancelled++;
-        st.wastedSecs += secs;
-    }
-    const min = (v: number) => Math.round(v / 6) / 10;
-    return `valve delay today: ${st.started} went on to start solar, ${st.turnedDown} turned down, ${st.cancelled} cancelled; the pump ran at its solar speed with the valve closed ${min(st.leadSecs)} min before starts and ${min(st.wastedSecs)} min with no start`;
-}
-// Counts the passes of syncHeaterStates, so a valve delay that is no longer wanted can be found and dropped.
-let solarPass = 0;
-// Whether a start on the body is waiting out the valve delay. The virtual solar circuit is on for it, so the pump runs at its solar speed.
-function solarValveWaiting(bodyId: number): boolean {
-    let waiting = false;
-    solarValveTrial.forEach((t) => { if (t.bodyId === bodyId) waiting = true; });
-    return waiting;
-}
 export class HeaterCommands extends BoardCommands {
     public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
         try {
@@ -4377,7 +4310,7 @@ export class HeaterCommands extends BoardCommands {
             // heater that is not controlled by the OCP then we need to determine whether it should be on.
             let heaters = sys.heaters.toArray();
             let bodies = state.temps.bodies.toArray();
-            solarPass++;
+            rt.pass++;
             let hon = [];
             for (let i = 0; i < bodies.length; i++) {
                 let body: BodyTempState = bodies[i];
@@ -4390,8 +4323,8 @@ export class HeaterCommands extends BoardCommands {
                 let solarCheckTemp: number = undefined, solarCheckTime: string = undefined, solarChecking: boolean = undefined;
                 let solarReturn: number = undefined, solarGain: number = undefined;
                 let primingNow = false;
-                if (!body.isOn) solarBodyOnAt.delete(body.id);
-                else if (!solarBodyOnAt.has(body.id)) solarBodyOnAt.set(body.id, new Date().getTime());
+                if (!body.isOn) rt.bodyOnAt.delete(body.id);
+                else if (!rt.bodyOnAt.has(body.id)) rt.bodyOnAt.set(body.id, new Date().getTime());
                 // While a pump that serves this body is priming (its status says so) the readings are not the ones solar runs on, so the settle delay starts
                 // when priming is over. A pump serves the body when one of its circuits is the body's circuit or, for a pump with no circuits, when the body it
                 // is set to is this one; a pump that says neither is taken to serve it.
@@ -4410,15 +4343,15 @@ export class HeaterCommands extends BoardCommands {
                             const assoc = sys.board.valueMaps.bodies.transform(pcfg.body).name;
                             if (typeof assoc === 'string' && assoc !== 'poolspa') serves = assoc === `body${body.id}` || (assoc === 'pool' && body.id === 1) || (assoc === 'spa' && body.id === 2);
                         }
-                        if (serves) { solarBodyOnAt.set(body.id, new Date().getTime()); primingNow = true; break; }
+                        if (serves) { rt.bodyOnAt.set(body.id, new Date().getTime()); primingNow = true; break; }
                     }
                 }
                 // The difference priming shows between the speeds: the last reading while priming, and the reading a minute after it ended. Logged only.
                 {
                     const nowP = new Date().getTime();
-                    const pw = solarPrimeWatch.get(body.id);
-                    if (!body.isOn) solarPrimeWatch.delete(body.id);
-                    else if (primingNow) { if (typeof body.temp === 'number') solarPrimeWatch.set(body.id, { high: body.temp, endAt: undefined }); }
+                    const pw = rt.primeWatch.get(body.id);
+                    if (!body.isOn) rt.primeWatch.delete(body.id);
+                    else if (primingNow) { if (typeof body.temp === 'number') rt.primeWatch.set(body.id, { high: body.temp, endAt: undefined }); }
                     else if (typeof pw !== 'undefined') {
                         if (typeof pw.endAt === 'undefined') pw.endAt = nowP;
                         else if (nowP - pw.endAt >= 60000 && typeof body.temp === 'number') {
@@ -4426,7 +4359,7 @@ export class HeaterCommands extends BoardCommands {
                             for (let h = 0; h < state.heaters.length; h++) { const hs = state.heaters.getItemByIndex(h); if (typeof hs.solarSpeedOffset === 'number') off = hs.solarSpeedOffset; }
                             const d = Math.round((pw.high - body.temp) * 100) / 100;
                             logger.solar(`Solar (${body.name}): after priming the water read ${Math.round(pw.high * 100) / 100} at the priming speed and ${Math.round(body.temp * 100) / 100} a minute later at the normal speed, a difference of ${d >= 0 ? '+' : ''}${d}${typeof off === 'number' ? ` (the last solar check measured ${off >= 0 ? '+' : ''}${off})` : ''}.`);
-                            solarPrimeWatch.delete(body.id);
+                            rt.primeWatch.delete(body.id);
                         }
                     }
                 }
@@ -4517,18 +4450,18 @@ export class HeaterCommands extends BoardCommands {
                                             {
                                                 const nightNow = state.heliotrope.isNight;
                                                 if (typeof hState.prevHeaterOffTemp !== 'undefined') {
-                                                    const guardSetAt = solarGuardAt.get(heater.id);
-                                                    const bodyPumpAt = solarBodyOnAt.get(body.id);
+                                                    const guardSetAt = rt.guardAt.get(heater.id);
+                                                    const bodyPumpAt = rt.bodyOnAt.get(body.id);
                                                     let clearWhy = '';
-                                                    if (solarWasNight.get(heater.id) === false && nightNow === true) clearWhy = 'the sun has set';
+                                                    if (rt.wasNight.get(heater.id) === false && nightNow === true) clearWhy = 'the sun has set';
                                                     else if (typeof guardSetAt === 'number' && typeof bodyPumpAt === 'number' && bodyPumpAt > guardSetAt) clearWhy = 'the pump has started again since it was set';
                                                     if (clearWhy !== '') {
                                                         logger.solar(`Solar ${heater.name} (${body.name}): reheat guard cleared (the collector had to rise ${heater.startTempDelta} above ${Math.round(hState.prevHeaterOffTemp * 10) / 10}): ${clearWhy}.`);
                                                         hState.prevHeaterOffTemp = undefined;
-                                                        solarGuardAt.delete(heater.id);
+                                                        rt.guardAt.delete(heater.id);
                                                     }
                                                 }
-                                                if (typeof nightNow === 'boolean') solarWasNight.set(heater.id, nightNow);
+                                                if (typeof nightNow === 'boolean') rt.wasNight.set(heater.id, nightNow);
                                             }
                                             // The water temperature is compared as it reads. It used to be truncated to a whole degree (#1248) so that solar would not stop or restart on
                                             // a reading that had only just touched the setpoint; the hysteresis and the settle delay below do that job, and allow a fractional hysteresis.
@@ -4560,7 +4493,7 @@ export class HeaterCommands extends BoardCommands {
                                             const nowMs = new Date().getTime();
                                             let blockStart = false, waitStop = false, stopNow = false, stopFar = false, holdWhy = '', holdLeftMs = 0, holdTotalMs = settleMs, stopAt = 0, settleHeld = false, failedHold = false;
                                             if (settleMs > 0) {
-                                                const pumpAt = solarBodyOnAt.get(body.id);
+                                                const pumpAt = rt.bodyOnAt.get(body.id);
                                                 const pumpLeft = typeof pumpAt === 'undefined' ? 0 : settleMs - (nowMs - pumpAt);
                                                 const offLeft = typeof hState.endTime === 'undefined' ? 0 : settleMs - (nowMs - hState.endTime.getTime());
                                                 if (!hState.isOn) {
@@ -4576,13 +4509,13 @@ export class HeaterCommands extends BoardCommands {
                                             // checked at once. The reading the check went by, and its time, are published for the dashboard to show in place of the live reading
                                             // (BodyTempState.solarCheckTemp and solarCheckTime).
                                             if (valveMs > 0 && !hState.isOn) {
-                                                const failed = solarValveFailed.get(heater.id);
-                                                if (typeof failed !== 'undefined' && !solarValveTrial.has(heater.id)) {
+                                                const failed = rt.valveFailed.get(heater.id);
+                                                if (typeof failed !== 'undefined' && !rt.valveTrial.has(heater.id)) {
                                                     const moved = cfgBody.heatSetpoint !== failed.heatSet || cfgBody.coolSetpoint !== failed.coolSet;
                                                     const failLeft = moved ? 0 : Math.max(solarCheckPeriodMs(), settleMs, valveMs) - (nowMs - failed.at);
                                                     if (failLeft <= 0) {
                                                         carried = { temp: Math.round(failed.water * 10) / 10, at: failed.at };
-                                                        solarValveFailed.delete(heater.id);
+                                                        rt.valveFailed.delete(heater.id);
                                                     }
                                                     else {
                                                         solarCheckTemp = Math.round(failed.water * 10) / 10;
@@ -4599,16 +4532,16 @@ export class HeaterCommands extends BoardCommands {
                                             if (hState.isOn) {
                                                 const wasCooling = hState.isCooling === true;
                                                 stopAt = wasCooling ? (coolPoint - hysteresis) : (cfgBody.heatSetpoint + hysteresis);
-                                                if (!(wasCooling ? waterTemp <= stopAt : waterTemp >= stopAt)) solarStopSince.delete(heater.id);
+                                                if (!(wasCooling ? waterTemp <= stopAt : waterTemp >= stopAt)) rt.stopSince.delete(heater.id);
                                                 else {
-                                                    if (!solarStopSince.has(heater.id)) solarStopSince.set(heater.id, nowMs);
-                                                    const waited = nowMs - (solarStopSince.get(heater.id) as number);
+                                                    if (!rt.stopSince.has(heater.id)) rt.stopSince.set(heater.id, nowMs);
+                                                    const waited = nowMs - (rt.stopSince.get(heater.id) as number);
                                                     stopFar = (wasCooling ? stopAt - waterTemp : waterTemp - stopAt) >= Math.max(hysteresis, 1);
                                                     if (waited >= settleMs || stopFar) stopNow = true;
                                                     else { waitStop = true; holdWhy = `waiting to stop (the water must stay ${wasCooling ? 'at or below' : 'at or above'} ${stopAt})`; holdLeftMs = settleMs - waited; }
                                                 }
                                             }
-                                            else solarStopSince.delete(heater.id);
+                                            else rt.stopSince.delete(heater.id);
                                             // The water side of the decision: running, it holds until the stop above; stopped, the water must be below the setpoint (heating) or above the
                                             // cool setpoint (cooling), and after a stop at the target, the hysteresis further.
                                             const startMargin = solarStartMargin();
@@ -4676,8 +4609,8 @@ export class HeaterCommands extends BoardCommands {
                                             // more than the run delta, warmer for heating or, at night with nocturnal cooling on, cooler for cooling; and the reheat guard is met), one
                                             // check is made whatever the water side says. It gives the day a reading taken at the solar pump speed and measures the difference between
                                             // the speeds afresh; if the water side passes too, solar starts as from any check. Any check made since the pump started counts as the first.
-                                            const pumpStartedAt = solarBodyOnAt.get(body.id);
-                                            const firstDue = valveMs > 0 && !hState.isOn && typeof pumpStartedAt === 'number' && solarFirstCheck.get(heater.id) !== pumpStartedAt;
+                                            const pumpStartedAt = rt.bodyOnAt.get(body.id);
+                                            const firstDue = valveMs > 0 && !hState.isOn && typeof pumpStartedAt === 'number' && rt.firstCheck.get(heater.id) !== pumpStartedAt;
                                             const firstProbe = firstDue && !heatBegin && !coolBegin && (
                                                 (state.temps.solar > waterPred && (state.temps.solar - waterPred) > (heater.stopTempDelta + startMargin)
                                                     && (typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)))
@@ -4689,11 +4622,11 @@ export class HeaterCommands extends BoardCommands {
                                             // with the hysteresis to spare, and the settle delay has gone by since the pump slowed down again. The difference used is the one the
                                             // turned-down check itself measured, so at the moment it was turned down this cannot be true.
                                             if (failedHold && !settleHeld && blockStart) {
-                                                const failed = solarValveFailed.get(heater.id);
+                                                const failed = rt.valveFailed.get(heater.id);
                                                 if (typeof failed !== 'undefined' && (nowMs - failed.at) >= Math.max(settleMs, valveMs) && ((heatOk && heatPred(hysteresis)) || coolPred(hysteresis))) {
                                                     logger.solar(`Solar ${heater.name} (${body.name}): the readings have moved since the start was turned down ${Math.round((nowMs - failed.at) / 60000)} min ago, so it is checked again before the check period is over: water ${Math.round(body.temp * 100) / 100} (expected ${Math.round(waterPred * 100) / 100} at the solar pump speed), solar ${Math.round(state.temps.solar * 10) / 10}.`);
                                                     carried = { temp: Math.round(failed.water * 10) / 10, at: failed.at };
-                                                    solarValveFailed.delete(heater.id);
+                                                    rt.valveFailed.delete(heater.id);
                                                     blockStart = false; holdWhy = ''; holdLeftMs = 0;
                                                 }
                                             }
@@ -4709,24 +4642,24 @@ export class HeaterCommands extends BoardCommands {
                                             // and switch solar off a fraction of a second after it came on.
                                             let committed: string = undefined;
                                             if (valveMs > 0) {
-                                                const trial = solarValveTrial.get(heater.id);
+                                                const trial = rt.valveTrial.get(heater.id);
                                                 const rd = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
                                                 const rd2 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : v;
                                                 // The change since the pump sped up: what the speed-up does to the water and collector readings is what the valve delay exists to see.
                                                 const chg = (from: any, to: any) => typeof from === 'number' && typeof to === 'number' && isFinite(from) && isFinite(to) ? `${to - from >= 0 ? '+' : ''}${Math.round((to - from) * 100) / 100}` : 'n/a';
                                                 const lead = `water ${rd2(body.temp)}, solar ${rd(state.temps.solar)}, collector minus water ${rd(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}, start delta ${heater.startTempDelta}), setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, night ${state.heliotrope.isNight}`;
                                                 if (hState.isOn) {
-                                                    solarValveTrial.delete(heater.id);
-                                                    solarValveFailed.delete(heater.id);
+                                                    rt.valveTrial.delete(heater.id);
+                                                    rt.valveFailed.delete(heater.id);
                                                 }
                                                 else if (!blockStart && (typeof trial !== 'undefined' || heatBegin || coolBegin || firstProbe)) {
                                                     // Before the pump speeds up the start is judged by the start rules; once it is at its solar speed, by the rules above.
                                                     const ok = typeof trial === 'undefined' ? (heatBegin || coolBegin) : (heatAtSpeed || coolAtSpeed);
-                                                    const t = typeof trial === 'undefined' ? { at: nowMs, bodyId: body.id, pass: solarPass, done: false, water: body.temp, solar: state.temps.solar, noteAt: nowMs, shown: typeof carried !== 'undefined' ? { temp: carried.temp, at: carried.at, star: true } : solarRunReading.has(heater.id) ? { temp: Math.round(solarRunReading.get(heater.id).temp * 10) / 10, at: solarRunReading.get(heater.id).at, star: true } : { temp: Math.round(body.temp * 10) / 10, at: nowMs, star: false } } : trial;
-                                                    t.pass = solarPass;
+                                                    const t = typeof trial === 'undefined' ? { at: nowMs, bodyId: body.id, pass: rt.pass, done: false, water: body.temp, solar: state.temps.solar, noteAt: nowMs, shown: typeof carried !== 'undefined' ? { temp: carried.temp, at: carried.at, star: true } : rt.runReading.has(heater.id) ? { temp: Math.round(rt.runReading.get(heater.id).temp * 10) / 10, at: rt.runReading.get(heater.id).at, star: true } : { temp: Math.round(body.temp * 10) / 10, at: nowMs, star: false } } : trial;
+                                                    t.pass = rt.pass;
                                                     if (typeof trial === 'undefined') {
-                                                        solarValveTrial.set(heater.id, t);
-                                                        if (typeof pumpStartedAt === 'number') solarFirstCheck.set(heater.id, pumpStartedAt);
+                                                        rt.valveTrial.set(heater.id, t);
+                                                        if (typeof pumpStartedAt === 'number') rt.firstCheck.set(heater.id, pumpStartedAt);
                                                         logger.solar(`Solar ${heater.name} (${body.name}): a start looks worthwhile ${(heatBegin || coolBegin) ? 'at the slow pump speed' : 'to check: this is the first check since the pump started, made because the collector is far enough ' + (state.temps.solar > waterPred ? 'above' : 'below') + ' the water (the water side is judged by the check)'}${speedOffset !== 0 ? ` (the water is expected to read ${Math.round(waterPred * 100) / 100} at the solar pump speed, ${speedOffset > 0 ? '+' : ''}${Math.round(speedOffset * 100) / 100} as at the last check)` : ''}, so the pump runs at its solar speed for ${Math.round(valveMs / 1000)} s with the valve relay off, then the start is checked again: ${lead}. The solar circuit turns on with it; the pump speed change follows in the log.`);
                                                     }
                                                     const leftMs = valveMs - (nowMs - t.at);
@@ -4754,14 +4687,14 @@ export class HeaterCommands extends BoardCommands {
                                                             t.cool = !heatAtSpeed && coolAtSpeed;
                                                             committed = t.cool === true ? 'cool' : 'heat';
                                                             const secs = Math.round((nowMs - t.at) / 1000);
-                                                            logger.solar(`Solar ${heater.name} (${body.name}): still worthwhile after ${secs} s at the solar pump speed (${since}), so the valve relay is switched on: ${lead}; ${solarValveTally(heater.id, 'started', secs)}.`);
+                                                            logger.solar(`Solar ${heater.name} (${body.name}): still worthwhile after ${secs} s at the solar pump speed (${since}), so the valve relay is switched on: ${lead}; ${rt.valveTally(heater.id, 'started', secs)}.`);
                                                         }
                                                     }
                                                     else {
-                                                        solarValveTrial.delete(heater.id);
-                                                        solarValveFailed.set(heater.id, { at: nowMs, water: body.temp, heatSet: cfgBody.heatSetpoint, coolSet: cfgBody.coolSetpoint });
+                                                        rt.valveTrial.delete(heater.id);
+                                                        rt.valveFailed.set(heater.id, { at: nowMs, water: body.temp, heatSet: cfgBody.heatSetpoint, coolSet: cfgBody.coolSetpoint });
                                                         hState.solarSpeedOffset = (typeof t.water === 'number' && typeof body.temp === 'number' && isFinite(body.temp - t.water)) ? Math.round(Math.min(5, Math.max(-5, body.temp - t.water)) * 100) / 100 : hState.solarSpeedOffset;
-                                                        solarRunReading.delete(heater.id);
+                                                        rt.runReading.delete(heater.id);
                                                         solarCheckTemp = Math.round(body.temp * 10) / 10;
                                                         solarCheckTime = new Date(nowMs).toISOString();
                                                         const retryMs = Math.max(solarCheckPeriodMs(), settleMs, valveMs);
@@ -4771,14 +4704,14 @@ export class HeaterCommands extends BoardCommands {
                                                             : !(state.temps.solar > body.temp) ? 'the collector is not warmer than the water'
                                                             : !((state.temps.solar - body.temp) > heater.stopTempDelta) ? 'the collector lead fell to the run delta'
                                                             : 'the collector has not risen the start delta above where it was when solar last turned off';
-                                                        logger.solar(`Solar ${heater.name} (${body.name}): not started: after ${secs} s at the solar pump speed ${why} (${since}): ${lead}. The pump returns to its normal speed and the start is checked again in ${Math.round(retryMs / 60000)} min (the solar check period), or at once if the setpoint is changed; ${solarValveTally(heater.id, 'turnedDown', secs)}.`);
+                                                        logger.solar(`Solar ${heater.name} (${body.name}): not started: after ${secs} s at the solar pump speed ${why} (${since}): ${lead}. The pump returns to its normal speed and the start is checked again in ${Math.round(retryMs / 60000)} min (the solar check period), or at once if the setpoint is changed; ${rt.valveTally(heater.id, 'turnedDown', secs)}.`);
                                                     }
                                                 }
                                             }
                                             // A stop that has been decided stands until the heater reports it is off, as a start does. Switching the valve relay off takes a moment, and
                                             // the passes made in that moment see the heater still on; with the collector lead right at the run delta a new water reading used to
                                             // judge solar worth running again, which cleared the reheat guard the stop had just set and reported heating for an instant.
-                                            const stopping = hState.isOn && solarOffNoted.has(heater.id);
+                                            const stopping = hState.isOn && rt.offNoted.has(heater.id);
                                             if (stopping) { }
                                             else if (((heatOk && direct) || committed === 'heat') && committed !== 'cool' && !blockStart && !valveWait) {
                                                 isOn = true;
@@ -4797,12 +4730,12 @@ export class HeaterCommands extends BoardCommands {
                                             if (!isOn && !stopping && (valveWait || typeof committed !== 'undefined' || (blockStart && !failedHold && (heatBegin || coolBegin)))) solarHolds = true;
                                             if (isOn) {
                                                 // The heater reports on: this is a reading with solar running. (While it is still being switched on the reading is the check's.)
-                                                if (hState.isOn) solarRunReading.set(heater.id, { temp: body.temp, at: nowMs });
+                                                if (hState.isOn) rt.runReading.set(heater.id, { temp: body.temp, at: nowMs });
                                             }
                                             else if (typeof solarCheckTemp === 'undefined') {
-                                                const ran = solarRunReading.get(heater.id);
+                                                const ran = rt.runReading.get(heater.id);
                                                 if (typeof ran !== 'undefined') {
-                                                    if (nowMs - ran.at > Math.max(solarCheckPeriodMs(), settleMs, valveMs)) solarRunReading.delete(heater.id);
+                                                    if (nowMs - ran.at > Math.max(solarCheckPeriodMs(), settleMs, valveMs)) rt.runReading.delete(heater.id);
                                                     else {
                                                         solarCheckTemp = Math.round(ran.temp * 10) / 10;
                                                         solarCheckTime = new Date(ran.at).toISOString();
@@ -4817,14 +4750,14 @@ export class HeaterCommands extends BoardCommands {
                                                     if (isOn && hState.isOn) solarGain = Math.round((ret - body.temp) * 10) / 10;
                                                 }
                                             }
-                                            if (isOn) solarOffNoted.delete(heater.id);
+                                            if (isOn) rt.offNoted.delete(heater.id);
                                             if (isOn && !hState.isOn) hState.targetStop = undefined;
-                                            if (!isOn) solarStartWatch.delete(heater.id);
+                                            if (!isOn) rt.startWatch.delete(heater.id);
                                             else {
-                                                let w = solarStartWatch.get(heater.id);
+                                                let w = rt.startWatch.get(heater.id);
                                                 if (typeof w === 'undefined' && !hState.isOn) {
                                                     w = { at: nowMs, water: body.temp, solar: state.temps.solar, noteAt: nowMs };
-                                                    solarStartWatch.set(heater.id, w);
+                                                    rt.startWatch.set(heater.id, w);
                                                     logger.verbose(`Solar ${heater.name} (${body.name}): turning on with water ${Math.round(body.temp * 100) / 100}, collector ${Math.round(state.temps.solar * 10) / 10}; the readings follow every 30 s for ${SOLAR_START_WATCH_MS / 60000} minutes.`);
                                                 }
                                                 else if (typeof w !== 'undefined' && nowMs - w.at <= SOLAR_START_WATCH_MS && nowMs - w.noteAt >= 30000) {
@@ -4840,13 +4773,13 @@ export class HeaterCommands extends BoardCommands {
                                                 const collectorStop = hState.isCooling
                                                     ? (coolTime && (!(solarT < waterTemp) || !((waterTemp - solarT) > heater.stopTempDelta)))
                                                     : (!(solarT > waterTemp) || !((solarT - waterTemp) > heater.stopTempDelta));
-                                                const firstOffPass = !solarOffNoted.has(heater.id);
+                                                const firstOffPass = !rt.offNoted.has(heater.id);
                                                 if (firstOffPass) hState.prevHeaterOffTemp = collectorStop ? solarT : undefined;
-                                                if (firstOffPass) { if (collectorStop) solarGuardAt.set(heater.id, nowMs); else solarGuardAt.delete(heater.id); }
+                                                if (firstOffPass) { if (collectorStop) rt.guardAt.set(heater.id, nowMs); else rt.guardAt.delete(heater.id); }
                                                 // A stop because the water stayed past the stop level waits for the hysteresis on the other side before the next start.
                                                 if (firstOffPass) hState.targetStop = (!collectorStop && stopNow) ? (hState.isCooling ? 'cooling' : 'heating') : undefined;
                                                 const restartAt = hState.isCooling ? (coolPoint + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
-                                                solarOffNoted.add(heater.id);
+                                                rt.offNoted.add(heater.id);
                                                 if (firstOffPass && typeof solarReturn !== 'undefined') logger.solar(`Solar ${heater.name} (${body.name}): as it turned off the return read ${solarReturn}, ${Math.abs(Math.round((solarReturn - body.temp) * 10) / 10)} ${solarReturn - body.temp >= 0 ? 'above' : 'below'} the water at ${Math.round(body.temp * 100) / 100}.`);
                                                 if (logger.solarExplain && firstOffPass) logger.solar(`Solar ${heater.name} (${body.name}) turned off because ${collectorStop ? 'the collector lead over the water fell to the run delta ' + heater.stopTempDelta + ' (reheat guard set: the collector must rise ' + heater.startTempDelta + ' above ' + (Math.round(solarT * 10) / 10) + ')' : 'the water was ' + (hState.isCooling ? 'at or below ' : 'at or above ') + stopAt + (stopFar ? ' by ' + Math.max(hysteresis, 1) + ' or more, so there was no wait' : ' for ' + Math.round(settleMs / 1000) + ' s') + ' (no reheat guard set; solar restarts when the water is ' + (hState.isCooling ? 'above ' : 'below ') + restartAt + ')'}.`);
                                             } // 6  
@@ -4858,16 +4791,16 @@ export class HeaterCommands extends BoardCommands {
                                                         // A wait is shown only when a start is called for once it is over; otherwise the reason solar is off is the note (below).
                                                         if (blockStart && (heatBegin || coolBegin)) heatNote = `Solar waiting to start: ${Math.ceil(holdLeftMs / 60000)} min left ${holdWhy}`;
                                                         else if (waitStop) heatNote = `Solar stops in ${Math.ceil(holdLeftMs / 60000)} min if the water stays ${hState.isCooling ? 'at or below' : 'at or above'} ${stopAt}`;
-                                                const prevNote = solarSettleLog.get(heater.id);
+                                                const prevNote = rt.settleLog.get(heater.id);
                                                 const readings = `water ${r2(body.temp)}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}, start delta ${heater.startTempDelta}), setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, hysteresis ${hysteresis}, night ${state.heliotrope.isNight}`;
                                                 if (held) {
                                                     if (logger.solarExplain && (typeof prevNote === 'undefined' || prevNote.key !== holdWhy || nowMs - prevNote.at >= 60000)) {
-                                                        solarSettleLog.set(heater.id, { key: holdWhy, at: nowMs });
+                                                        rt.settleLog.set(heater.id, { key: holdWhy, at: nowMs });
                                                         logger.solar(`Solar ${heater.name} (${body.name}) settle delay ${holdWhy}, ${Math.ceil(holdLeftMs / 1000)} s left of ${Math.round(holdTotalMs / 1000)} s: ${readings}; without the delay solar would be ${(blockStart && (heatBegin || coolBegin)) ? 'on' : 'off'}.`);
                                                     }
                                                 }
                                                 else if (typeof prevNote !== 'undefined') {
-                                                    solarSettleLog.delete(heater.id);
+                                                    rt.settleLog.delete(heater.id);
                                                     if (logger.solarExplain) logger.solar(`Solar ${heater.name} (${body.name}) settle delay ${prevNote.key} ended: ${readings}; solar is ${isOn ? 'on' : 'off'}.`);
                                                 }
                                             }
@@ -4876,7 +4809,7 @@ export class HeaterCommands extends BoardCommands {
                                             // 15 minutes, not on every status pass. It is logged only when log.solar.explain is on in config.json; the short note for the dashboard is always set.
                                             {
                                                 const r1 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
-                                                if (isOn) solarWhyNot.delete(heater.id);
+                                                if (isOn) rt.whyNot.delete(heater.id);
                                                 else {
                                                     const waterT = body.temp;
                                                     const solarT = state.temps.solar;
@@ -4920,23 +4853,23 @@ export class HeaterCommands extends BoardCommands {
                                                         else if (key === 'cool-reheat') heatNote = `Cooling waiting: the collector must fall below ${r1(prevOff - heater.startTempDelta)} (now ${r1(solarT)})`;
                                                     }
                                                     if (key !== '') {
-                                                        const last = solarWhyNot.get(heater.id);
+                                                        const last = rt.whyNot.get(heater.id);
                                                         const now = new Date().getTime();
                                                         // A changed reason is logged once it has held for two minutes, so a reading hovering on a threshold does not log a pair of lines every
                                                         // pass or two. The same reason is repeated every 15 minutes while it holds.
                                                         let logIt = typeof last === 'undefined';
                                                         if (!logIt && last.key !== key) {
-                                                            const pend = solarWhyNotPending.get(heater.id);
-                                                            if (typeof pend === 'undefined' || pend.key !== key) solarWhyNotPending.set(heater.id, { key: key, since: now });
+                                                            const pend = rt.whyNotPending.get(heater.id);
+                                                            if (typeof pend === 'undefined' || pend.key !== key) rt.whyNotPending.set(heater.id, { key: key, since: now });
                                                             else if (now - pend.since >= 2 * 60 * 1000) logIt = true;
                                                         }
                                                         else if (!logIt) {
-                                                            solarWhyNotPending.delete(heater.id);
+                                                            rt.whyNotPending.delete(heater.id);
                                                             if (repeat && now - last.at >= 15 * 60 * 1000) logIt = true;
                                                         }
                                                         if (logger.solarExplain && logIt) {
-                                                            solarWhyNot.set(heater.id, { key: key, at: now });
-                                                            solarWhyNotPending.delete(heater.id);
+                                                            rt.whyNot.set(heater.id, { key: key, at: now });
+                                                            rt.whyNotPending.delete(heater.id);
                                                             logger.solar(`Solar ${heater.name} (${body.name}, mode ${mode}) is not ${kind}: ${why}. Water ${r1(body.temp)}, solar ${r1(solarT)}, setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, start/run delta ${heater.startTempDelta}/${heater.stopTempDelta}, night ${night}.`);
                                                         }
                                                     }
@@ -4946,8 +4879,8 @@ export class HeaterCommands extends BoardCommands {
                                             // is logged, so this does not repeat on every status pass.
                                             {
                                                 const solarNow = isOn ? (isCooling ? 'cooling' : 'heating') : 'off';
-                                                if (solarLogged.get(heater.id) !== solarNow) {
-                                                    solarLogged.set(heater.id, solarNow);
+                                                if (rt.logged.get(heater.id) !== solarNow) {
+                                                    rt.logged.set(heater.id, solarNow);
                                                     const r2 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : v;
                                                     const r1 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
                                                     const prevOff = hState.prevHeaterOffTemp;
@@ -5206,12 +5139,12 @@ export class HeaterCommands extends BoardCommands {
             }
             // A start that was waiting out the valve delay and was not found wanted in this pass (the body went off, the heat mode changed, the heater
             // was removed) is dropped, so the pump goes back to its normal speed.
-            solarValveTrial.forEach((t, id) => {
-                if (t.pass !== solarPass) {
-                    solarValveTrial.delete(id);
+            rt.valveTrial.forEach((t, id) => {
+                if (t.pass !== rt.pass) {
+                    rt.valveTrial.delete(id);
                     const secs = Math.round((new Date().getTime() - t.at) / 1000);
                     const named = heaters.find(x => x.id === id);
-                    logger.solar(`Solar ${typeof named !== 'undefined' ? named.name : 'heater ' + id}: the valve delay was cancelled after ${secs} s because the start is no longer wanted (the body, the heat mode or the heater changed); ${solarValveTally(id, 'cancelled', secs)}.`);
+                    logger.solar(`Solar ${typeof named !== 'undefined' ? named.name : 'heater ' + id}: the valve delay was cancelled after ${secs} s because the start is no longer wanted (the body, the heat mode or the heater changed); ${rt.valveTally(id, 'cancelled', secs)}.`);
                 }
             });
         } catch (err) { logger.error(`Error synchronizing heater states: ${err.message}`); }
@@ -5360,7 +5293,7 @@ export class ValveCommands extends BoardCommands {
                             isDiverted = utils.makeBool(circ.isOn);
                             // A valve on a virtual solar circuit is a solar valve. While the valve delay check runs the pump at its solar speed the circuit is on
                             // but solar is not, so the valve stays closed until solar starts (solar1 to solar4 follow the solar heater on their own body).
-                            if (isDiverted && solarValveTrial.size > 0) {
+                            if (isDiverted && rt.valveTrial.size > 0) {
                                 const vc = sys.board.valueMaps.virtualCircuits.getName(valve.circuit);
                                 if (typeof vc === 'string' && vc.indexOf('solar') === 0) {
                                     const m = /^solar([1-4])$/.exec(vc);
