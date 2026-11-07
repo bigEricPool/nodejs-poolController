@@ -36,6 +36,72 @@ export interface SolarResult {
     holdsOthers: boolean;
 }
 export class SolarDecision {
+    // Once per pass of syncHeaterStates, before the bodies: counts the passes, so a valve delay no longer wanted is found at the end.
+    public beginPass() {
+        rt.pass++;
+    }
+    // For each body, before its heaters are judged: when its pump was first seen on, restarted while a pump serving it primes, and the
+    // priming reading watch.
+    public beginBody(body: BodyTempState, cfgBody: Body) {
+        let primingNow = false;
+        if (!body.isOn) rt.bodyOnAt.delete(body.id);
+        else if (!rt.bodyOnAt.has(body.id)) rt.bodyOnAt.set(body.id, new Date().getTime());
+        // While a pump that serves this body is priming (its status says so) the readings are not the ones solar runs on, so the settle delay starts
+        // when priming is over. A pump serves the body when one of its circuits is the body's circuit or, for a pump with no circuits, when the body it
+        // is set to is this one; a pump that says neither is taken to serve it.
+        else {
+            for (let p = 0; p < state.pumps.length; p++) {
+                const pst = state.pumps.getItemByIndex(p);
+                const pstatus = pst.status;
+                if (!(pstatus > 0) || sys.board.valueMaps.pumpStatus.transform(pstatus).name !== 'priming') continue;
+                const pcfg = sys.pumps.getItemById(pst.id);
+                let serves = true;
+                if (pcfg.circuits.length > 0) {
+                    serves = false;
+                    for (let c = 0; c < pcfg.circuits.length; c++) if (pcfg.circuits.getItemByIndex(c).circuit === cfgBody.circuit) { serves = true; break; }
+                }
+                else if (typeof pcfg.body !== 'undefined' && pcfg.body !== null) {
+                    const assoc = sys.board.valueMaps.bodies.transform(pcfg.body).name;
+                    if (typeof assoc === 'string' && assoc !== 'poolspa') serves = assoc === `body${body.id}` || (assoc === 'pool' && body.id === 1) || (assoc === 'spa' && body.id === 2);
+                }
+                if (serves) { rt.bodyOnAt.set(body.id, new Date().getTime()); primingNow = true; break; }
+            }
+        }
+        // The difference priming shows between the speeds: the last reading while priming, and the reading a minute after it ended. Logged only.
+        {
+            const nowP = new Date().getTime();
+            const pw = rt.primeWatch.get(body.id);
+            if (!body.isOn) rt.primeWatch.delete(body.id);
+            else if (primingNow) { if (typeof body.temp === 'number') rt.primeWatch.set(body.id, { high: body.temp, endAt: undefined }); }
+            else if (typeof pw !== 'undefined') {
+                if (typeof pw.endAt === 'undefined') pw.endAt = nowP;
+                else if (nowP - pw.endAt >= 60000 && typeof body.temp === 'number') {
+                    let off: number = undefined;
+                    for (let h = 0; h < state.heaters.length; h++) { const hs = state.heaters.getItemByIndex(h); if (typeof hs.solarSpeedOffset === 'number') off = hs.solarSpeedOffset; }
+                    const d = Math.round((pw.high - body.temp) * 100) / 100;
+                    logger.solar(`Solar (${body.name}): after priming the water read ${Math.round(pw.high * 100) / 100} at the priming speed and ${Math.round(body.temp * 100) / 100} a minute later at the normal speed, a difference of ${d >= 0 ? '+' : ''}${d}${typeof off === 'number' ? ` (the last solar check measured ${off >= 0 ? '+' : ''}${off})` : ''}.`);
+                    rt.primeWatch.delete(body.id);
+                }
+            }
+        }
+    }
+    // Once per pass, after the bodies.
+    public endPass(heaters: Heater[]) {
+        // A start that was waiting out the valve delay and was not found wanted in this pass (the body went off, the heat mode changed, the heater
+        // was removed) is dropped, so the pump goes back to its normal speed.
+        rt.valveTrial.forEach((t, id) => {
+            if (t.pass !== rt.pass) {
+                rt.valveTrial.delete(id);
+                const secs = Math.round((new Date().getTime() - t.at) / 1000);
+                const named = heaters.find(x => x.id === id);
+                logger.solar(`Solar ${typeof named !== 'undefined' ? named.name : 'heater ' + id}: the valve delay was cancelled after ${secs} s because the start is no longer wanted (the body, the heat mode or the heater changed); ${rt.valveTally(id, 'cancelled', secs)}.`);
+            }
+        });
+    }
+    // Whether a start on the body is waiting out the valve delay (the virtual solar circuit is on for it).
+    public isValveCheckRunning(bodyId: number): boolean { return rt.isValveCheckRunning(bodyId); }
+    // Whether a start on any body is waiting out the valve delay.
+    public isAnyValveCheckRunning(): boolean { return rt.valveTrial.size > 0; }
     // The decision for a solar heater in the Solar and Solar Preferred heat modes. It sets body.heatStatus itself, as it did inline.
     public evaluate(ctx: SolarContext): SolarResult {
         const { heater, hstate, body, cfgBody, mode, bodyHeaters } = ctx;
