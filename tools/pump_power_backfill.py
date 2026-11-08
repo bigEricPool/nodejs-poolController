@@ -5,7 +5,8 @@ njsPC logs at level info when a pump's relays change ("NCP: Setting Pump <name> 
 circuit is set ("NCP: Setting Circuit <name> to true"). This replays those lines against the pumpPower settings in config.json, so
 the speeds, their relays and the rule for choosing (the best priority among those that apply, then the most watts) are the same as in
 controller/PumpPower.ts. A speed's connection and device are matched to a pump relay or a circuit in data/poolConfig.json, so enter
-the speeds in the Pump Power settings first.
+the speeds in the Pump Power settings first. Speeds set on a pump's own relays in data/poolConfig.json (the pump page) take the place
+of that pump's speeds in config.json.
 
 Run it from the njsPC folder. It changes nothing unless --write is given:
     python3 tools/pump_power_backfill.py                 prints what it would add, by day
@@ -52,8 +53,19 @@ def load_speeds(root):
             speeds.append({'id': s['id'], 'name': s.get('name'), 'watts': s.get('watts') or 0, 'priority': s.get('priority') or 0, 'relays': relays, 'circuits': circuits, 'default': not bound})
         if speeds:
             pumps[pump.get('name')] = {'id': pump.get('id'), 'speeds': speeds}
+    # Speeds set on a pump's own relays (the pump page) are used instead, as in PumpPower.ts: the speed id is the relay id. Only the pump
+    # page of a pump whose relays each pick a speed (single speed, two speed, SuperFlo) sets watts on its relays.
+    for pump in pool.get('pumps') or []:
+        speeds = []
+        for i, r in enumerate(pump.get('relays') or []):
+            rid = r.get('id', i + 1)
+            if not (r.get('watts') or 0) > 0 or not (r.get('connectionId') and r.get('deviceBinding')):
+                continue
+            speeds.append({'id': rid, 'name': (r.get('speedName') or '').strip() or 'Relay %s' % rid, 'watts': r.get('watts'), 'priority': r.get('priority') or 0, 'relays': [rid], 'circuits': [], 'default': False})
+        if speeds:
+            pumps[pump.get('name')] = {'id': pump.get('id'), 'speeds': speeds}
     if not pumps:
-        sys.exit('No pump has speeds in the pumpPower section of config.json: enter them in the Pump Power settings first.')
+        sys.exit('No pump has speeds: set them on the pump page (relays) or in the Pump Power settings first.')
     return pumps
 
 

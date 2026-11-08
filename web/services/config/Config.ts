@@ -433,6 +433,11 @@ export class ConfigRoute {
             const c = normalizePumpPowerSettings(req.body);
             const msg = pumpPowerSettingsError(c);
             if (msg) return res.status(400).send({ message: msg });
+            // The dialog shows a pump with speeds on its relays read-only and sends nothing for it, so the speeds config.json keeps for
+            // that pump as its fallback are kept as they were.
+            for (const p of normalizePumpPowerSettings(config.getSection('pumpPower')).pumps) {
+                if (pumpRelaySpeeds(p.pump).length > 0 && !c.pumps.some(x => x.pump === p.pump)) c.pumps.push(p);
+            }
             config.setSection('pumpPower', c);
             return res.status(200).send(c);
         });
