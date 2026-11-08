@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import { logger } from '../logger/Logger';
 import { ServiceParameterError } from './Errors';
+import { ControllerType } from './Constants';
 import { Chlorinator, sys } from './Equipment';
 import { state } from './State';
 import { chlorinatorLog, ChlorinatorOutputHour, clockLooksSet } from './ChlorinatorLog';
@@ -56,6 +57,22 @@ export function checkChlorinatorPower(now: number = Date.now()) {
             if (e) logger.verbose(`Chlorinator ${chlor.id}: power ${on ? 'on' : 'off'}.`);
         }
         catch (err) { logger.warn(`Chlorinator power log: could not check chlorinator ${chlor.id}: ${err.message}`); }
+    }
+}
+
+// On Nixie njsPC drives the circuits itself (through its relay boards), so they go off while it is not running, and a cell powered by
+// them starts a new cycle when it comes back. A controller with its own panel keeps its circuits running.
+export function powerStopsWithApp(): boolean { return sys.controllerType === ControllerType.Nixie; }
+// Writes "off" for each chlorinator last logged as powered, when its power stops with njsPC: at a stop, and at a start after a stop that
+// wrote nothing (a crash or a power loss; the time is then the start, as the stop's time is not known). The next check writes "on".
+export function markPowerOffWhileStopped(now: number = Date.now()) {
+    if (!powerStopsWithApp()) return;
+    for (const chlor of sys.chlorinators.toArray()) {
+        try {
+            const last = chlorinatorPowerLog.lastEvent(chlor.id);
+            if (last && last.on) chlorinatorPowerLog.record(chlor.id, false, now);
+        }
+        catch (err) { logger.warn(`Chlorinator power log: could not mark chlorinator ${chlor.id} off: ${err.message}`); }
     }
 }
 
@@ -235,6 +252,7 @@ export function cellUsageInfo(id: number) {
 export function startChlorinatorLog() {
     if (timer) return;
     chlorinatorLog.onHour = creditHour;
+    markPowerOffWhileStopped();
     // the power every 15 seconds, from half a minute after start (when the bodies' state is known)
     powerTimer = setTimeout(function check() {
         try { checkChlorinatorPower(); } catch (err) { logger.warn(`Chlorinator power log: ${err.message}`); }
@@ -250,5 +268,6 @@ export function startChlorinatorLog() {
 export function stopChlorinatorLog() {
     if (timer) { clearTimeout(timer); timer = undefined; }
     if (powerTimer) { clearTimeout(powerTimer); powerTimer = undefined; }
+    markPowerOffWhileStopped();
     try { chlorinatorLog.flush(); } catch (err) { logger.warn(`Chlorinator log: could not write the last hour: ${err.message}`); }
 }
