@@ -202,6 +202,17 @@
       "build": true
     },
     {
+      "name": "feature/power-pump-speeds",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Pump power speeds (name, rpm, watts, priority) set on each relay of a single speed, two speed or SuperFlo relay pump, power tracking switched on per pump, and warnings for missing settings; a one-time start-up step moves the old config.json pumpPower speeds onto the relays. In dashPanel: the pump page's Relays tab and the Pump Power panel warnings.",
+      "depends": [
+        "feature/power-tracking"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "local/pi-tools",
       "kind": "local",
       "status": "active",

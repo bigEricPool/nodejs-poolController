@@ -26,6 +26,8 @@ Base for new branches: master at 10.1.0 (2e7c1efb).
 | `feature/pws-weather` | feature | Hourly weather log from a personal weather station, and a Weather panel. | none | none |
 | `feature/solar-enhancements` | feature | Solar log, settle delay, hysteresis, valve delay check, check period, return sensor, Solar Controls; in dashPanel also the Nocturnal Cooling toggle. Stacked on fix/solar-restart in njsPC. | fix/solar-restart, optional: feature/pump-priming, optional: fix/heater-command-inflight | #1248 |
 | `feature/pi-status` | feature | The condition of the computer njsPC runs on: processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, installed software, and how late njsPC itself runs, with a longer log (njsPC: GET /state/system). dashPanel: a System panel showing it. | none | none |
+| `feature/power-tracking` | feature | Power usage for relay driven pumps: time at each speed times the watts set for it. Off by default. Adds a Pump Power panel in dashPanel. | none | none |
+| `feature/power-pump-speeds` | feature | Pump power speeds set on each pump relay (name, rpm, watts, priority), power tracking per pump, warnings for missing settings; moves the old config.json pumpPower speeds onto the relays once. | feature/power-tracking | none |
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 
