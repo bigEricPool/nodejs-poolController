@@ -423,8 +423,9 @@ export class ConfigRoute {
             try {
                 return res.status(200).send({
                     settings: normalizePumpPowerSettings(config.getSection('pumpPower')),
-                    // speedsOnRelays: the pump keeps its speeds on its relays (set on the pump page); relaySpeeds: the ones set there.
-                    pumps: sys.pumps.toArray().map(p => ({ id: p.id, name: p.name, speedsOnRelays: hasRelaySpeeds(p), relaySpeeds: pumpRelaySpeeds(p.id) })),
+                    // speedsOnRelays: the pump keeps its speeds on its relays (set on the pump page); relaySpeeds: the ones set there;
+                    // tracked: false when power tracking is turned off on the pump.
+                    pumps: sys.pumps.toArray().map(p => ({ id: p.id, name: p.name, speedsOnRelays: hasRelaySpeeds(p), relaySpeeds: pumpRelaySpeeds(p.id), tracked: p.trackPower !== false })),
                     servers: await sys.ncp.getREMServers()
                 });
             } catch (err) { next(err); }

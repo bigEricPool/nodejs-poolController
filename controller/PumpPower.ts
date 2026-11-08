@@ -30,7 +30,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // them). Each relay is one speed; when several relays are on, the priority picks the speed, so a two speed pump with both relays on counts
 // as the speed with the better priority. The entries in `pumps` that line up with the pump's relays (every speed bound to a relay of that
 // pump with the same id) are copied onto the relays that have no speed yet, the first time the tracking runs (see `copySpeedsToPumps`),
-// so the log keeps its speed ids. Nothing a relay already has is overwritten.
+// so the log keeps its speed ids. Nothing a relay already has is overwritten. A pump is counted unless `trackPower` is turned off on it
+// (the pump page); `enabled` above turns the whole tracking on or off.
+//
+// The SuperFlo type with one speed per relay also fits relay-selected variable speed pumps such as the Calimar / Black & Decker VSP with
+// its automation controller add-on (three relays, one for each preset speed; tested on a Calimar 3 HP: Low, High and Medium, with Medium
+// winning when two are on).
 //
 // The connection and device of a speed name the relay that selects it, the same two values a pump relay or a circuit is bound with. A speed
 // without them is the pump's default speed: it counts whenever the pump is on and no other speed applies. When several speeds apply the one
@@ -164,17 +169,23 @@ export function pumpRelaySpeeds(pumpId: number): PumpPowerSpeed[] {
     }
     return speeds;
 }
-// The settings with each pump's speeds taken from its relays where they are set there.
+// Whether the pump is counted: it is unless tracking is turned off on the pump. A pump that is not set up is left to the settings.
+export function pumpTracked(pumpId: number): boolean {
+    const pump = sys.pumps.find(p => p.id === pumpId);
+    return typeof pump === 'undefined' || pump.trackPower !== false;
+}
+// The settings with each pump's speeds taken from its relays where they are set there, without the pumps not counted.
 export function effectivePumpPowerSettings(c: PumpPowerSettings): PumpPowerSettings {
     const pumps: PumpPowerPump[] = [];
     const ids: number[] = [];
     for (const p of c.pumps) {
+        ids.push(p.pump);
+        if (!pumpTracked(p.pump)) continue;
         const onPump = pumpRelaySpeeds(p.pump);
         pumps.push({ pump: p.pump, speeds: onPump.length > 0 ? onPump : p.speeds });
-        ids.push(p.pump);
     }
     for (const pump of sys.pumps.toArray()) {
-        if (ids.indexOf(pump.id) >= 0) continue;
+        if (ids.indexOf(pump.id) >= 0 || pump.trackPower === false) continue;
         const onPump = pumpRelaySpeeds(pump.id);
         if (onPump.length > 0) pumps.push({ pump: pump.id, speeds: onPump });
     }
@@ -196,6 +207,19 @@ class PumpPower {
     private io: Promise<void> = Promise.resolve();  // writes run one at a time
     private file(): string { return path.join(process.cwd(), 'data', 'pumpPowerLog.jsonl'); }
     private copied = false;
+    private onFallback: number[] = [];   // pumps counted from config.json although their speeds belong on their relays
+    // Says in the log when a pump that keeps its speeds on its relays starts or stops being counted from config.json instead, which
+    // happens when no relay of it has watts (cleared, or lost when the pump was saved by a dashPanel without these fields).
+    private noteFallback() {
+        const now: number[] = [];
+        for (const p of this.settings.pumps) {
+            const pump = sys.pumps.find(x => x.id === p.pump);
+            if (p.speeds.length > 0 && hasRelaySpeeds(pump) && pumpTracked(p.pump) && pumpRelaySpeeds(p.pump).length === 0) now.push(p.pump);
+        }
+        for (const id of now) if (this.onFallback.indexOf(id) < 0) logger.info(`Pump power: no relay of pump ${sys.pumps.getItemById(id).name} has watts, so its speeds are taken from config.json. Set them on the pump page to use those instead.`);
+        for (const id of this.onFallback) if (now.indexOf(id) < 0) logger.info(`Pump power: pump ${sys.pumps.getItemById(id).name} is no longer counted from config.json.`);
+        this.onFallback = now;
+    }
     private get settings(): PumpPowerSettings { return normalizePumpPowerSettings(this.getSettings ? this.getSettings() : undefined); }
     // The settings as they are used: each pump's speeds from its relays where they are set there.
     private get effective(): PumpPowerSettings { return effectivePumpPowerSettings(this.settings); }
@@ -261,6 +285,7 @@ class PumpPower {
     private sample(now: number = Date.now()) {
         try { this.copySpeedsToPumps(); } catch (err) { logger.warn(`Pump power: could not copy the speeds onto the pumps: ${err.message}`); }
         const c = this.effective;
+        if (c.enabled) { try { this.noteFallback(); } catch (err) { /* only a log line */ } }
         const pumps = c.enabled ? c.pumps.filter(p => p.speeds.length > 0) : [];
         const credit = this.lastSample > 0 ? Math.max(0, Math.min(now - this.lastSample, MAX_CREDIT_MS)) / 1000 : 0;
         this.lastSample = pumps.length > 0 ? now : 0;

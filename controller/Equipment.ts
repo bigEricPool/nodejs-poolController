@@ -1662,6 +1662,10 @@ export class Pump extends EqItem {
     public set body(val: number | any) { this.setDataVal('body', sys.board.valueMaps.pumpBodies.encode(val)); }
     public get model(): number { return this.data.model; }
     public set model(val: number) { this.setDataVal('model', val); }
+    // Whether the pump power tracking (controller/PumpPower.ts) counts this pump. Not set is on, so a pump with speeds is counted
+    // until this is turned off on the pump page.
+    public get trackPower(): boolean { return this.data.trackPower; }
+    public set trackPower(val: boolean) { this.setDataVal('trackPower', val); }
     public get circuits(): PumpCircuitCollection { return new PumpCircuitCollection(this.data, "circuits"); }
     public get relays(): PumpRelayCollection { return new PumpRelayCollection(this.data, "relays"); }
     public deletePumpCircuit(pumpCircuitId: number) {
