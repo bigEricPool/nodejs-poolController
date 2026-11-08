@@ -600,7 +600,7 @@ export class StateRoute {
         });
         // The electricity a relay driven pump uses, from the time at each speed and the watts set for it (see PumpPower.ts).
         // GET /state/pumpPower?range=day|week|month|year
-        pumpPower.start(() => config.getSection('pumpPower'));
+        pumpPower.start(() => config.getSection('pumpPower'), (val) => config.setSection('pumpPower', val));
         app.get('/state/pumpPower', (req, res, next) => {
             try {
                 const range = ['day', 'week', 'month', 'year'].indexOf(req.query.range as string) >= 0 ? req.query.range as any : 'week';
