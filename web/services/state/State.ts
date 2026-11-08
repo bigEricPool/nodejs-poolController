@@ -45,7 +45,8 @@ import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, arc
 import { refreshPoolMathArchiveFromPage } from "../../../controller/AutoSwgArchivePage";
 import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
-import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
+import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
+import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
 import { onPoolMathUpdated, poolMathSyncStatus } from "../../../controller/PoolMathSync";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
@@ -1112,6 +1113,12 @@ function showAutoSwgArchiveStatus() {
     a.emitEquipmentChange();
 }
 export function registerAutoSwgPoolMath() {
+    // The SWG is dead-manned to the Pool circuit: it only has power with its own relay (the schedule SWG Assist follows) AND the Pool on. The pool's logging
+    // records each change of that as a power event (from which the cell's 3-hour cycles are counted); other chlorinators keep the default (body on).
+    setChlorinatorPowerSource(chlor => {
+        if (chlor.id !== assistChlorinatorId()) return undefined;
+        return autoSwgChlorinatorPowered(sys.autoSwg, typeof chlor.body !== 'undefined' ? chlor.body : 0);
+    });
     setOwnSwgEntriesSource(id => id === assistChlorinatorId()
         ? toLocalSwgEntries(readAutoSwgHistory()).map(e => ({ ts: new Date(e.ts).getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }))
         : []);
@@ -1489,6 +1496,18 @@ export class StateRoute {
                 if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
                     return res.status(404).send({ error: 'Chlorinator not found.' });
                 return res.status(200).send({ days: days, id: id, hours: chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) });
+            } catch (err) { next(err); }
+        });
+        // When each chlorinator's power came on and went off (see ChlorinatorPowerLog.ts): GET /state/chlorinator/powerLog?days=30[&id=1]
+        app.get('/state/chlorinator/powerLog', (req, res, next) => {
+            try {
+                let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
+                if (isNaN(days) || days < 1) days = 30;
+                days = Math.min(days, 1461);
+                const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
+                if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send({ days: days, id: id, events: chlorinatorPowerLog.read(days, Date.now(), id) });
             } catch (err) { next(err); }
         });
         // The cell's totals: GET /state/chlorinator/usage?id=1

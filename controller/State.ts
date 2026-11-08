@@ -2559,6 +2559,9 @@ export class ChlorinatorState extends EqState {
         schlor.usageEstimatedPounds = this.usageEstimatedPounds;
         schlor.cellLbsPerDay = chlor.cellLbsPerDay;
         schlor.cellInstalledDate = chlor.cellInstalledDate;
+        schlor.cycleHours = chlor.cycleHours;
+        schlor.cycleRestartsOnPower = chlor.cycleRestartsOnPower;
+        schlor.burstFirst = chlor.burstFirst;
         return schlor;
     }
 }
