@@ -8,10 +8,10 @@ const src = fs.readFileSync(path.join(__dirname, '../../web/services/state/State
 const at = (route: string) => src.indexOf(`app.get('${route}'`);
 
 describe('state chlorinator routes', () => {
-    it('registers outputLog and usage before the :id route', () => {
+    it('registers outputLog, powerLog and usage before the :id route', () => {
         const id = at('/state/chlorinator/:id');
         expect(id).toBeGreaterThan(0);
-        for (const r of ['/state/chlorinator/outputLog', '/state/chlorinator/usage']) {
+        for (const r of ['/state/chlorinator/outputLog', '/state/chlorinator/powerLog', '/state/chlorinator/usage']) {
             expect(at(r)).toBeGreaterThan(0);
             expect(at(r)).toBeLessThan(id);
         }

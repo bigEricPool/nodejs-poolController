@@ -114,6 +114,34 @@ export function summarizeOutput(hours: ChlorinatorOutputHour[]): ChlorinatorOutp
     };
 }
 
+// The first (oldest) or last (newest) whole JSON line of a log file with a `t` time, read from up to 4 KB at that end, so a large
+// file is not read whole. Also used by the power log (ChlorinatorPowerLog.ts).
+export function readEdgeLineOf(file: string, first: boolean): any | undefined {
+    let fd: number | undefined;
+    try {
+        const f = file;
+        if (!fs.existsSync(f)) return undefined;
+        fd = fs.openSync(f, 'r');
+        const size = fs.fstatSync(fd).size;
+        const len = Math.min(size, 4096);
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, first ? 0 : size - len);
+        let ls = buf.toString('utf8').split('\n');
+        // a line cut by the 4 KB window is not whole: the last piece at the start, the first piece at the end
+        if (first) { if (len < size) ls.pop(); } else if (len < size) ls.shift();
+        if (!first) ls = ls.reverse();
+        for (const l of ls) {
+            if (!l.trim()) continue;
+            try {
+                const h = JSON.parse(l);
+                if (h && typeof h.t === 'string' && !isNaN(new Date(h.t).getTime())) return h;
+            } catch (err) { /* a torn line is skipped */ }
+        }
+        return undefined;
+    } catch (err) { logger.warn(`Chlorinator log: could not read ${file}: ${err.message}`); return undefined; }
+    finally { if (typeof fd === 'number') try { fs.closeSync(fd); } catch (err) { } }
+}
+
 export class ChlorinatorOutputLog {
     private buckets = new Map<number, Bucket>();
     private lastPrune = 0;
@@ -164,32 +192,8 @@ export class ChlorinatorOutputLog {
         }
         return this.newest;
     }
-    // The first (oldest) or last (newest) whole line of the file, read from up to 4 KB at that end.
-    private edgeLine(first: boolean): ChlorinatorOutputHour | undefined {
-        let fd: number | undefined;
-        try {
-            const f = this.file();
-            if (!fs.existsSync(f)) return undefined;
-            fd = fs.openSync(f, 'r');
-            const size = fs.fstatSync(fd).size;
-            const len = Math.min(size, 4096);
-            const buf = Buffer.alloc(len);
-            fs.readSync(fd, buf, 0, len, first ? 0 : size - len);
-            let ls = buf.toString('utf8').split('\n');
-            // a line cut by the 4 KB window is not whole: the last piece at the start, the first piece at the end
-            if (first) { if (len < size) ls.pop(); } else if (len < size) ls.shift();
-            if (!first) ls = ls.reverse();
-            for (const l of ls) {
-                if (!l.trim()) continue;
-                try {
-                    const h = JSON.parse(l);
-                    if (h && typeof h.t === 'string' && !isNaN(new Date(h.t).getTime())) return h;
-                } catch (err) { /* a torn line is skipped */ }
-            }
-            return undefined;
-        } catch (err) { logger.warn(`Chlorinator log: could not read the output log: ${err.message}`); return undefined; }
-        finally { if (typeof fd === 'number') try { fs.closeSync(fd); } catch (err) { } }
-    }
+    // The first (oldest) or last (newest) whole line of the file.
+    private edgeLine(first: boolean): ChlorinatorOutputHour | undefined { return readEdgeLineOf(this.file(), first); }
     // Writes every hour being built (a partial hour has a smaller n).
     public flush() { for (const id of Array.from(this.buckets.keys())) this.flushBucket(id); }
     private flushBucket(id: number) {
