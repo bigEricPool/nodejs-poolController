@@ -497,18 +497,34 @@ export class State implements IState {
         versionCheck.checkGitLocal();
         tempHistory.start(() => this.sampleTemps());
     }
+    // When each body was first seen on in this run of the process (by body id), for the settle time below. Session-only on purpose.
+    private bodyOnSince: Map<number, number> = new Map<number, number>();
+    // For this long after a body turns on, the sensor still reads the water that sat in the pipes while the pump was off (near the
+    // air temperature on a cool night), not the body's water. Those readings are kept for the chart but marked like readings taken
+    // while off, so they stay out of the 24 hour average, high and low.
+    private static readonly BODY_SETTLE_MS = 5 * 60 * 1000;
     // Once a minute: note the temperature of each body that is on (a body that is off keeps a stale temperature), then publish
     // each body's 24 hour average, high and low. The 24 hours end now, so the figures move on as time passes.
     private sampleTemps() {
         try {
+            const now = Date.now();
             for (let i = 0; i < this.temps.bodies.length; i++) {
                 const body = this.temps.bodies.getItemByIndex(i);
                 // The temperature the dashboard shows for the body. Where solar has published the reading taken at its pump speed
                 // (solarCheckTemp, present only with the solar enhancements), that is the one shown, so it is the one recorded.
                 const shown = typeof body.data.solarCheckTemp === 'number' && isFinite(body.data.solarCheckTemp) ? body.data.solarCheckTemp : body.temp;
                 const setPoint = typeof this.solarHeaterFor(body.id) !== 'undefined' ? body.setPoint : undefined;
-                if (body.isOn) { if (typeof shown === 'number' && isFinite(shown)) tempHistory.record(body.id, shown, body.temp, this.solarProjection(body), setPoint); }
+                if (body.isOn) {
+                    // Also after a restart while the body is on: the relays may have dropped for a moment while the process was down.
+                    if (!this.bodyOnSince.has(body.id)) this.bodyOnSince.set(body.id, now);
+                    const settling = now - this.bodyOnSince.get(body.id) < State.BODY_SETTLE_MS;
+                    if (typeof shown === 'number' && isFinite(shown)) {
+                        if (settling) tempHistory.record(body.id, shown, undefined, undefined, setPoint, true, now);
+                        else tempHistory.record(body.id, shown, body.temp, this.solarProjection(body), setPoint, false, now);
+                    }
+                }
                 else {
+                    this.bodyOnSince.delete(body.id);
                     // A body that is off keeps the temperature it had when it turned off, so the sensor's own reading is recorded, marked as
                     // taken while off.
                     const raw = this.offSensorTemp(body.id);
