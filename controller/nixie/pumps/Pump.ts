@@ -464,9 +464,9 @@ export class NixiePumpDS extends NixiePumpSS {
 }
 export class NixiePumpSF extends NixiePumpDS {
     // effectively operates the same way as a DS pump since we removed the body association on DS.
-    // only logger msg is different
+    // only the log message is different: it names all four relays, and like the two speed pump it goes in the solar log when a solar heater is installed
     public logSpeed(_newSpeed: number) {
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} relays to Relay 1: ${_newSpeed & 1 ? 'on' : 'off'}, Relay 2: ${_newSpeed & 2 ? 'on' : 'off'}, Relay 3: ${_newSpeed & 4 ? 'on' : 'off'}, and Relay 4: ${_newSpeed & 8 ? 'on' : 'off'}.`);
+        if (this._targetSpeed !== _newSpeed) pumpLog(`NCP: Setting Pump ${this.pump.name} relays to Relay 1: ${_newSpeed & 1 ? 'on' : 'off'}, Relay 2: ${_newSpeed & 2 ? 'on' : 'off'}, Relay 3: ${_newSpeed & 4 ? 'on' : 'off'}, and Relay 4: ${_newSpeed & 8 ? 'on' : 'off'}.`);
     }
 }
 export class NixiePumpHWRLY extends NixiePumpDS {
