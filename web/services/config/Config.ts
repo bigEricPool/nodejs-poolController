@@ -1011,7 +1011,7 @@ export class ConfigRoute {
         app.put('/config/chlorinator', async (req, res, next) => {
             try {
                 // the cell settings are checked before anything is saved
-                if (req.body && (typeof req.body.cellLbsPerDay !== 'undefined' || typeof req.body.cellInstalledDate !== 'undefined')) checkCellSettings(req.body);
+                if (req.body) checkCellSettings(req.body);
                 let chlor = await sys.board.chlorinator.setChlorAsync(req.body);
                 setCellSettings(chlor.id, req.body);
                 return res.status(200).send(sys.chlorinators.getItemById(chlor.id).get(true));

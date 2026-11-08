@@ -1821,6 +1821,15 @@ export class Chlorinator extends EqItem {
     // The day the current cell went into service (YYYY-MM-DD), or '' when not set. The cell usage is counted from it.
     public get cellInstalledDate(): string { return typeof this.data.cellInstalledDate === 'string' ? this.data.cellInstalledDate : ''; }
     public set cellInstalledDate(val: string) { this.setDataVal('cellInstalledDate', typeof val === 'string' ? val : ''); }
+    // How the cell makes its chlorine, for the usage count (see cycleConduction in ChlorinatorUsage.ts): the cycle length in hours (0, the
+    // default, counts each hour by its mean output), whether a new cycle starts when the power comes on, and whether current flows at
+    // the start of each cycle (else at its end).
+    public get cycleHours(): number { return typeof this.data.cycleHours === 'number' && this.data.cycleHours > 0 ? this.data.cycleHours : 0; }
+    public set cycleHours(val: number) { this.setDataVal('cycleHours', typeof val === 'number' && val > 0 ? val : 0); }
+    public get cycleRestartsOnPower(): boolean { return this.data.cycleRestartsOnPower !== false; }
+    public set cycleRestartsOnPower(val: boolean) { this.setDataVal('cycleRestartsOnPower', val !== false); }
+    public get burstFirst(): boolean { return this.data.burstFirst !== false; }
+    public set burstFirst(val: boolean) { this.setDataVal('burstFirst', val !== false); }
 }
 // The pool's PoolMath share (a pool-level section of poolConfig.json): the share code and pool name the history is read for, and what
 // PoolMath says about the pool, kept from the last read of its share (volume in gallons, the SWG rating).

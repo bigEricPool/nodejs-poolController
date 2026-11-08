@@ -23,6 +23,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // the chlorinator. Nor is an hour in which the chlorinator reported a status that means the cell was not generating (NOT_GENERATING).
 // The output in the log is what was commanded, not something the cell reports, and a cell makes its chlorine in bursts (it is on for
 // the set % of each cycle), so `runHours` is the time the cell was enabled (output above 0), not the time it was energized.
+// A chlorinator with a cycle length is counted by its cycles instead, from the time its power log begins (see cycleConduction): the
+// hours current actually flowed, which differ from the mean output where the power goes off part way through a cycle.
 // Pure functions only: no file or state access, so they can be unit tested.
 
 import { ChlorinatorOutputHour, CHLORINATOR_STALE_SEC } from './ChlorinatorLog';
@@ -37,23 +39,95 @@ const LB_PER_GALLON = 8.34;
 
 export interface CellUsage { hours: number; pounds: number; runHours: number; }
 
-export function cellUsageForHour(h: ChlorinatorOutputHour, lbsPerDay: number): CellUsage {
+// A cell that makes its chlorine in cycles: current flows for the set % of each cycle, at the start of the cycle (burstFirst) or at
+// its end, and a new cycle starts when the power comes on (restartsOnPower) or the cycles run on from the first power-on. cycleHours 0
+// means the cell is not counted by cycles: each hour is credited with its mean output (cellUsageForHour without a cycle context).
+export interface CycleSettings { cycleHours: number; restartsOnPower: boolean; burstFirst: boolean; }
+// A change of the chlorinator's power (ChlorinatorPowerLog.ts), the time in ms.
+export interface PowerEvent { t: number; on: boolean; }
+// What the cycle count needs: the settings, the chlorinator's power events (oldest first), the time from which they are known (the
+// first event; hours that start before it are counted by their mean output), and the % in force at a time (see pctAtFromHours).
+export interface CycleContext { cycle: CycleSettings; events: PowerEvent[]; since: number; pctAt: (ms: number) => number; }
+
+const HOUR_MS = 3600000;
+
+// The % a cell was set to in a logged hour: its target output when it was producing, else 0.
+export function hourPct(h: ChlorinatorOutputHour): number {
+    if (!h || !(h.out > 0)) return 0;
+    const p = h.tgt > 0 ? h.tgt : h.max;
+    return Math.max(0, Math.min(100, Number(p) || 0));
+}
+
+// The % in force at a time, from the logged hours of one chlorinator (0 for an hour that has no line). Of two lines for the same hour
+// (njsPC restarted within it), the one with more samples.
+export function pctAtFromHours(hours: ChlorinatorOutputHour[]): (ms: number) => number {
+    const byHour = new Map<number, ChlorinatorOutputHour>();
+    for (const h of hours) {
+        const t = new Date(h.t).getTime();
+        if (!isFinite(t)) continue;
+        const prev = byHour.get(t);
+        if (!prev || h.n > prev.n) byHour.set(t, h);
+    }
+    return (ms: number) => { const h = byHour.get(Math.floor(ms / HOUR_MS) * HOUR_MS); return h ? hourPct(h) : 0; };
+}
+
+// The hours current flowed between `a` and `b` (ms), from the power events: each time the power is on is split into cycles from the
+// power-on (or from the first power-on when the cycles do not restart), and each cycle conducts for the % in force at its start (or at
+// the power-on, for a cycle that began while the power was off) times the cycle length, cut off where the power goes off.
+export function cycleConduction(events: PowerEvent[], a: number, b: number, cycle: CycleSettings, pctAt: (ms: number) => number): number {
+    const C = cycle.cycleHours * HOUR_MS;
+    if (!(C > 0) || !(b > a) || !events || !events.length) return 0;
+    const evs = events.filter(e => e && isFinite(e.t)).sort((x, y) => x.t - y.t);
+    const firstOn = evs.find(e => e.on);
+    let total = 0;
+    for (let i = 0; i < evs.length; i++) {
+        if (!evs[i].on) continue;
+        const s = evs[i].t;
+        const e = i + 1 < evs.length ? evs[i + 1].t : Infinity;
+        const lo = Math.max(s, a), hi = Math.min(e, b);
+        if (!(hi > lo)) continue;
+        const anchor = cycle.restartsOnPower || !firstOn ? s : firstOn.t;
+        for (let k = Math.floor((lo - anchor) / C); ; k++) {
+            const cs = anchor + k * C;
+            if (cs >= hi) break;
+            const p = Math.max(0, Math.min(100, pctAt(Math.max(cs, s)) || 0)) / 100;
+            const bs = cycle.burstFirst ? cs : cs + (1 - p) * C;
+            const be = cycle.burstFirst ? cs + p * C : cs + C;
+            total += Math.max(0, Math.min(be, hi) - Math.max(bs, lo));
+        }
+    }
+    return total / HOUR_MS;
+}
+
+// One logged hour's usage. With a cycle context and an hour that starts after the power events begin, the hours are the time current
+// flowed in the hour (cycleConduction), scaled by the part of the hour the line covers (a line from a restart within the hour covers
+// part of it); otherwise the mean output over the time the samples cover. `cycle` says which was used.
+export function cellUsageForHour(h: ChlorinatorOutputHour, lbsPerDay: number, ctx?: CycleContext): CellUsage & { cycle?: boolean } {
     if (!h || !(h.n > 0) || !(h.out > 0) || (typeof h.age === 'number' && h.age > CHLORINATOR_STALE_SEC)) return { hours: 0, pounds: 0, runHours: 0 };
     if (Array.isArray(h.st) && h.st.some(s => (s & NOT_GENERATING) !== 0)) return { hours: 0, pounds: 0, runHours: 0 };
     const covered = Math.min(1, h.n * SAMPLE_HOURS);
-    const hours = (h.out / 100) * covered;
-    return { hours: hours, pounds: lbsPerDay > 0 ? hours * lbsPerDay / 24 : 0, runHours: covered * Math.min(1, h.on / h.n) };
+    let hours = (h.out / 100) * covered;
+    let byCycle = false;
+    const start = new Date(h.t).getTime();
+    if (ctx && ctx.cycle && ctx.cycle.cycleHours > 0 && isFinite(start) && start >= ctx.since) {
+        hours = cycleConduction(ctx.events, start, start + HOUR_MS, ctx.cycle, ctx.pctAt) * covered;
+        byCycle = true;
+    }
+    const u: CellUsage & { cycle?: boolean } = { hours: hours, pounds: lbsPerDay > 0 ? hours * lbsPerDay / 24 : 0, runHours: covered * Math.min(1, h.on / h.n) };
+    if (byCycle) u.cycle = true;
+    return u;
 }
 
-// The usage of the hours that start at or after `fromMs`, and the start of the first of them.
-export function cellUsageSince(hours: ChlorinatorOutputHour[], fromMs: number, lbsPerDay: number): CellUsage & { firstHour?: string } {
-    const total: CellUsage & { firstHour?: string } = { hours: 0, pounds: 0, runHours: 0 };
+// The usage of the hours that start at or after `fromMs`, the start of the first of them, and how many of them were counted by cycles.
+export function cellUsageSince(hours: ChlorinatorOutputHour[], fromMs: number, lbsPerDay: number, ctx?: CycleContext): CellUsage & { firstHour?: string; cycleHourCount: number } {
+    const total: CellUsage & { firstHour?: string; cycleHourCount: number } = { hours: 0, pounds: 0, runHours: 0, cycleHourCount: 0 };
     for (const h of hours) {
         const t = new Date(h.t).getTime();
         if (!isFinite(t) || t < fromMs) continue;
         if (!total.firstHour || h.t < total.firstHour) total.firstHour = h.t;
-        const u = cellUsageForHour(h, lbsPerDay);
+        const u = cellUsageForHour(h, lbsPerDay, ctx);
         total.hours += u.hours; total.pounds += u.pounds; total.runHours += u.runHours;
+        if (u.cycle) total.cycleHourCount++;
     }
     return total;
 }
@@ -92,17 +166,18 @@ export function mergeSwgEntries(own: SwgEntry[], others: SwgEntry[]): SwgEntry[]
 }
 
 // The whole count from the install date: the SWG entries up to the first logged hour, then the log. `estimatedPounds` is the part that
-// came from the entries.
-export function cellUsageFromInstall(hours: ChlorinatorOutputHour[], entries: SwgEntry[], installedMs: number, nowMs: number, gallons: number, lbsPerDay: number): CellUsage & { estimatedPounds: number; firstHour?: string } {
+// came from the entries; `cycleHourCount` is how many logged hours were counted by cycles (see cellUsageForHour).
+export function cellUsageFromInstall(hours: ChlorinatorOutputHour[], entries: SwgEntry[], installedMs: number, nowMs: number, gallons: number, lbsPerDay: number, ctx?: CycleContext): CellUsage & { estimatedPounds: number; firstHour?: string; cycleHourCount: number } {
     const starts = hours.map(h => new Date(h.t).getTime()).filter(t => isFinite(t) && t >= installedMs).sort((a, b) => a - b);
     const logStart = starts.length ? starts[0] : nowMs;
     const early = cellUsageFromSwgEntries(entries, installedMs, logStart, gallons, lbsPerDay);
-    const logged = cellUsageSince(hours, logStart, lbsPerDay);
+    const logged = cellUsageSince(hours, logStart, lbsPerDay, ctx);
     return {
         hours: early.hours + logged.hours,
         pounds: early.pounds + logged.pounds,
         runHours: early.runHours + logged.runHours,
         estimatedPounds: early.pounds,
         firstHour: logged.firstHour,
+        cycleHourCount: logged.cycleHourCount,
     };
 }

@@ -28,6 +28,7 @@ import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
+import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage } from "../../../controller/ChlorinatorLogService";
 import { poolMathSyncStatus } from "../../../controller/PoolMathSync";
 
@@ -283,6 +284,18 @@ export class StateRoute {
                 if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
                     return res.status(404).send({ error: 'Chlorinator not found.' });
                 return res.status(200).send({ days: days, id: id, hours: chlorinatorLog.read(days, Date.now(), id, firstChlorinatorId()) });
+            } catch (err) { next(err); }
+        });
+        // When each chlorinator's power came on and went off (see ChlorinatorPowerLog.ts): GET /state/chlorinator/powerLog?days=30[&id=1]
+        app.get('/state/chlorinator/powerLog', (req, res, next) => {
+            try {
+                let days = typeof req.query.days !== 'undefined' ? parseInt(req.query.days as string, 10) : 30;
+                if (isNaN(days) || days < 1) days = 30;
+                days = Math.min(days, 1461);
+                const id = typeof req.query.id !== 'undefined' ? parseInt(req.query.id as string, 10) : undefined;
+                if (typeof id !== 'undefined' && (isNaN(id) || !sys.chlorinators.find(c => c.id === id)))
+                    return res.status(404).send({ error: 'Chlorinator not found.' });
+                return res.status(200).send({ days: days, id: id, events: chlorinatorPowerLog.read(days, Date.now(), id) });
             } catch (err) { next(err); }
         });
         // The cell's totals: GET /state/chlorinator/usage?id=1
