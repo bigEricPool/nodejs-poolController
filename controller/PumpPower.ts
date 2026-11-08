@@ -24,6 +24,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   keepDays      how long the log is kept
 //   pumps         one entry per pump: { pump (its id), speeds: [{ id, name, rpm, watts, priority, connectionId, deviceBinding }] }
 //
+// A pump whose relays each pick a speed (single speed, two speed, SuperFlo) keeps its speeds on its own relays instead: speedName, rpm,
+// watts and priority on each relay in poolConfig.json, set on the pump page. Once any relay of such a pump has watts its relays are its
+// speeds, the speed id being the relay id, and its entry in `pumps` is not used. The entries in `pumps` that line up with the pump's relays
+// (every speed bound to a relay of that pump with the same id) are moved onto the relays once, the first time the tracking runs (see
+// `moveSpeedsToPumps`), so the log keeps its speed ids. `pumps` is left for the speeds that cannot be on a relay, like a default speed.
+//
 // The connection and device of a speed name the relay that selects it, the same two values a pump relay or a circuit is bound with. A speed
 // without them is the pump's default speed: it counts whenever the pump is on and no other speed applies. When several speeds apply the one
 // with the best priority is taken: 1 is first, 0 is not set and comes after any that are, and speeds that tie go by the most watts. It is a
@@ -130,6 +136,47 @@ function isRelayOn(pumpId: number, s: PumpPowerSpeed): boolean {
     }
     return sys.circuits.get().some(c => relayMatches(c, s) && state.circuits.getItemById(c.id).isOn);
 }
+// The pump types whose relays each pick one speed. A Hayward relay pump's relays are the bits of a step number, so they are not speeds.
+const RELAY_SPEED_TYPES = ['ss', 'ds', 'sf'];
+export function hasRelaySpeeds(pump: any): boolean {
+    return typeof pump !== 'undefined' && RELAY_SPEED_TYPES.indexOf(sys.board.valueMaps.pumpTypes.getName(pump.type)) >= 0;
+}
+// The speeds set on a pump's relays, or none when no relay of the pump has watts.
+export function pumpRelaySpeeds(pumpId: number): PumpPowerSpeed[] {
+    const pump = sys.pumps.find(p => p.id === pumpId);
+    if (!hasRelaySpeeds(pump)) return [];
+    const type = sys.board.valueMaps.pumpTypes.transform(pump.type) || {};
+    const num = (v: any, max: number) => { const n = parseFloat(v); return isFinite(n) && n >= 0 && n <= max ? n : 0; };
+    const speeds: PumpPowerSpeed[] = [];
+    const relays: any[] = pump.relays.get();
+    for (let i = 0; i < relays.length; i++) {
+        const r = relays[i];
+        const id = r.id || i + 1;
+        const watts = num(r.watts, 20000);
+        if (!(watts > 0) || !r.connectionId || !r.deviceBinding) continue;
+        const typeRelay = Array.isArray(type.relays) ? type.relays.find((x: any) => x.id === id) : undefined;
+        const name = typeof r.speedName === 'string' && r.speedName.trim() ? r.speedName.trim()
+            : type.maxRelays === 2 ? (id === 1 ? 'Low Speed' : 'High Speed') : typeRelay ? typeRelay.name : `Relay ${id}`;
+        speeds.push({ id: id, name: name, rpm: num(r.rpm, 10000), watts: watts, priority: Math.round(num(r.priority, MAX_SPEEDS)), connectionId: r.connectionId, deviceBinding: r.deviceBinding });
+    }
+    return speeds;
+}
+// The settings with each pump's speeds taken from its relays where they are set there.
+export function effectivePumpPowerSettings(c: PumpPowerSettings): PumpPowerSettings {
+    const pumps: PumpPowerPump[] = [];
+    const ids: number[] = [];
+    for (const p of c.pumps) {
+        const onPump = pumpRelaySpeeds(p.pump);
+        pumps.push({ pump: p.pump, speeds: onPump.length > 0 ? onPump : p.speeds });
+        ids.push(p.pump);
+    }
+    for (const pump of sys.pumps.toArray()) {
+        if (ids.indexOf(pump.id) >= 0) continue;
+        const onPump = pumpRelaySpeeds(pump.id);
+        if (onPump.length > 0) pumps.push({ pump: pump.id, speeds: onPump });
+    }
+    return { ...c, pumps: pumps };
+}
 function addSeconds(to: Seconds, from: Seconds) {
     for (const k of Object.keys(from)) to[k] = (to[k] || 0) + from[k];
 }
@@ -145,10 +192,15 @@ class PumpPower {
     private lastPrune = 0;
     private io: Promise<void> = Promise.resolve();  // writes run one at a time
     private file(): string { return path.join(process.cwd(), 'data', 'pumpPowerLog.jsonl'); }
+    private saveSettings: (val: any) => void;
+    private moved = false;
     private get settings(): PumpPowerSettings { return normalizePumpPowerSettings(this.getSettings ? this.getSettings() : undefined); }
-    public start(getSettings: () => any) {
+    // The settings as they are used: each pump's speeds from its relays where they are set there.
+    private get effective(): PumpPowerSettings { return effectivePumpPowerSettings(this.settings); }
+    public start(getSettings: () => any, saveSettings?: (val: any) => void) {
         if (this.timer) return;
         this.getSettings = getSettings;
+        this.saveSettings = saveSettings;
         this.load();
         this.lastFlush = Date.now();
         this.timer = setInterval(() => {
@@ -175,8 +227,42 @@ class PumpPower {
         if (!row) this.hours.set(t, row = {});
         addSeconds(row[pump] || (row[pump] = {}), secs);
     }
+    // Moves the speeds in config.json onto the pump's relays, once, where they line up: the pump's type has a speed on each relay, no
+    // relay of it has watts yet, and every speed is bound to the relay of the pump with its own id. Anything else stays where it is.
+    public moveSpeedsToPumps() {
+        if (this.moved || !this.saveSettings) return;
+        this.moved = true;
+        const raw = this.getSettings ? this.getSettings() : undefined;
+        const c = normalizePumpPowerSettings(raw);
+        const keep: PumpPowerPump[] = [];
+        let changed = false;
+        for (const p of c.pumps) {
+            const pump = sys.pumps.find(x => x.id === p.pump);
+            if (p.speeds.length === 0 || !hasRelaySpeeds(pump) || pumpRelaySpeeds(p.pump).length > 0) { keep.push(p); continue; }
+            const relays: any[] = pump.relays.get();
+            const relayOf = (s: PumpPowerSpeed) => relays.findIndex((r, i) => (r.id || i + 1) === s.id && relayMatches(r, s));
+            const misfit = p.speeds.find(s => !s.connectionId || !s.deviceBinding || relayOf(s) < 0);
+            if (misfit) {
+                logger.info(`Pump power: the speeds of pump ${pump.name} stay in config.json: ${misfit.name} is not on relay ${misfit.id} of the pump.`);
+                keep.push(p);
+                continue;
+            }
+            for (const s of p.speeds) {
+                const r = pump.relays.getItemByIndex(relayOf(s));
+                r.speedName = s.name;
+                r.rpm = s.rpm;
+                r.watts = s.watts;
+                r.priority = s.priority;
+            }
+            pump.hasChanged = true;
+            changed = true;
+            logger.info(`Pump power: the speeds of pump ${pump.name} (${p.speeds.map(s => s.name).join(', ')}) are now set on the pump's relays.`);
+        }
+        if (changed) this.saveSettings({ ...(raw || {}), ...c, pumps: keep });
+    }
     private sample(now: number = Date.now()) {
-        const c = this.settings;
+        try { this.moveSpeedsToPumps(); } catch (err) { logger.warn(`Pump power: could not move the speeds onto the pumps: ${err.message}`); }
+        const c = this.effective;
         const pumps = c.enabled ? c.pumps.filter(p => p.speeds.length > 0) : [];
         const credit = this.lastSample > 0 ? Math.max(0, Math.min(now - this.lastSample, MAX_CREDIT_MS)) / 1000 : 0;
         this.lastSample = pumps.length > 0 ? now : 0;
@@ -252,7 +338,7 @@ class PumpPower {
     }
     // The record for dashPanel: the speed each pump is at, today, this month, and the range asked for in periods.
     public report(range: PumpPowerRange = 'week', now: number = Date.now()) {
-        const c = this.settings;
+        const c = this.effective;
         const speeds: any[] = [];
         const watts: { [key: string]: number } = {};
         const now_: any[] = [];

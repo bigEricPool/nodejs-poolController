@@ -1728,6 +1728,17 @@ export class PumpRelay extends EqItem {
     public set connectionId(val: string) { this.setDataVal('connectionId', val); }
     public get deviceBinding(): string { return this.data.deviceBinding; }
     public set deviceBinding(val: string) { this.setDataVal('deviceBinding', val); }
+    // On a pump whose relays each pick a speed (single speed, two speed, SuperFlo): what that speed is, for the pump power tracking
+    // (controller/PumpPower.ts). The watts are what the pump draws at the speed; the priority says which speed the pump runs when several
+    // of its relays are on (1 is first, 0 is not set).
+    public get speedName(): string { return this.data.speedName; }
+    public set speedName(val: string) { this.setDataVal('speedName', val); }
+    public get rpm(): number { return this.data.rpm; }
+    public set rpm(val: number) { this.setDataVal('rpm', val); }
+    public get watts(): number { return this.data.watts; }
+    public set watts(val: number) { this.setDataVal('watts', val); }
+    public get priority(): number { return this.data.priority; }
+    public set priority(val: number) { this.setDataVal('priority', val); }
 }
 
 export class ChlorinatorCollection extends EqItemCollection<Chlorinator> {

@@ -28,7 +28,7 @@ import { ServiceProcessError } from "../../../controller/Errors";
 import { state } from "../../../controller/State";
 import { stopPacketCaptureAsync, startPacketCapture } from '../../../app';
 import { conn } from "../../../controller/comms/Comms";
-import { normalizePumpPowerSettings, pumpPowerSettingsError } from "../../../controller/PumpPower";
+import { hasRelaySpeeds, normalizePumpPowerSettings, pumpPowerSettingsError, pumpRelaySpeeds } from "../../../controller/PumpPower";
 import { webApp, BackupFile, RestoreFile } from "../../Server";
 import { release } from "os";
 import { ScreenLogicComms, sl } from "../../../controller/comms/ScreenLogic";
@@ -423,7 +423,8 @@ export class ConfigRoute {
             try {
                 return res.status(200).send({
                     settings: normalizePumpPowerSettings(config.getSection('pumpPower')),
-                    pumps: sys.pumps.get().map(p => ({ id: p.id, name: p.name })),
+                    // speedsOnRelays: the pump keeps its speeds on its relays (set on the pump page); relaySpeeds: the ones set there.
+                    pumps: sys.pumps.toArray().map(p => ({ id: p.id, name: p.name, speedsOnRelays: hasRelaySpeeds(p), relaySpeeds: pumpRelaySpeeds(p.id) })),
                     servers: await sys.ncp.getREMServers()
                 });
             } catch (err) { next(err); }
