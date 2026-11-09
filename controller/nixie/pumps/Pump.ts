@@ -119,12 +119,18 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
             return c;
         } catch (err) { return Promise.reject(logger.error(`Nixie Controller: initPumpAsync Error: ${err.message}`)); }
     }
-    // A schedule has just turned the circuit on. The pumps that run for that circuit and have priming set up are primed.
+    // A schedule has just turned the circuit on. The pumps that run for that circuit and have priming set up are primed, unless the pump is
+    // already running or priming, or was off too briefly for the water to settle (see NixiePump.scheduleStartSkipsPriming).
     public async primeForScheduleAsync(circuitId: number) {
         for (let i = 0; i < this.length; i++) {
             try {
                 let pump = this[i] as NixiePump;
-                if (typeof pump.pump.circuits.find(elem => elem.circuit === circuitId) !== 'undefined') await pump.startPrimingAsync(circuitId);
+                if (typeof pump.pump.circuits.find(elem => elem.circuit === circuitId) === 'undefined') continue;
+                let skip = pump.scheduleStartSkipsPriming();
+                if (typeof skip === 'string') {
+                    if (pump.primingSettings.minutes > 0) logger.info(`NCP: Not priming pump ${pump.pump.name} for the schedule that turned circuit ${circuitId} on: ${skip}.`);
+                }
+                else await pump.startPrimingAsync(circuitId);
             } catch (err) { logger.error(`Nixie Pump primeForScheduleAsync: ${err.message}`); }
         }
     }
@@ -268,6 +274,17 @@ export class NixiePump extends NixieEquipment {
     // A pump that has been off this long has had time for water to settle, so it primes when it starts.
     protected static readonly minOffForPrimingMs = 30000;
     protected _stoppedAt: number;
+    // Why a schedule that turns on one of this pump's circuits does not prime it, or undefined when it should. A pump that is already running
+    // (another circuit or schedule started it) has no air to clear, and a second priming would only raise its speed for no reason; one that is
+    // priming already keeps that priming; and one that was off for minOffForPrimingMs or less is treated like a quick off and on by hand. A pump
+    // found off at startup has been off long enough.
+    public scheduleStartSkipsPriming(now: number = new Date().getTime()): string {
+        if (this.isPriming) return 'it is priming already';
+        if (this._targetSpeed > 0) return 'it is already running';
+        if (typeof this._stoppedAt === 'number' && this._stoppedAt > 0 && now - this._stoppedAt <= NixiePump.minOffForPrimingMs)
+            return `it was off for only ${Math.round((now - this._stoppedAt) / 1000)} s`;
+        return undefined;
+    }
     protected async checkLatchAsync(relaysSet: boolean) {
         let now = new Date().getTime();
         let first = !this._relaysChecked;
