@@ -203,7 +203,8 @@ circuits, when the body it is set to is that body.
 ## 9. The return sensor
 
 If `returnSensor` names an input, its reading is shown on the body card as Solar Return, and
-while solar runs the gain over the water going in is shown and logged. A reading of exactly 0, or
+while solar runs the gain over the water going in is shown. The return and its gain are logged
+with the other readings when solar turns on or off and every five minutes while it runs. A reading of exactly 0, or
 one more than 60 degrees from the water, counts as no sensor. It takes no part in the decision.
 
 The setting is offered only on a system with one body. With more bodies, solar sensors 2 to 4
@@ -218,6 +219,8 @@ are the collector sensors of the other bodies.
 - **A stop for the collector:** "turned off because the collector lead over the water fell to the
   run delta", with the reheat guard and the level the collector must reach.
 - **A stop for the water:** "turned off because the water was at or above" the stop level.
+- **While solar runs:** every five minutes a line "Solar ... heating" (or "cooling") with the water,
+  the collector and its lead over the water, and with a return sensor, the return and its gain.
 
 `solar_log_check.py` in this folder reads these lines and reports the runs, what held solar off
 and for how long, and what each check did.

@@ -19,7 +19,7 @@ import { logger } from '../../logger/Logger';
 import { Body, Heater, sys } from '../Equipment';
 import { BodyTempState, HeaterState, state } from '../State';
 import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs } from './SolarSettings';
-import { solarRuntime as rt, SOLAR_START_WATCH_MS } from './SolarRuntime';
+import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS } from './SolarRuntime';
 
 // What the solar decision is given for one solar heater on one body, from HeaterCommands.syncHeaterStates. isHeating, isCooling,
 // heatNote and the solarCheck/solarReturn/solarGain values are the body's values so far in this pass (a second solar heater on the
@@ -447,6 +447,18 @@ export class SolarDecision {
                 logger.verbose(`Solar ${heater.name} (${body.name}): ${Math.round((nowMs - w.at) / 1000)} s after turning on: water ${Math.round(body.temp * 100) / 100} (${d(w.water, body.temp)}), collector ${Math.round(state.temps.solar * 10) / 10} (${d(w.solar, state.temps.solar)})${typeof solarReturn !== 'undefined' ? `, return ${solarReturn} (${solarReturn - body.temp >= 0 ? '+' : ''}${Math.round((solarReturn - body.temp) * 10) / 10} over the water)` : ''}.`);
             }
         }
+        // While solar runs, its readings go in the solar log every five minutes: the water, the collector and its lead over the water, and when a
+        // return sensor is reading, the return and its gain over the water (the heat the run delivers). The first line comes five minutes after the
+        // start, which is logged with the same readings, as is the stop.
+        if (!(isOn && hState.isOn)) rt.runLogAt.delete(heater.id);
+        else {
+            const lastAt = rt.runLogAt.get(heater.id);
+            if (typeof lastAt === 'undefined') rt.runLogAt.set(heater.id, nowMs);
+            else if (nowMs - lastAt >= SOLAR_RUN_LOG_MS) {
+                rt.runLogAt.set(heater.id, nowMs);
+                logger.solar(`Solar ${heater.name} ${isCooling ? 'cooling' : 'heating'} (${body.name}): ${this.runReadings(body)}.`);
+            }
+        }
         if (hstate.isOn && !isOn) {
             // The reheat guard is for a stop the collector caused (flow cooled it, a cloud, the evening): it must climb again before the next start.
             // When the water reached its target the collector was fine, so there is nothing to wait for and no guard is set.
@@ -565,10 +577,24 @@ export class SolarDecision {
                 const r2 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : v;
                 const r1 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
                 const prevOff = hState.prevHeaterOffTemp;
-                logger.solar(`Solar ${heater.name} ${solarNow} (${body.name}, mode ${mode}): water ${r2(body.temp)}, setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}), collector at last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(prevOff)}, collector minus last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(state.temps.solar - prevOff)} (start delta ${heater.startTempDelta}), night ${state.heliotrope.isNight}`);
+                logger.solar(`Solar ${heater.name} ${solarNow} (${body.name}, mode ${mode}): water ${r2(body.temp)}, setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}), collector at last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(prevOff)}, collector minus last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(state.temps.solar - prevOff)} (start delta ${heater.startTempDelta}), night ${state.heliotrope.isNight}${this.returnReadings(body)}`);
             }
         }
         return { isOn, isHeating, isCooling, heatNote, solarCheckTemp, solarCheckTime, solarChecking, solarReturn, solarGain, holdsOthers: solarHolds };
+    }
+    // The return and its difference from the water, for a log line: empty when there is no return sensor or it is not reading.
+    private returnReadings(body: BodyTempState): string {
+        const ret = solarReturnTemp(body.temp);
+        if (typeof ret === 'undefined') return '';
+        const r2 = (v: number) => Math.round(v * 100) / 100;
+        const gain = r2(ret - body.temp);
+        return `, return ${r2(ret)}, return minus water ${gain >= 0 ? '+' : ''}${gain}`;
+    }
+    // The readings logged while solar runs.
+    private runReadings(body: BodyTempState): string {
+        const r1 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 10) / 10 : v;
+        const r2 = (v: any) => typeof v === 'number' && isFinite(v) ? Math.round(v * 100) / 100 : v;
+        return `water ${r2(body.temp)}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)}${this.returnReadings(body)}`;
     }
 }
 export const solar = new SolarDecision();
