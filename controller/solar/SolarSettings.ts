@@ -62,7 +62,8 @@ function solarValveDelayMs(): number {
 }
 // controller.solar.returnSensor in config.json ('' by default; 'solarSensor2', 'solarSensor3' or 'solarSensor4'): the temperature input that sits on
 // the pipe coming back from the solar collector. The collector sensor is usually in the air beside the panels; the return sensor reads what solar
-// is actually delivering. For now it is shown and logged, with its gain over the water going in, and takes no part in the decision.
+// is actually delivering. It is shown and logged, with its gain over the water going in. With controller.solar.returnHold on it can also keep a
+// heating run going past the collector stop (see solarReturnHold); otherwise it takes no part in the decision.
 // It is offered only where there is one body: with more, solar sensors 2 to 4 are the collector sensors of the other bodies.
 const SOLAR_RETURN_SENSORS = ['solarSensor2', 'solarSensor3', 'solarSensor4'];
 function solarReturnSensor(): string {
@@ -125,4 +126,25 @@ function solarMinRunMs(): number {
     } catch (err) { /* the default applies */ }
     return mins * 60000;
 }
-export { solarSettleMs, solarHysteresis, solarValveDelayMs, SOLAR_RETURN_SENSORS, solarReturnSensor, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs };
+// controller.solar.returnHold in config.json (default false; file only): with a return sensor reading, a heating run is not stopped when the
+// collector's lead over the water falls to the run delta while the return's gain over the water, averaged over the last five minutes, is at least
+// returnHoldGain and the collector still leads the water by more than SOLAR_RETURN_FLOOR. The collector sensor reads the panels, not the heat they
+// deliver: on the author's pool the return was still 0.2 to 1.1 above the water at the collector stops of 10 and 11 November 2026. The hold applies
+// only once the average has come up to returnHoldGain after the start (the water standing in the pipes reads cold at first). It never starts solar,
+// it does not apply to cooling, the water stop still applies, and without a return reading the usual rules do.
+function solarReturnHold(): boolean {
+    try {
+        const c = config.getSection('controller.solar');
+        return c.returnHold === true || c.returnHold === 'true';
+    } catch (err) { return false; }
+}
+// controller.solar.returnHoldGain in config.json (default 0.5, 0.1 to 5 degrees): the averaged return gain that keeps a run going under returnHold.
+function solarReturnHoldGain(): number {
+    let deg = 0.5;
+    try {
+        const c = config.getSection('controller.solar');
+        if (typeof c.returnHoldGain !== 'undefined') { const v = parseFloat(c.returnHoldGain); if (isFinite(v)) deg = Math.min(Math.max(v, 0.1), 5); }
+    } catch (err) { /* the default applies */ }
+    return deg;
+}
+export { solarSettleMs, solarHysteresis, solarValveDelayMs, SOLAR_RETURN_SENSORS, solarReturnSensor, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain };

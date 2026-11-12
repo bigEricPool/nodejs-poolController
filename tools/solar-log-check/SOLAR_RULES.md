@@ -29,7 +29,8 @@ setpoint at once. Without the rules below that produces short starts, over and o
 
 ## 2. Settings
 
-All are in `config.json` under `controller.solar`. All but `coolAnyTime` are also on the heater
+All are in `config.json` under `controller.solar`. All but `coolAnyTime`, `returnHold` and
+`returnHoldGain` are also on the heater
 page of dashPanel under Solar Controls. A change takes effect on the next pass; no restart is needed.
 
 | Setting | Default | What it does |
@@ -38,10 +39,12 @@ page of dashPanel under Solar Controls. A change takes effect on the next pass; 
 | `hysteresis` | 0.5 | Solar stops at the setpoint plus this, and after such a stop restarts at the setpoint minus this. 0 turns it off. |
 | `valveDelaySeconds` | 0 (off) | How long the pump runs at its solar speed, valve closed, before a start is judged (the check). 120 is a value to start with. |
 | `checkPeriodMinutes` | 60 | After the check turns a start down, how long before the next check. |
-| `returnSensor` | none | The temperature input on the pipe coming back from the panels. Shown and logged only. One-body systems only. |
+| `returnSensor` | none | The temperature input on the pipe coming back from the panels. Shown and logged; with `returnHold` on it can keep a heating run going. One-body systems only. |
 | `startMargin` | 2 | How much more than the run delta the collector must lead the water (warmer for heating, cooler for cooling) for a check to begin and pass. Room for the collector reading to move toward the water once water flows. |
 | `minRunMinutes` | 5 | For this long after solar turns on, it is not stopped because the collector lead fell to the run delta. A collector no warmer (cooling: no cooler) than the water, and the water stop, still apply. |
 | `coolAnyTime` | false | Nocturnal cooling may run at any hour, not only between sunset and sunrise. For testing; file only. See section 6. |
+| `returnHold` | false | With a return sensor, a heating run continues past the collector stop while the return still delivers heat. File only. See section 6. |
+| `returnHoldGain` | 0.5 | The return gain over the water, averaged over 5 minutes, that keeps a run going under `returnHold` (0.1 to 5). File only. |
 
 The start delta and the run delta are the heater's own settings (6 and 3 on this pool).
 
@@ -130,6 +133,15 @@ solar is started by a check and by nothing else.
   changed setpoint, not the flow effect.
 - **Collector too cool.** Solar stops when the collector's lead over the water falls to the run
   delta. This sets the reheat guard.
+- **The return hold** (`returnHold`, off by default). The collector sensor reads the panels, not
+  the heat they deliver, and the return can still be above the water when the lead reaches the
+  run delta. With the hold on and a return sensor reading, a heating run goes on past that point
+  while the return's gain over the water, averaged over the last 5 minutes, is at least
+  `returnHoldGain` and the collector still leads the water by more than 1. It applies only once
+  that average has come up to `returnHoldGain` after the start, because the water standing in the
+  pipes reads cold at first. It never starts solar and does not apply to cooling. The water stop
+  still applies. When the hold ends, the stop is a collector stop and sets the reheat guard. With no
+  return reading, or with the reading gone for a minute, the usual rule applies.
 - **A stop stands.** Once a stop is decided it is not judged again until the heater reports off.
   Before this rule, a new reading arriving while the relay switched could clear the reheat guard.
 - After any stop the settle delay runs before the next start is considered.
@@ -205,7 +217,8 @@ circuits, when the body it is set to is that body.
 If `returnSensor` names an input, its reading is shown on the body card as Solar Return, and
 while solar runs the gain over the water going in is shown. The return and its gain are logged
 with the other readings when solar turns on or off and every five minutes while it runs. A reading of exactly 0, or
-one more than 60 degrees from the water, counts as no sensor. It takes no part in the decision.
+one more than 60 degrees from the water, counts as no sensor. It takes no part in the decision
+unless `returnHold` is on (section 6).
 
 The setting is offered only on a system with one body. With more bodies, solar sensors 2 to 4
 are the collector sensors of the other bodies.
@@ -221,6 +234,9 @@ are the collector sensors of the other bodies.
 - **A stop for the water:** "turned off because the water was at or above" the stop level.
 - **While solar runs:** every five minutes a line "Solar ... heating" (or "cooling") with the water,
   the collector and its lead over the water, and with a return sensor, the return and its gain.
+- **The return hold:** "kept running by the return" when it keeps a run going past the collector
+  stop; the five-minute lines then end "kept running by the return"; and "the return hold ended
+  after N min" with the change in the water and the reason.
 
 `solar_log_check.py` in this folder reads these lines and reports the runs, what held solar off
 and for how long, and what each check did.
