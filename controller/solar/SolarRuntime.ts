@@ -20,6 +20,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 export const SOLAR_START_WATCH_MS = 10 * 60 * 1000;
 // How often the readings are logged while solar runs (see runLogAt).
 export const SOLAR_RUN_LOG_MS = 5 * 60 * 1000;
+// The return hold (controller.solar.returnHold): the return gain is averaged over this long, and the collector must still lead the water by more
+// than SOLAR_RETURN_FLOOR degrees, so a return sensor that sticks or fails cannot keep the pump on at its solar speed.
+export const SOLAR_RETURN_WINDOW_MS = 5 * 60 * 1000;
+export const SOLAR_RETURN_FLOOR = 1;
 export class SolarRuntime {
     // The last solar decision logged for each heater id (see the 'warn-solar' log level), so only a change is logged.
     public logged: Map<number, string> = new Map<number, string>();
@@ -61,6 +65,12 @@ export class SolarRuntime {
     // While solar runs, when its readings were last put in the solar log, per heater: they are logged every SOLAR_RUN_LOG_MS, so a run shows how the
     // collector and, with a return sensor, the heat it delivers change through the day. Nothing else in the log covers a run between its start and stop.
     public runLogAt: Map<number, number> = new Map<number, number>();
+    // For the return hold, per heater, while a heating run is on: the return's gain over the water, sampled every 10 s over the last
+    // SOLAR_RETURN_WINDOW_MS; whether the average has come up to returnHoldGain since the run began; and, while the hold is keeping the run
+    // going past the collector stop, when that began and the water then.
+    public returnGains: Map<number, { at: number; gain: number }[]> = new Map<number, { at: number; gain: number }[]>();
+    public returnUp: Set<number> = new Set<number>();
+    public returnHeld: Map<number, { at: number; water: number }> = new Map<number, { at: number; water: number }>();
     // The water reading from the last pass on which solar was running, per heater, and when that was. After solar turns off the pump goes back to its
     // normal speed and the sensor reads lower, so a dashboard is given this reading (marked, with its time) in place of the live one until the next
     // valve delay check replaces it, or for the solar check period at most.

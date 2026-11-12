@@ -18,8 +18,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import { logger } from '../../logger/Logger';
 import { Body, Heater, sys } from '../Equipment';
 import { BodyTempState, HeaterState, state } from '../State';
-import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs } from './SolarSettings';
-import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS } from './SolarRuntime';
+import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain } from './SolarSettings';
+import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS, SOLAR_RETURN_WINDOW_MS, SOLAR_RETURN_FLOOR } from './SolarRuntime';
 
 // What the solar decision is given for one solar heater on one body, from HeaterCommands.syncHeaterStates. isHeating, isCooling,
 // heatNote and the solarCheck/solarReturn/solarGain values are the body's values so far in this pass (a second solar heater on the
@@ -238,10 +238,37 @@ export class SolarDecision {
             ? !stopNow
             : (waterTemp > coolPoint
                 && (hState.targetStop !== 'cooling' || waterTemp > (coolPoint + hysteresis)));
+        // The return hold (controller.solar.returnHold, off by default): while a heating run is on, the return's gain over the water is averaged over
+        // the last five minutes. Once that average has come up to returnHoldGain (after the water standing in the pipes has flushed), it keeps the run
+        // going past the collector stop while it stays there and the collector still leads the water by more than SOLAR_RETURN_FLOOR. The samples are
+        // kept with the setting off too, so turning it on mid-run applies at once.
+        let returnHolds = false, returnAvg: number = undefined;
+        {
+            const heatingRun = hState.isOn && hState.isCooling !== true;
+            if (!heatingRun) { rt.returnGains.delete(heater.id); rt.returnUp.delete(heater.id); }
+            else {
+                const ret = solarReturnTemp(waterTemp);
+                let g = rt.returnGains.get(heater.id);
+                if (typeof g === 'undefined') { g = []; rt.returnGains.set(heater.id, g); }
+                if (typeof ret === 'number' && typeof waterTemp === 'number' && isFinite(waterTemp) && (g.length === 0 || nowMs - g[g.length - 1].at >= 10000)) g.push({ at: nowMs, gain: ret - waterTemp });
+                while (g.length > 0 && nowMs - g[0].at > SOLAR_RETURN_WINDOW_MS) g.shift();
+                // A full window: it spans the five minutes (less a minute for the pass timing) and the newest sample is recent, so a return sensor that
+                // stops reading ends the hold within a minute.
+                const full = g.length >= 3 && (g[g.length - 1].at - g[0].at) >= SOLAR_RETURN_WINDOW_MS - 60000 && nowMs - g[g.length - 1].at <= 60000;
+                if (full) {
+                    let sum = 0;
+                    for (let k = 0; k < g.length; k++) sum += g[k].gain;
+                    returnAvg = sum / g.length;
+                    if (returnAvg >= solarReturnHoldGain()) rt.returnUp.add(heater.id);
+                }
+                returnHolds = solarReturnHold() && full && rt.returnUp.has(heater.id) && returnAvg >= solarReturnHoldGain()
+                    && (state.temps.solar - waterTemp) > SOLAR_RETURN_FLOOR;
+            }
+        }
         const heatOk = state.temps.solar > waterTemp // 1
             && heatWater // 2 and 5
             && (hState.isOn || typeof hState.prevHeaterOffTemp === 'undefined' || ((state.temps.solar - hState.prevHeaterOffTemp) > heater.startTempDelta)) // 3: a rule for starting; a run is not ended by it
-            && (inMinRun || (state.temps.solar - waterTemp) > heater.stopTempDelta); // 4, except early in a run (minRunMinutes)
+            && (inMinRun || returnHolds || (state.temps.solar - waterTemp) > heater.stopTempDelta); // 4, except early in a run (minRunMinutes) or under the return hold
         // reverse logic from heating states
         const coolOk = heater.coolingEnabled
             && coolTime
@@ -447,6 +474,38 @@ export class SolarDecision {
                 logger.verbose(`Solar ${heater.name} (${body.name}): ${Math.round((nowMs - w.at) / 1000)} s after turning on: water ${Math.round(body.temp * 100) / 100} (${d(w.water, body.temp)}), collector ${Math.round(state.temps.solar * 10) / 10} (${d(w.solar, state.temps.solar)})${typeof solarReturn !== 'undefined' ? `, return ${solarReturn} (${solarReturn - body.temp >= 0 ? '+' : ''}${Math.round((solarReturn - body.temp) * 10) / 10} over the water)` : ''}.`);
             }
         }
+        // The return hold: when it keeps this run going past the collector stop, say so with the readings, and say when and why it ended.
+        let holdNote = '';
+        {
+            const lead = state.temps.solar - waterTemp;
+            const heldNow = isOn && hState.isOn && !isCooling && returnHolds && !inMinRun && !(lead > heater.stopTempDelta);
+            const held = rt.returnHeld.get(heater.id);
+            const r1 = (v: number) => Math.round(v * 10) / 10;
+            const r2 = (v: number) => Math.round(v * 100) / 100;
+            const avgTxt = typeof returnAvg === 'number' ? `${returnAvg >= 0 ? '+' : ''}${r2(returnAvg)}` : 'n/a';
+            if (heldNow) {
+                holdNote = `, kept running by the return (5 min average gain ${avgTxt})`;
+                if (typeof held === 'undefined') {
+                    rt.returnHeld.set(heater.id, { at: nowMs, water: waterTemp });
+                    logger.solar(`Solar ${heater.name} (${body.name}): kept running by the return: the collector lead fell to ${r1(lead)} (run delta ${heater.stopTempDelta}), but the return gain over the water averaged ${avgTxt} over the last 5 min (${solarReturnHoldGain()} or more keeps it running while the collector leads the water by more than ${SOLAR_RETURN_FLOOR}): ${this.runReadings(body)}.`);
+                }
+            }
+            // While solar still runs, the hold is over only once the lead is clearly back above the run delta (by more than a degree), so a lead
+            // hovering at the run delta does not log a start and an end of the hold every few passes.
+            else if (typeof held !== 'undefined' && !(isOn && !(lead > heater.stopTempDelta + 1))) {
+                rt.returnHeld.delete(heater.id);
+                let why: string;
+                if (isOn) why = `the collector lead rose to ${r1(lead)}, above the run delta again`;
+                else if (stopNow) why = 'the water reached its stop level';
+                else if (!solarReturnHold()) why = 'returnHold was turned off';
+                else if (typeof returnAvg !== 'number') why = 'the return stopped reading';
+                else if (returnAvg < solarReturnHoldGain()) why = `the return gain averaged ${avgTxt} over the last 5 min, below ${solarReturnHoldGain()}`;
+                else if (!(lead > SOLAR_RETURN_FLOOR)) why = `the collector lead fell to ${r1(lead)}, not more than ${SOLAR_RETURN_FLOOR}`;
+                else why = 'solar turned off';
+                const dw = r2(waterTemp - held.water);
+                logger.solar(`Solar ${heater.name} (${body.name}): the return hold ended after ${Math.round((nowMs - held.at) / 60000)} min, the water ${dw >= 0 ? '+' : ''}${dw} since it began: ${why}. ${this.runReadings(body)}.`);
+            }
+        }
         // While solar runs, its readings go in the solar log every five minutes: the water, the collector and its lead over the water, and when a
         // return sensor is reading, the return and its gain over the water (the heat the run delivers). The first line comes five minutes after the
         // start, which is logged with the same readings, as is the stop.
@@ -456,7 +515,7 @@ export class SolarDecision {
             if (typeof lastAt === 'undefined') rt.runLogAt.set(heater.id, nowMs);
             else if (nowMs - lastAt >= SOLAR_RUN_LOG_MS) {
                 rt.runLogAt.set(heater.id, nowMs);
-                logger.solar(`Solar ${heater.name} ${isCooling ? 'cooling' : 'heating'} (${body.name}): ${this.runReadings(body)}.`);
+                logger.solar(`Solar ${heater.name} ${isCooling ? 'cooling' : 'heating'} (${body.name}): ${this.runReadings(body)}${holdNote}.`);
             }
         }
         if (hstate.isOn && !isOn) {
