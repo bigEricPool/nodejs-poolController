@@ -29,8 +29,8 @@ setpoint at once. Without the rules below that produces short starts, over and o
 
 ## 2. Settings
 
-All are in `config.json` under `controller.solar`. All but `coolAnyTime`, `returnHold` and
-`returnHoldGain` are also on the heater
+All are in `config.json` under `controller.solar`. All but `coolAnyTime`, `returnHold`,
+`returnHoldGain` and `blockFeature` are also on the heater
 page of dashPanel under Solar Controls. A change takes effect on the next pass; no restart is needed.
 
 | Setting | Default | What it does |
@@ -45,6 +45,7 @@ page of dashPanel under Solar Controls. A change takes effect on the next pass; 
 | `coolAnyTime` | false | Nocturnal cooling may run at any hour, not only between sunset and sunrise. For testing; file only. See section 6. |
 | `returnHold` | false | With a return sensor, a heating run continues past the collector stop while the return still delivers heat. File only. See section 6. |
 | `returnHoldGain` | 0.5 | The return gain over the water, averaged over 5 minutes, that keeps a run going under `returnHold` (0.1 to 5). File only. |
+| `blockFeature` | none | A feature, by id or name, that stands for a valve closing the collector off. While it is on, solar does not run. File only. See section 6. |
 
 The start delta and the run delta are the heater's own settings (6 and 3 on this pool).
 
@@ -143,6 +144,13 @@ solar is started by a check and by nothing else.
   in the morning and hot after sitting in the sun, and is not heat the panels deliver. It never starts solar and does not apply to cooling. The water stop
   still applies. When the hold ends, the stop is a collector stop and sets the reheat guard. With no
   return reading, or with the reading gone for a minute, the usual rule applies.
+- **The block feature** (`blockFeature`, none by default). For a valve that keeps water out of the
+  collector, closed for the winter or for work on the panels. Turn the named feature on when the
+  valve is closed. While it is on, solar does not start, a running solar stops (no reheat guard is
+  set: the collector did not cause it), and a valve delay check under way is cancelled. The heat
+  mode is left as it is, so solar resumes by its usual rules once the feature is off. A setting
+  that names no feature is warned about once and blocks nothing. The dashboard note reads
+  "Solar off: <feature> is on".
 - **A stop stands.** Once a stop is decided it is not judged again until the heater reports off.
   Before this rule, a new reading arriving while the relay switched could clear the reheat guard.
 - After any stop the settle delay runs before the next start is considered.
@@ -238,6 +246,8 @@ are the collector sensors of the other bodies.
 - **The return hold:** "kept running by the return" when it keeps a run going past the collector
   stop; the five-minute lines then end "kept running by the return"; and "the return hold ended
   after N min" with the change in the water and the reason.
+- **The block feature:** "blocked: the feature ... is on" when it comes on, "turned off because the
+  feature ... is on" if solar was running, and "no longer blocked" when it goes off.
 
 `solar_log_check.py` in this folder reads these lines and reports the runs, what held solar off
 and for how long, and what each check did.
