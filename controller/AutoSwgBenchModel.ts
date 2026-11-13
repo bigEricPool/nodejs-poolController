@@ -388,7 +388,7 @@ export function intervalsFrom(readings: FcReading[], rows: BenchHour[]): Interva
 // ---------------------------------------------------------------- CYA
 
 export interface CyaTest { t: number; ppm: number; }
-// The CYA of an hour as known at `asOf`, held at the last test (Step 1 of the bench; the full path with rain, salt and additions comes later):
+// The CYA of an hour as known at `asOf`, held at the last test (the full path with rain, salt and additions is AutoSwgBenchCya.ts):
 // the newest test at or before the hour among those known at asOf, or the first known one for an hour before every test. Floored at 10.
 export function heldCya(tests: CyaTest[], asOf: number): (t: number) => number {
     const known = tests.filter(c => c.t <= asOf && c.ppm > 0).sort((a, b) => a.t - b.t);
@@ -398,6 +398,16 @@ export function heldCya(tests: CyaTest[], asOf: number): (t: number) => number {
         for (const c of known) { if (c.t <= t) v = c.ppm; else break; }
         return Math.max(v, 10);
     };
+}
+
+// Where a variant's CYA comes from: the tests alone (held at the last one), or the tests and a path between them (AutoSwgBenchCya.ts) as known at a
+// moment. A plain list of tests is the held CYA. A variant uses the path only when it asks for it (cya 'path') and one is given.
+export interface CyaSource { tests: CyaTest[]; path?: (asOf: number) => (t: number) => number; }
+export type CyaInput = CyaTest[] | CyaSource;
+export function cyaFor(v: BenchVariant, src: CyaInput, asOf: number): (t: number) => number {
+    if (Array.isArray(src)) return heldCya(src, asOf);
+    if (v.cya === 'path' && src.path) return src.path(asOf);
+    return heldCya(src.tests || [], asOf);
 }
 
 // ---------------------------------------------------------------- variants
@@ -417,17 +427,24 @@ export interface BenchVariant {
     sun?: BenchSunTerm;         // model: the sunlight term (pool)
     fcTerm?: 'fcCya' | 'fc';    // model: FC/CYA or FC alone (fcCya)
     fcPath?: 'held' | 'model';  // model: inside the gap FC is held at the start reading, or follows the model itself (model)
+    cya?: 'held' | 'path';      // model: CYA held at the last test (held, also when not set) or the full path between tests (path)
+    temp?: boolean;             // model: the sun term times exp(c x (T - 80 F)), T the water temperature, c fitted from TEMP_C_GRID
+    rainWash?: boolean;         // model: plus b2 x the rain in inches (a wash-in demand), b2 fitted
 }
 
 export const DEFAULT_VARIANTS: BenchVariant[] = [
     { id: 'live', version: 1, kind: 'live', label: 'SWG Assist projection (live)' },
     { id: 'plain14', version: 1, kind: 'plain', windowDays: 14, label: '14-day average' },
     { id: 'plain7', version: 1, kind: 'plain', windowDays: 7, label: '7-day average' },
-    { id: 'sun-cya-30', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', label: 'Pool sun x FC/CYA, 30-day fit' },
-    { id: 'sun-cya-30-station', version: 1, kind: 'model', sun: 'station', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', label: 'Station sun x FC/CYA, 30-day fit' },
-    { id: 'sun-cya-30-hourHigh', version: 1, kind: 'model', sun: 'poolHourHigh', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', label: 'Pool sun (hour highs) x FC/CYA, 30-day fit' },
-    { id: 'sun-cya-14', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 14, ridge: 0.5, fcPath: 'model', label: 'Pool sun x FC/CYA, 14-day fit' },
-    { id: 'sun-cya-45', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 45, ridge: 0.5, fcPath: 'model', label: 'Pool sun x FC/CYA, 45-day fit' },
+    // version 2 of the models: the CYA path between tests (version 1 held CYA at the last test; sun-cya-30-heldCYA keeps that one going)
+    { id: 'sun-cya-30', version: 2, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun x FC/CYA, 30-day fit' },
+    { id: 'sun-cya-30-heldCYA', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'held', label: 'Pool sun x FC/CYA, CYA held at the last test' },
+    { id: 'sun-cya-30-station', version: 2, kind: 'model', sun: 'station', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Station sun x FC/CYA, 30-day fit' },
+    { id: 'sun-cya-30-hourHigh', version: 2, kind: 'model', sun: 'poolHourHigh', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun (hour highs) x FC/CYA, 30-day fit' },
+    { id: 'sun-cya-30-temp', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', temp: true, label: 'Pool sun x FC/CYA x water temperature, 30-day fit' },
+    { id: 'sun-cya-30-rainwash', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', rainWash: true, label: 'Pool sun x FC/CYA plus rain wash-in, 30-day fit' },
+    { id: 'sun-cya-14', version: 2, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 14, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun x FC/CYA, 14-day fit' },
+    { id: 'sun-cya-45', version: 2, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 45, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun x FC/CYA, 45-day fit' },
 ];
 
 // The sunlight term of an hour (W/m2) for a variant; undefined when the hour lacks the input. `clearness` is the recent clearness a forecast uses.
@@ -458,10 +475,32 @@ export function recentClearness(rows: BenchHour[], asOf: number, days: number = 
     return c > 0 ? s / c : undefined;
 }
 
-export interface Fit { a: number; b: number; n: number; fallback?: 'plain14'; plainRate?: number; }
+// c: the temperature factor's coefficient (per F) when the variant has one; b2: the rain wash-in (ppm per inch) when it has one.
+export interface Fit { a: number; b: number; n: number; c?: number; b2?: number; fallback?: 'plain14'; plainRate?: number; }
 
-// The sun feature of a span: the sum over its hours of FC/CYA x S / 1000, with FC from `fcAt`. Undefined when an hour in sunlight lacks the input.
-function sunFeature(v: BenchVariant, rows: BenchHour[], t1: number, t2: number, cya: (t: number) => number, fcAt: (t: number) => number, forecastClearness?: number): number | undefined {
+// The water temperature the temperature factor is taken around (F), and the coefficients the fit tries (per F).
+export const TEMP_REF_F = 80;
+export const TEMP_C_GRID = [-0.02, 0, 0.02, 0.04, 0.06, 0.08, 0.1];
+// The water temperature of row i: its own, or the newest one in the 72 hours before it; undefined when there is none.
+export function rowTemp(rows: BenchHour[], i: number): number | undefined {
+    for (let j = Math.min(i, rows.length - 1); j >= 0 && j > i - 72; j--) if (typeof rows[j].temp === 'number') return rows[j].temp;
+    return undefined;
+}
+function tempFactor(rows: BenchHour[], i: number, c: number | undefined, heldTemp?: number): number {
+    if (!c) return 1;
+    const T = typeof heldTemp === 'number' ? heldTemp : rowTemp(rows, i);
+    return typeof T === 'number' ? Math.exp(c * (T - TEMP_REF_F)) : 1;
+}
+// The rain (inches) of the hours that end in (t1, t2].
+export function rainBetween(rows: BenchHour[], t1: number, t2: number): number {
+    let s = 0;
+    for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t <= t2; i++) if (typeof rows[i].rain === 'number') s += rows[i].rain;
+    return s;
+}
+
+// The sun feature of a span: the sum over its hours of FC/CYA x S / 1000 (times the temperature factor with `c`), with FC from `fcAt`. Undefined when
+// an hour in sunlight lacks the input. A forecast holds the water temperature at `heldTemp`.
+export function sunFeature(v: BenchVariant, rows: BenchHour[], t1: number, t2: number, cya: (t: number) => number, fcAt: (t: number) => number, forecastClearness?: number, c?: number, heldTemp?: number): number | undefined {
     const term = v.sun || 'pool';
     let s = 0;
     for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t <= t2; i++) {
@@ -472,7 +511,7 @@ function sunFeature(v: BenchVariant, rows: BenchHour[], t1: number, t2: number, 
             continue;
         }
         const f = Math.max(fcAt(r.t), 0.5);
-        s += (v.fcTerm === 'fc' ? f : f / cya(r.t)) * sun / 1000;
+        s += (v.fcTerm === 'fc' ? f : f / cya(r.t)) * sun / 1000 * tempFactor(rows, i, c, heldTemp);
     }
     return s;
 }
@@ -516,34 +555,53 @@ export function plainRate(intervals: Interval[], asOf: number, windowDays: numbe
 }
 
 // Fits a model variant as of `asOf` on the intervals that lie within its last fitDays days (FC linear between the two readings of each).
-// Fewer than minIntervals usable intervals: the fit falls back to the 14-day plain average.
-export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaTest[], asOf: number): Fit | undefined {
+// Fewer than minIntervals usable intervals: the fit falls back to the 14-day plain average. With the temperature factor every c of TEMP_C_GRID is
+// fitted and the one with the smallest squared error is kept; with the rain wash-in the rain of each interval is a third column.
+export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaInput, asOf: number): Fit | undefined {
     const L = (v.fitDays || 30) * DAY_MS, minGap = (typeof v.minGapDays === 'number' ? v.minGapDays : 0.3) * DAY_MS;
-    const cya = heldCya(cyaTests, asOf);
-    const X: number[][] = [], y: number[] = [];
-    for (const iv of intervals) {
-        if (iv.t2 > asOf || iv.t1 < asOf - L || iv.t2 - iv.t1 <= minGap) continue;
-        const s = sunFeature(v, rows, iv.t1, iv.t2, cya, t => iv.f1 + (iv.f2 - iv.f1) * (t - iv.t1) / (iv.t2 - iv.t1));
-        if (typeof s !== 'number') continue;
-        X.push([s, gapDays(iv)]); y.push(consumption(iv));
+    const cya = cyaFor(v, cyaTests, asOf);
+    const usable = intervals.filter(iv => !(iv.t2 > asOf || iv.t1 < asOf - L || iv.t2 - iv.t1 <= minGap));
+    const ridge = typeof v.ridge === 'number' ? v.ridge : 0.5;
+    let best: { w: number[]; c: number; n: number; sse: number } | undefined, nUsed = 0;
+    for (const c of v.temp ? TEMP_C_GRID : [0]) {
+        const X: number[][] = [], y: number[] = [];
+        for (const iv of usable) {
+            const s = sunFeature(v, rows, iv.t1, iv.t2, cya, t => iv.f1 + (iv.f2 - iv.f1) * (t - iv.t1) / (iv.t2 - iv.t1), undefined, c);
+            if (typeof s !== 'number') continue;
+            const x = [s, gapDays(iv)];
+            if (v.rainWash) x.push(rainBetween(rows, iv.t1, iv.t2));
+            X.push(x); y.push(consumption(iv));
+        }
+        nUsed = X.length;
+        if (X.length < (v.minIntervals || 5)) { best = undefined; break; }
+        const w = ridgeSolve(X, y, ridge);
+        let sse = 0;
+        for (let k = 0; k < X.length; k++) { let p = 0; for (let j = 0; j < w.length; j++) p += X[k][j] * w[j]; sse += (y[k] - p) * (y[k] - p); }
+        if (!best || sse < best.sse - 1e-9) best = { w: w, c: c, n: X.length, sse: sse };
     }
-    if (X.length < (v.minIntervals || 5)) {
+    if (!best) {
         const r = plainRate(intervals, asOf, 14);
-        return typeof r === 'number' ? { a: 0, b: r, n: X.length, fallback: 'plain14', plainRate: r } : undefined;
+        return typeof r === 'number' ? { a: 0, b: r, n: nUsed, fallback: 'plain14', plainRate: r } : undefined;
     }
-    const [a, b] = ridgeSolve(X, y, typeof v.ridge === 'number' ? v.ridge : 0.5);
-    return { a: a, b: b, n: X.length };
+    const fit: Fit = { a: best.w[0], b: best.w[1], n: best.n };
+    if (v.temp) fit.c = best.c;
+    if (v.rainWash) fit.b2 = best.w[2];
+    return fit;
 }
 
 // The loss a variant projects from a reading (t1, f1) to t2 with a fit. With fcPath 'model' FC inside the gap follows the projection itself (the
 // generation from the rows less the projected loss, hour by hour); with 'held' it stays at f1. `forecastClearness` makes it a forecast.
-export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaTest[], asOf: number, t1: number, f1: number, t2: number, forecastClearness?: number): number | undefined {
+// A forecast (forecastClearness given) holds the water temperature at the last one known at asOf and expects no rain.
+export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaInput, asOf: number, t1: number, f1: number, t2: number, forecastClearness?: number): number | undefined {
     const days = (t2 - t1) / DAY_MS;
     if (fit.fallback === 'plain14') return fit.b * days;
-    const cya = heldCya(cyaTests, asOf);
+    const cya = cyaFor(v, cyaTests, asOf);
+    const forecast = typeof forecastClearness === 'number';
+    const heldTemp = forecast && fit.c ? rowTemp(rows, firstRowAfter(rows, asOf) - 1) : undefined;
+    const b2 = typeof fit.b2 === 'number' && !forecast ? fit.b2 : 0;
     if (v.fcPath === 'held') {
-        const s = sunFeature(v, rows, t1, t2, cya, () => f1, forecastClearness);
-        return typeof s === 'number' ? fit.a * s + fit.b * days : undefined;
+        const s = sunFeature(v, rows, t1, t2, cya, () => f1, forecastClearness, fit.c, heldTemp);
+        return typeof s === 'number' ? fit.a * s + fit.b * days + b2 * rainBetween(rows, t1, t2) : undefined;
     }
     let fc = f1, loss = 0, t = t1;
     const term = v.sun || 'pool';
@@ -557,7 +615,8 @@ export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTes
         if (r.t <= t2) {
             const sun = sunTerm(r, term, forecastClearness);
             if (typeof sun !== 'number') { if (r.clear > 20) return undefined; }
-            else sunLoss = fit.a * (v.fcTerm === 'fc' ? Math.max(fc, 0.5) : Math.max(fc, 0.5) / cya(r.t)) * sun / 1000;
+            else sunLoss = fit.a * (v.fcTerm === 'fc' ? Math.max(fc, 0.5) : Math.max(fc, 0.5) / cya(r.t)) * sun / 1000 * tempFactor(rows, i, fit.c, heldTemp);
+            if (b2 && typeof r.rain === 'number') sunLoss += b2 * r.rain;
         }
         const step = sunLoss + fit.b * part / 24;
         loss += step;
@@ -575,7 +634,7 @@ export interface ReplayRow { t1: number; t2: number; days: number; f1: number; t
 
 // Scores a variant on every interval of `intervals` (consecutive readings) that starts in [from, to): it is fitted as of the start reading and projects
 // the loss to the next one (nowcast, from the rows' weather). Plain variants use their window. Live variants are not replayed here.
-export function replayVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaTest[], from: number, to: number, firstFitFrom: number = -Infinity): ReplayRow[] {
+export function replayVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaInput, from: number, to: number, firstFitFrom: number = -Infinity): ReplayRow[] {
     const out: ReplayRow[] = [];
     const minGap = (typeof v.minGapDays === 'number' ? v.minGapDays : 0.3) * DAY_MS;
     for (const iv of intervals) {
