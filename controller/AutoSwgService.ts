@@ -784,6 +784,15 @@ export function nextScheduledCheck(now: Date, startTime: string, hours: number, 
     return new Date(earliest + intervalMs);
 }
 
+// The latest known check time in ms: the saved last check and the last attempt in this process (0 or undefined when there has been none), ignoring whichever is
+// missing. (A plain Math.max over them returns NaN when one is missing, which hid every missed check on start.)
+export function latestCheckMs(lastCheckedAt: string | number | undefined, attemptAtMs: number | undefined): number | undefined {
+    const a = typeof lastCheckedAt === 'number' ? lastCheckedAt : (lastCheckedAt ? new Date(lastCheckedAt).getTime() : NaN);
+    const b = typeof attemptAtMs === 'number' && attemptAtMs > 0 ? attemptAtMs : NaN;
+    const known = [a, b].filter(x => !isNaN(x));
+    return known.length ? Math.max(...known) : undefined;
+}
+
 // Whether a scheduled check time passed while no check ran (njsPC was not running over it): the latest check time at or before `now` is later than the last
 // check (a minute of slack, since a check records its time as it runs) and nothing newer is known. A check that has never run is not "missed" (a fresh setup
 // starts at the next check time). Used at start to make up one check shortly after, not to catch up several.

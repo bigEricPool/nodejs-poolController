@@ -28,7 +28,7 @@ import { conn } from "../../../controller/comms/Comms";
 import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
-import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, missedScheduledCheck, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
+import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, latestCheckMs, minutesToHHMM, missedScheduledCheck, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
 import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgService";
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
@@ -720,8 +720,7 @@ export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number)
             delay = nextScheduledCheck(new Date(), cfg.autoCheckStartTime, hours, cfg.timezone, floorMs).getTime() - Date.now();
             // A check time that passed while njsPC was not running, with no check or attempt since, is made up once, shortly after start (a failed attempt counts, so a
             // PoolMath outage is not retried every few minutes).
-            let lastKnown = Math.max(state.autoSwg.lastCheckedAt ? new Date(state.autoSwg.lastCheckedAt).getTime() : NaN, autoSwgLastAutoCheckAttemptAt || NaN);
-            if (missedScheduledCheck(new Date(), isNaN(lastKnown) ? undefined : lastKnown, cfg.autoCheckStartTime, hours, cfg.timezone)) {
+            if (missedScheduledCheck(new Date(), latestCheckMs(state.autoSwg.lastCheckedAt, autoSwgLastAutoCheckAttemptAt), cfg.autoCheckStartTime, hours, cfg.timezone)) {
                 delay = floorMs;
                 logger.info('SWG Assist: a scheduled automatic check was missed while njsPC was not running; making it up shortly.');
             }

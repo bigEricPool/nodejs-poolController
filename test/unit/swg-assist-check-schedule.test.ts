@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: () => {}, verbose: () => {}, debug: () => {}, silly: () => {} } }));
 
-import { missedScheduledCheck, nextScheduledCheck } from '../../controller/AutoSwgService';
+import { latestCheckMs, missedScheduledCheck, nextScheduledCheck } from '../../controller/AutoSwgService';
 
 const TZ = 'America/New_York';
 const FLOOR = 5 * 60 * 1000;
@@ -52,5 +52,21 @@ describe('missedScheduledCheck', () => {
 
     it('accepts a time in milliseconds (a failed attempt in this process counts as a check)', () => {
         expect(missedScheduledCheck(local(22, 6), local(22, 1).getTime(), '10:00', 12, TZ)).toBe(false);
+    });
+});
+
+describe('latestCheckMs (what armAutoSwgAutoCheck passes in on start)', () => {
+    it('uses the saved last check when there has been no attempt in this process (the 2026-11-13 start: it must still find the missed 22:00 check)', () => {
+        const last = latestCheckMs(local(10, 0, 1).toISOString(), 0);
+        expect(last).toBe(local(10, 0, 1).getTime());
+        expect(missedScheduledCheck(local(7, 8, 11, 13), last, '10:00', 12, TZ)).toBe(true);
+    });
+
+    it('takes the later of the saved check and an attempt, and ignores what is missing', () => {
+        expect(latestCheckMs(local(10, 0, 1).toISOString(), local(22, 1).getTime())).toBe(local(22, 1).getTime());
+        expect(latestCheckMs(local(22, 1).toISOString(), local(10, 0).getTime())).toBe(local(22, 1).getTime());
+        expect(latestCheckMs(undefined, local(22, 1).getTime())).toBe(local(22, 1).getTime());
+        expect(latestCheckMs(undefined, 0)).toBeUndefined();
+        expect(latestCheckMs('not a date', undefined)).toBeUndefined();
     });
 });
