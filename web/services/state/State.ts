@@ -68,7 +68,28 @@ export function armWeatherLog(delayMs: number = WEATHER_FIRST_DELAY_MS) {
     }, delayMs);
     weatherTimer.unref();
 }
-import { autoSwgBench } from "../../../controller/AutoSwgBench";
+import { autoSwgBench, setBenchPumpSource, setBenchWaterTempSource, setBenchWeatherSource } from "../../../controller/AutoSwgBench";
+import { tempHistory } from "../../../controller/TempHistory";
+
+// The SWG Assist Model Bench's hourly inputs (controller/AutoSwgBench.ts). Each is read only when the bench fits or scores, and a source that
+// throws or has nothing simply leaves that input missing in the bench's rows.
+//   weather      the hourly weather log (sunlight, rain), as the station is configured in the `weather` section
+//   water temp   the pool body's hourly mean while the pump ran (TempHistory), from the first hour asked for
+//   pump         the seconds a pump ran in each hour: the longest-running pump of the hour, so no pump id is set here and a second pump
+//                (a booster, say) is not added on top of the filter pump
+setBenchWeatherSource((from, to) => weatherHistory.hours(config.getSection('weather'), from, to));
+setBenchWaterTempSource((from, to) => {
+    const days = Math.max(1, Math.ceil((Date.now() - from) / 86400000) + 1);
+    const r = tempHistory.range(1, days, false);
+    const out: { t: number; v: number }[] = [];
+    for (let i = 0; i < r.t.length; i++) if (r.t[i] >= from && r.t[i] < to && typeof r.v[i] === 'number') out.push({ t: r.t[i], v: r.v[i] });
+    return out;
+});
+setBenchPumpSource((from, to) => {
+    const byHour = new Map<number, number>();
+    for (const h of pumpPower.hours(from, to)) byHour.set(h.t, Math.max(byHour.get(h.t) || 0, Math.min(3600, h.on)));
+    return Array.from(byHour.keys()).sort((x, y) => x - y).map(t => ({ t: t, seconds: byHour.get(t) }));
+});
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
