@@ -1994,6 +1994,10 @@ export class StateRoute {
         app.get('/state/autoSwg/bench/sim', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.simStatus()); } catch (err) { next(err); }
         });
+        // The bench's CYA path as known now (every 6 hours over ?days=, default 120), its tests, the additions, the rain k and the CYA test advice.
+        app.get('/state/autoSwg/bench/cya', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.cyaReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
+        });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {
