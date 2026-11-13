@@ -19,7 +19,7 @@ import { logger } from '../../logger/Logger';
 import { Body, Heater, sys } from '../Equipment';
 import { BodyTempState, HeaterState, state } from '../State';
 import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain } from './SolarSettings';
-import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS, SOLAR_RETURN_WINDOW_MS, SOLAR_RETURN_FLOOR } from './SolarRuntime';
+import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS, SOLAR_RETURN_WINDOW_MS, SOLAR_RETURN_FLOOR, SOLAR_RETURN_FLUSH_MS } from './SolarRuntime';
 
 // What the solar decision is given for one solar heater on one body, from HeaterCommands.syncHeaterStates. isHeating, isCooling,
 // heatNote and the solarCheck/solarReturn/solarGain values are the body's values so far in this pass (a second solar heater on the
@@ -250,7 +250,9 @@ export class SolarDecision {
                 const ret = solarReturnTemp(waterTemp);
                 let g = rt.returnGains.get(heater.id);
                 if (typeof g === 'undefined') { g = []; rt.returnGains.set(heater.id, g); }
-                if (typeof ret === 'number' && typeof waterTemp === 'number' && isFinite(waterTemp) && (g.length === 0 || nowMs - g[g.length - 1].at >= 10000)) g.push({ at: nowMs, gain: ret - waterTemp });
+                // Sampled only once the water that stood in the return pipe has gone by (SOLAR_RETURN_FLUSH_MS after the start).
+                const flushed = typeof hState.startTime === 'undefined' || hState.startTime === null || (nowMs - hState.startTime.getTime()) >= SOLAR_RETURN_FLUSH_MS;
+                if (flushed && typeof ret === 'number' && typeof waterTemp === 'number' && isFinite(waterTemp) && (g.length === 0 || nowMs - g[g.length - 1].at >= 10000)) g.push({ at: nowMs, gain: ret - waterTemp });
                 while (g.length > 0 && nowMs - g[0].at > SOLAR_RETURN_WINDOW_MS) g.shift();
                 // A full window: it spans the five minutes (less a minute for the pass timing) and the newest sample is recent, so a return sensor that
                 // stops reading ends the hold within a minute.
@@ -499,7 +501,8 @@ export class SolarDecision {
                 else if (stopNow) why = 'the water reached its stop level';
                 else if (!solarReturnHold()) why = 'returnHold was turned off';
                 else if (typeof returnAvg !== 'number') why = 'the return stopped reading';
-                else if (returnAvg < solarReturnHoldGain()) why = `the return gain averaged ${avgTxt} over the last 5 min, below ${solarReturnHoldGain()}`;
+                // Three decimals here: an average just under the gain rounds to it at two ("averaged +0.5, below 0.5").
+                else if (returnAvg < solarReturnHoldGain()) why = `the return gain averaged ${returnAvg >= 0 ? '+' : ''}${Math.round(returnAvg * 1000) / 1000} over the last 5 min, below ${solarReturnHoldGain()}`;
                 else if (!(lead > SOLAR_RETURN_FLOOR)) why = `the collector lead fell to ${r1(lead)}, not more than ${SOLAR_RETURN_FLOOR}`;
                 else why = 'solar turned off';
                 const dw = r2(waterTemp - held.water);

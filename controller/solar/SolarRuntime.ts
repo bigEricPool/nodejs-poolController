@@ -24,6 +24,9 @@ export const SOLAR_RUN_LOG_MS = 5 * 60 * 1000;
 // than SOLAR_RETURN_FLOOR degrees, so a return sensor that sticks or fails cannot keep the pump on at its solar speed.
 export const SOLAR_RETURN_WINDOW_MS = 5 * 60 * 1000;
 export const SOLAR_RETURN_FLOOR = 1;
+// The first minutes of a run are left out of the return average: the water that stood in the return pipe reaches the sensor first, cold in the
+// morning and hot after it sat in the sun (+10 over the water at a start on 12 November 2026), and is not heat the panels are delivering.
+export const SOLAR_RETURN_FLUSH_MS = 5 * 60 * 1000;
 export class SolarRuntime {
     // The last solar decision logged for each heater id (see the 'warn-solar' log level), so only a change is logged.
     public logged: Map<number, string> = new Map<number, string>();

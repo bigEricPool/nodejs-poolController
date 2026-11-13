@@ -138,8 +138,9 @@ solar is started by a check and by nothing else.
   run delta. With the hold on and a return sensor reading, a heating run goes on past that point
   while the return's gain over the water, averaged over the last 5 minutes, is at least
   `returnHoldGain` and the collector still leads the water by more than 1. It applies only once
-  that average has come up to `returnHoldGain` after the start, because the water standing in the
-  pipes reads cold at first. It never starts solar and does not apply to cooling. The water stop
+  that average has come up to `returnHoldGain` after the start. The first 5 minutes of a run are
+  left out of the average: the water that stood in the return pipe reaches the sensor first, cold
+  in the morning and hot after sitting in the sun, and is not heat the panels deliver. It never starts solar and does not apply to cooling. The water stop
   still applies. When the hold ends, the stop is a collector stop and sets the reheat guard. With no
   return reading, or with the reading gone for a minute, the usual rule applies.
 - **A stop stands.** Once a stop is decided it is not judged again until the heater reports off.
