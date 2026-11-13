@@ -28,6 +28,8 @@ Base for new branches: master at 10.1.0 (2e7c1efb).
 | `feature/pi-status` | feature | The condition of the computer njsPC runs on: processor temperature, power and heat flags, processor and memory use, free storage, Wi-Fi signal, uptime, installed software, and how late njsPC itself runs, with a longer log (njsPC: GET /state/system). dashPanel: a System panel showing it. | none | none |
 | `feature/power-tracking` | feature | Power usage for relay driven pumps: time at each speed times the watts set for it. Off by default. Adds a Pump Power panel in dashPanel. | none | none |
 | `feature/power-pump-speeds` | feature | Pump power speeds set on each pump relay (name, rpm, watts, priority), power tracking per pump, warnings for missing settings; moves the old config.json pumpPower speeds onto the relays once. | feature/power-tracking | none |
+| `feature/swg-bench` | feature | SWG Assist Model Bench: scores alternative projection models against the FC tests, replay and simulator; reads logs, writes only its own files, never changes the SWG %. | feature/swg-assist | none (fork only) |
+| `feature/swg-bench-wiring` | feature | Feeds the bench the weather log, water temperature history and hourly pump power. Based on pool itself; merging it brings feature/swg-bench in. | feature/swg-bench, feature/pws-weather, feature/temp-average-24h, feature/power-tracking | none (fork only) |
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 

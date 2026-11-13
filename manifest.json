@@ -213,6 +213,31 @@
       "build": true
     },
     {
+      "name": "feature/swg-bench",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "SWG Assist Model Bench: scores alternative SWG Assist projection models against the FC tests, replays the past and runs a closed-loop simulator. Reads the logs and writes only its own data/autoSwgBench* files; never changes the SWG %. Fork only.",
+      "depends": [
+        "feature/swg-assist"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
+      "name": "feature/swg-bench-wiring",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Connects the Model Bench to its hourly inputs on pool: the weather log, the water temperature history and the pump's hourly power (the longest-running pump of each hour). Based on pool itself (pool 9ee43af6 + feature/swg-bench), so merging it brings feature/swg-bench in. Fork only.",
+      "depends": [
+        "feature/swg-bench",
+        "feature/pws-weather",
+        "feature/temp-average-24h",
+        "feature/power-tracking"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "local/pi-tools",
       "kind": "local",
       "status": "active",
