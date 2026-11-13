@@ -378,10 +378,13 @@ export function plainProjector(windowDays: number): Projector {
     };
 }
 
-// A bench model: fitted at each decision on the simulated readings and the real hourly inputs, it projects the loss since the last reading; the burn
-// average the controller plans with is the model's loss over the last seven days at the projected FC, per day.
+// A bench model: fitted at each decision on the simulated readings and the real hourly inputs, it projects the loss since the last reading with FC
+// held at that reading (the hourly rows carry no simulated generation for FC to follow); the burn average the controller plans with is the model's
+// loss over the last seven days at the last reading, per day. Like the live average, it does not depend on the projection, so a high projection
+// cannot raise the planned burn and with it the %.
 export function modelProjector(v: BenchVariant): Projector {
     const cache = new Map<number, Fit | undefined>();
+    const held: BenchVariant = Object.assign({}, v, { fcPath: 'held' });
     return {
         name: v.id,
         project: c => {
@@ -395,10 +398,10 @@ export function modelProjector(v: BenchVariant): Projector {
             }
             if (!fit) return undefined;
             const days = (c.t - last.t) / DAY_MS;
-            const lossSince = days > 0 ? projectLoss(v, fit, rows, cya, last.t, last.t, last.fc, c.t) : 0;
+            const lossSince = days > 0 ? projectLoss(held, fit, rows, cya, last.t, last.t, last.fc, c.t) : 0;
             if (typeof lossSince !== 'number') return undefined;
             const projected = last.fc + genSince(c.model, c.sw, last.t, c.t) - lossSince;
-            const week = projectLoss(Object.assign({}, v, { fcPath: 'held' }), fit, rows, cya, last.t, c.t - 7 * DAY_MS, Math.max(projected, 0.5), c.t);
+            const week = projectLoss(held, fit, rows, cya, last.t, c.t - 7 * DAY_MS, last.fc, c.t);
             const avg = typeof week === 'number' ? Math.max(0, week / 7) : (fit.b || 0);
             return { projected: projected, avg: avg, elDays: days, lastT: last.t, lastV: last.fc };
         }
@@ -509,7 +512,8 @@ export function simulate(data: SimData, cal: SimCalendar, s: SimSettings, projec
         else {
             const end = t + HOUR_MS;
             const j = firstRowAfter(rows, t);
-            const row = j < rows.length && rows[j].t === end ? rows[j] : undefined;
+            // the row whose hour ends in this hour (the weather log stamps an hour at the minute it was read, not on the hour)
+            const row = j < rows.length && rows[j].t <= end ? rows[j] : undefined;
             const sun = row ? (plant.variant.sun === 'station' ? row.sun : (typeof row.sun === 'number' ? row.sun * row.frac : undefined)) : undefined;
             const f = Math.max(F, 0.5);
             cons = (typeof sun === 'number' ? plant.fit.a * (plant.variant.fcTerm === 'fc' ? f : f / cyaAt(end)) * sun / 1000 : 0) + (plant.fit.b + residual[i]) / 24;
