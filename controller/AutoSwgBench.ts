@@ -46,8 +46,9 @@ import { sys } from './Equipment';
 import { state } from './State';
 import {
     BenchGeometry, BenchHour, BenchPumpHour, BenchSources, BenchTempHour, BenchVariant, BenchWeatherHour, buildHourlyInputs, chlorinePpm,
-    CyaSource, CyaTest, cyaFor, DAY_MS, DEFAULT_VARIANTS, FcReading, Fit, fitVariant, gapDays, generationBetween, HOUR_MS, inputCoverage, Interval, intervalsFrom,
-    normalizeGeometry, pairedDifference, plainRate, poundsToPpm, projectLoss, recentClearness, scoreSummary
+    CyaSource, CyaTest, cyaFor, DAY_MS, DEFAULT_VARIANTS, FcReading, Fit, fitVariant, gapDays, generationBetween, HOUR_MS, inputCoverage, InputStarts, inputStarts,
+    Interval, intervalsFrom, normalizeGeometry, normalizeScoring, pairedDifference, plainRate, poundsToPpm, projectLoss, recentClearness, ScoreFlag, scoreFlags,
+    ScoringSettings, scoreSummary, spanCoverage
 } from './AutoSwgBenchModel';
 import {
     CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, polygonArea
@@ -89,14 +90,17 @@ function fromSource<T>(name: string, fn: ((a: number, b: number) => T[]) | undef
 
 // ---------------------------------------------------------------- settings and files
 
-export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; }
+export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; scoring: ScoringSettings; }
 export interface BenchFitRow { t: number; id: string; v: number; fit?: Fit; cya?: number; clearness?: number; replay?: boolean; }
 export type BenchMode = 'nowcast' | 'forecast' | 'live';
 // sunShare: the share of the projected loss that is the sun term (models). revised*: the revised hindcast after a later CYA test (see the top).
+// gen: the chlorine credited over the gap; cov: its input coverage; flags: as judged when the row was written (the scoreboard judges again with the
+// settings of the day, see scoreFlags).
 export interface BenchScoreRow {
     t: number; id: string; v: number; horizon: 'next' | 'skip'; mode: BenchMode;
     t1: number; f1: number; test: number; proj: number; miss: number; days: number; fitAt?: number; replay?: boolean;
     sunShare?: number; revisedProj?: number; revisedMiss?: number; revisedAt?: number;
+    gen?: number; cov?: number; flags?: ScoreFlag[];
 }
 export interface BenchCyaTestRow {
     t: number; kind: 'test'; ppm: number; projected?: number; status?: string; reason?: string; rainKBefore?: number; rainKAfter?: number;
@@ -161,7 +165,7 @@ class AutoSwgBench {
         const variants: BenchVariant[] = raw && Array.isArray(raw.variants) ? raw.variants.map(normalizeVariant).filter((v: any) => !!v) : DEFAULT_VARIANTS.map(v => Object.assign({}, v));
         // a default variant added in a later release joins a stored list (the stored ones are kept as they are)
         for (const d of DEFAULT_VARIANTS) if (!variants.some(v => v.id === d.id)) variants.push(Object.assign({}, d));
-        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya) };
+        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya), scoring: normalizeScoring(raw && raw.scoring) };
         return this.settings;
     }
     private writeSettings(s: BenchSettings) {
@@ -175,8 +179,14 @@ class AutoSwgBench {
     // in the list is kept; `retired` hides it from the checks.
     public putSettings(body: any): BenchSettings {
         const cur = this.getSettings();
-        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya };
+        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya, scoring: cur.scoring };
         if (body && typeof body.enabled === 'boolean') next.enabled = body.enabled;
+        // the scoring settings, as { scoring: {...} } or as maxGapDays, minCoverage, minGapN at the top
+        if (body && typeof body === 'object') {
+            const sc = Object.assign({}, body.scoring && typeof body.scoring === 'object' ? body.scoring : {});
+            for (const k of ['maxGapDays', 'minCoverage', 'minGapN']) if (body[k] !== undefined) sc[k] = body[k];
+            if (Object.keys(sc).length) next.scoring = normalizeScoring(Object.assign({}, cur.scoring, sc));
+        }
         if (body && body.cya && typeof body.cya === 'object') next.cya = normalizeCyaSettings(Object.assign({}, cur.cya, body.cya));
         if (body && body.geometry) next.geometry = normalizeGeometry(Object.assign({}, cur.geometry, body.geometry));
         if (body && Array.isArray(body.variants)) {
@@ -234,6 +244,7 @@ class AutoSwgBench {
     public gatherInputs(from: number, to: number): {
         rows: BenchHour[]; readings: FcReading[]; cya: CyaTest[]; intervals: Interval[]; sources: BenchSources; gallons: number;
         cyaAdds: CyaAddition[]; saltAdds: CyaAddition[]; cyaSrc: CyaSource; cyaPathAt: (asOf: number) => CyaPath;
+        starts: InputStarts; skipFit: (iv: Interval) => boolean;
     } {
         const cfg: any = sys.autoSwg;
         const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
@@ -272,9 +283,13 @@ class AutoSwgBench {
             if (!p) { p = cyaPath(cya, cyaAdds, rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK }); memo.set(asOf, p); }
             return p;
         };
+        // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
+        const starts = inputStarts(rows), sc = settings.scoring;
+        const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
         return {
             rows: rows, readings: readings, cya: cya, intervals: intervalsFrom(readings, rows), sources: sources, gallons: gallons,
-            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt
+            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt,
+            starts: starts, skipFit: skipFit
         };
     }
     private maxFitDays(): number { return Math.max(30, ...this.getSettings().variants.map(v => Math.max(v.fitDays || 0, v.windowDays || 0) + 2)); }
@@ -292,7 +307,7 @@ class AutoSwgBench {
             row.fit = { a: 0, b: r, n: 0, plainRate: r };
             return row;
         }
-        const fit = fitVariant(v, inp.intervals, inp.rows, inp.cyaSrc, t);
+        const fit = fitVariant(v, inp.intervals, inp.rows, inp.cyaSrc, t, inp.skipFit);
         if (!fit) return undefined;
         row.fit = fit;
         const c = recentClearness(inp.rows, t);
@@ -324,6 +339,7 @@ class AutoSwgBench {
                 };
                 // the sun's share of the projected loss: what is left after the steady demand (and the rain wash-in)
                 if (v.kind === 'model' && !fit.fit.fallback && loss > 0) row.sunShare = round(Math.max(0, Math.min(1, 1 - fit.fit.b * days / loss)));
+                this.markRow(row, inp, gen);
                 if (replay) row.replay = true;
                 out.push(row);
             }
@@ -340,9 +356,18 @@ class AutoSwgBench {
             const p = points.find(x => x.t === test.t);
             if (!p) continue;
             const start = inp.readings[k - 1];
-            out.push({ t: test.t, id: v.id, v: v.version, horizon: 'next', mode: 'live', t1: start.t, f1: start.fc, test: test.fc, proj: p.fc, miss: Math.round((test.fc - p.fc) * 100) / 100, days: Math.round(gapDays({ t1: start.t, t2: test.t }) * 100) / 100 });
+            const row: BenchScoreRow = { t: test.t, id: v.id, v: v.version, horizon: 'next', mode: 'live', t1: start.t, f1: start.fc, test: test.fc, proj: p.fc, miss: Math.round((test.fc - p.fc) * 100) / 100, days: Math.round(gapDays({ t1: start.t, t2: test.t }) * 100) / 100 };
+            this.markRow(row, inp, generationBetween(inp.rows, start.t, test.t));
+            out.push(row);
         }
         return out;
+    }
+    // The chlorine credited over a scored pair, its input coverage, and its flags under today's settings.
+    private markRow(row: BenchScoreRow, inp: ReturnType<AutoSwgBench['gatherInputs']>, gen: number) {
+        row.gen = round(gen);
+        row.cov = round(spanCoverage(inp.rows, row.t1, row.t, inp.starts), 3);
+        const f = scoreFlags(row, this.getSettings().scoring);
+        if (f.length) row.flags = f;
     }
 
     // At an automatic check: every enabled variant version freezes its fit. Never throws.
@@ -365,7 +390,7 @@ class AutoSwgBench {
                 const main = this.mainVariant();
                 const f = main && rows.find(r => r.id === main.id && r.v === main.version);
                 if (main && f && f.fit) {
-                    const d = modelDrift(main, f.fit, inp.intervals, inp.rows, cyaFor(main, inp.cyaSrc, now), now);
+                    const d = modelDrift(main, f.fit, inp.intervals.filter(iv => !inp.skipFit(iv)), inp.rows, cyaFor(main, inp.cyaSrc, now), now);
                     this.appendRows(CYA_FILE, [Object.assign({ kind: 'drift', id: main.id, v: main.version }, d)]);
                 }
             }
@@ -534,9 +559,10 @@ class AutoSwgBench {
         return this.readRows<BenchScoreRow>(SCORES_FILE).filter(r => r.t >= from).sort((a, b) => a.t - b.t);
     }
     public scoresCsv(days: number): string {
-        const cols = ['t', 'id', 'v', 'horizon', 'mode', 'replay', 't1', 'f1', 'test', 'proj', 'miss', 'days', 'fitAt', 'sunShare', 'revisedProj', 'revisedMiss', 'revisedAt'];
+        const cols = ['t', 'id', 'v', 'horizon', 'mode', 'replay', 't1', 'f1', 'test', 'proj', 'miss', 'days', 'fitAt', 'sunShare', 'revisedProj', 'revisedMiss', 'revisedAt', 'gen', 'cov', 'flags'];
         const iso = (x: any) => typeof x === 'number' && x > 1e12 ? new Date(x).toISOString() : x;
-        return [cols.join(',')].concat(this.scores(days).map(r => cols.map(c => { const x = iso((r as any)[c]); return typeof x === 'undefined' ? '' : String(x); }).join(','))).join('\n') + '\n';
+        const cell = (x: any) => typeof x === 'undefined' ? '' : Array.isArray(x) ? x.join(' ') : String(x);
+        return [cols.join(',')].concat(this.scores(days).map(r => cols.map(c => cell(iso((r as any)[c]))).join(','))).join('\n') + '\n';
     }
 
     // For each variant version: live rows (last 90 days and all time) and replay rows apart, nowcast at the next test first, the paired difference
@@ -545,13 +571,19 @@ class AutoSwgBench {
         const s = this.getSettings();
         const all = this.readRows<BenchScoreRow>(SCORES_FILE);
         const now = Date.now();
-        const live = all.filter(r => r.id === 'live' && r.mode === 'live' && !r.replay);
+        // flagged pairs (see scoreFlags) are judged with today's settings, the same way for live and every challenger; they stay in the rows but out of
+        // the headline figures and the paired difference
+        const sc = s.scoring;
+        const flagsOf = (r: BenchScoreRow) => scoreFlags(r, sc);
+        const live = all.filter(r => r.id === 'live' && r.mode === 'live' && !r.replay && !flagsOf(r).length);
         const liveByT = new Map<number, number>(live.map(r => [r.t, r.miss] as [number, number]));
-        const block = (rows: BenchScoreRow[]) => {
-            const sum = scoreSummary(rows);
-            const paired = rows.filter(r => liveByT.has(r.t));
-            const pd = pairedDifference(paired.map(r => r.miss), paired.map(r => liveByT.get(r.t)));
-            return Object.assign(sum, { vsLive: pd });
+        // the paired difference only against a live series of the same horizon: live is scored at the next test only, so a skip block gets none
+        const block = (rows: BenchScoreRow[], againstLive: boolean = true) => {
+            const sum: any = scoreSummary(rows, { flagsOf: flagsOf, minGapN: sc.minGapN });
+            if (!againstLive) { sum.vsLive = { n: 0, note: 'not compared: the live projection is scored at the next test only' }; return sum; }
+            const paired = rows.filter(r => liveByT.has(r.t) && !flagsOf(r).length);
+            sum.vsLive = pairedDifference(paired.map(r => r.miss), paired.map(r => liveByT.get(r.t)));
+            return sum;
         };
         const variants = s.variants.map(v => {
             const mine = all.filter(r => r.id === v.id && r.v === v.version);
@@ -560,15 +592,21 @@ class AutoSwgBench {
             const headMode = v.kind === 'live' ? 'live' : 'nowcast';
             const liveNext = pick(false, 'next', headMode);
             // the band the variant would show at its next test: the 90% half-width of its own misses before it, as the app shows its range
-            const ownBand = liveNext.length >= 5 ? scoreSummary(liveNext.slice(-30)).halfWidth90 : undefined;
+            const fair = liveNext.filter(r => !flagsOf(r).length);
+            const ownBand = fair.length >= 5 ? scoreSummary(fair.slice(-30)).halfWidth90 : undefined;
             return {
                 id: v.id, version: v.version, label: v.label, kind: v.kind, retired: v.retired === true,
-                live: { last90: block(pick(false, 'next', headMode, 90)), all: block(liveNext), forecast: block(pick(false, 'next', 'forecast')), skip: block(pick(false, 'skip', headMode)) },
-                replay: { next: block(pick(true, 'next', headMode)), forecast: block(pick(true, 'next', 'forecast')), skip: block(pick(true, 'skip', headMode)) },
+                live: { last90: block(pick(false, 'next', headMode, 90)), all: block(liveNext), forecast: block(pick(false, 'next', 'forecast')), skip: block(pick(false, 'skip', headMode), false) },
+                replay: { next: block(pick(true, 'next', headMode)), forecast: block(pick(true, 'next', 'forecast')), skip: block(pick(true, 'skip', headMode), false) },
                 // the revised hindcast (tuning only): the live rows that have one, scored with the corrected CYA path
-                revised: (() => { const r = liveNext.filter(x => typeof x.revisedMiss === 'number'); return r.length ? Object.assign(scoreSummary(r.map(x => ({ miss: x.revisedMiss, days: x.days }))), { asScored: scoreSummary(r) }) : undefined; })(),
+                revised: (() => {
+                    const r = liveNext.filter(x => typeof x.revisedMiss === 'number');
+                    if (!r.length) return undefined;
+                    const o = { flagsOf: flagsOf, minGapN: sc.minGapN };
+                    return Object.assign(scoreSummary(r.map(x => Object.assign({}, x, { miss: x.revisedMiss })), o), { asScored: scoreSummary(r, o) });
+                })(),
                 ownBand: ownBand,
-                lastMisses: liveNext.slice(-10).map(r => ({ t: new Date(r.t).toISOString(), test: r.test, proj: r.proj, miss: r.miss, days: r.days }))
+                lastMisses: liveNext.slice(-10).map(r => { const f = flagsOf(r); return { t: new Date(r.t).toISOString(), test: r.test, proj: r.proj, miss: r.miss, days: r.days, flags: f.length ? f : undefined }; })
             };
         });
         let coverage: any, stabilizer: any, cya: any;
@@ -581,7 +619,7 @@ class AutoSwgBench {
         try { cya = this.cyaReport(120, false); }
         catch (err) { cya = { error: err && err.message }; }
         return {
-            enabled: s.enabled, lastCheck: this.lastCheck ? new Date(this.lastCheck).toISOString() : undefined, lastScored: this.lastScored ? new Date(this.lastScored).toISOString() : undefined,
+            enabled: s.enabled, scoring: sc, lastCheck: this.lastCheck ? new Date(this.lastCheck).toISOString() : undefined, lastScored: this.lastScored ? new Date(this.lastScored).toISOString() : undefined,
             lastError: this.lastError, replay: this.replayState, coverage: coverage, stabilizerAdditions: stabilizer, cya: cya, variants: variants
         };
     }
