@@ -1292,17 +1292,17 @@ export class ConfigRoute {
         // The hourly weather log's settings (config.json weather; see WeatherHistory.ts). The API key is never sent back, only whether one is set.
         app.get('/config/weather/settings', (req, res) => {
             const c = normalizeWeatherSettings(config.getSection('weather'));
-            return res.status(200).send({ enabled: c.enabled, stationId: c.stationId, hasApiKey: c.apiKey.length > 0, units: c.units, backfillDays: c.backfillDays, keepDays: c.keepDays });
+            return res.status(200).send({ enabled: c.enabled, stationId: c.stationId, hasApiKey: c.apiKey.length > 0, units: c.units, backfillDays: c.backfillDays, keepDays: c.keepDays, fiveMinute: c.fiveMinute });
         });
         app.put('/config/weather/settings', (req, res) => {
             const cur: any = config.getSection('weather');
-            for (const name of ['enabled', 'stationId', 'apiKey', 'units', 'backfillDays', 'keepDays']) if (typeof req.body[name] !== 'undefined') cur[name] = req.body[name];
+            for (const name of ['enabled', 'stationId', 'apiKey', 'units', 'backfillDays', 'keepDays', 'fiveMinute']) if (typeof req.body[name] !== 'undefined') cur[name] = req.body[name];
             if (typeof req.body.units !== 'undefined' && req.body.units !== 'e' && req.body.units !== 'm') return res.status(400).send({ message: `units must be 'e' (English) or 'm' (metric)` });
             const c = normalizeWeatherSettings(cur);
             if (c.enabled && (!c.stationId || !c.apiKey)) return res.status(400).send({ message: 'A station id and an API key are needed to turn the weather log on' });
             config.setSection('weather', c);
             armWeatherLog(5 * 1000);
-            return res.status(200).send({ enabled: c.enabled, stationId: c.stationId, hasApiKey: c.apiKey.length > 0, units: c.units, backfillDays: c.backfillDays, keepDays: c.keepDays });
+            return res.status(200).send({ enabled: c.enabled, stationId: c.stationId, hasApiKey: c.apiKey.length > 0, units: c.units, backfillDays: c.backfillDays, keepDays: c.keepDays, fiveMinute: c.fiveMinute });
         });
         app.put('/app/config/reload', (req, res) => {
             sys.board.reloadConfig();
