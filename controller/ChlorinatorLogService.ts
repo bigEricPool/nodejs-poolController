@@ -110,6 +110,34 @@ export function chlorinatorPower(chlor: Chlorinator, now: number = Date.now()): 
     return d;
 }
 export function chlorinatorHasPower(chlor: Chlorinator): boolean | undefined { return chlorinatorPower(chlor).on; }
+// Whether a chlorinator should be answering on RS-485, for a controller that polls it (Nixie) to decide how loudly to log a missed answer.
+// Only its power relays can say no: while one of them is off, or for POWER_UP_GRACE_SEC after they all came on (the cell starts up), it cannot
+// answer, so missed answers are expected and not errors. With no relays set, or a relay njsPC does not know, it should answer (as before).
+// One info line is logged when this changes.
+export const POWER_UP_GRACE_SEC = 30;
+const commsQuiet = new Map<number, boolean>();
+export function chlorinatorCommsExpected(chlor: Chlorinator, now: number = Date.now()): boolean {
+    let quiet = false;
+    try {
+        const list = chlor.powerRelays || [];
+        if (list.length > 0) {
+            const relays = list.map(r => { try { return relayIsOn(r); } catch (err) { return undefined; } });
+            if (relays.every(r => typeof r === 'boolean')) {
+                if (!relays.every(r => r === true)) { relaysOnSince.delete(chlor.id); quiet = true; }
+                else {
+                    if (!relaysOnSince.has(chlor.id)) relaysOnSince.set(chlor.id, now);
+                    quiet = now - relaysOnSince.get(chlor.id) < POWER_UP_GRACE_SEC * 1000;
+                }
+            }
+        }
+    } catch (err) { quiet = false; }
+    if (quiet !== (commsQuiet.get(chlor.id) || false)) {
+        commsQuiet.set(chlor.id, quiet);
+        if (quiet) logger.info(`Chlorinator ${chlor.id}: its power relays say it has no power, so missed RS-485 answers are logged at debug until it has power again.`);
+        else logger.info(`Chlorinator ${chlor.id}: its power relays have been on for ${POWER_UP_GRACE_SEC} s, so missed RS-485 answers are logged as errors again.`);
+    }
+    return !quiet;
+}
 // Writes each chlorinator's power state when it changed.
 export function checkChlorinatorPower(now: number = Date.now()) {
     for (const chlor of sys.chlorinators.toArray()) {
@@ -117,7 +145,7 @@ export function checkChlorinatorPower(now: number = Date.now()) {
             const on = chlorinatorHasPower(chlor);
             if (typeof on !== 'boolean') continue;
             const e = chlorinatorPowerLog.record(chlor.id, on, now);
-            if (e) logger.verbose(`Chlorinator ${chlor.id}: power ${on ? 'on' : 'off'}.`);
+            if (e) logger.info(`Chlorinator ${chlor.id}: power ${on ? 'on' : 'off'}.`);
         }
         catch (err) { logger.warn(`Chlorinator power log: could not check chlorinator ${chlor.id}: ${err.message}`); }
     }
