@@ -30,7 +30,7 @@ import { conn } from "../../../controller/comms/Comms";
 import { config } from "../../../config/Config";
 
 import { ServiceParameterError } from "../../../controller/Errors";
-import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
+import { buildCombinedHistory, buildProjectionAccuracy, buildTune, buildWhatIfSweep, computeRecommendation, computeSwgCapacity, formatLocalDateTime, minutesToHHMM, missedScheduledCheck, nextScheduledCheck, nextWindowStartAfter, releaseCalculationCaches } from "../../../controller/AutoSwgService";
 import type { AutoSwgParams, PageReadings } from "../../../controller/AutoSwgService";
 import { appendTuneHistory, markLastTuneApplied, markLastTuneHeld, readTuneHistory } from "../../../controller/AutoSwgTuneHistory";
 import type { TuneResult } from "../../../controller/AutoSwgService";
@@ -698,6 +698,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
 }
 
 const AUTO_SWG_AUTO_CHECK_MIN_DELAY_MS = 5 * 60 * 1000; // never fire sooner than 5 min after being (re)armed
+let autoSwgLastAutoCheckAttemptAt = 0;   // when an automatic check last started in this process (a failed attempt is not made up again until the next check time)
 let autoSwgAutoCheckTimer: NodeJS.Timeout | undefined;
 
 function clearAutoSwgAutoCheck() {
@@ -735,7 +736,16 @@ export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number)
     // Pinned to the clock when a start time is set (and the interval is under a day):
     // every `hours` from that time of day, so restarts and settings saves don't shift it.
     if (cfg.autoCheckStartTime && hours < 24) {
-        try { delay = nextScheduledCheck(new Date(), cfg.autoCheckStartTime, hours, cfg.timezone, floorMs).getTime() - Date.now(); }
+        try {
+            delay = nextScheduledCheck(new Date(), cfg.autoCheckStartTime, hours, cfg.timezone, floorMs).getTime() - Date.now();
+            // A check time that passed while njsPC was not running, with no check or attempt since, is made up once, shortly after start (a failed attempt counts, so a
+            // PoolMath outage is not retried every few minutes).
+            let lastKnown = Math.max(state.autoSwg.lastCheckedAt ? new Date(state.autoSwg.lastCheckedAt).getTime() : NaN, autoSwgLastAutoCheckAttemptAt || NaN);
+            if (missedScheduledCheck(new Date(), isNaN(lastKnown) ? undefined : lastKnown, cfg.autoCheckStartTime, hours, cfg.timezone)) {
+                delay = floorMs;
+                logger.info('SWG Assist: a scheduled automatic check was missed while njsPC was not running; making it up shortly.');
+            }
+        }
         catch (err) { logger.warn(`SWG Assist: ignoring unusable automatic check start time '${cfg.autoCheckStartTime}' (${err.message}); counting ${hours}h from now instead.`); }
     }
     // Turning Away protection on starts its first check soon, so the target you just set takes effect (within its limits) rather than a day later.
@@ -1164,6 +1174,7 @@ function awayBoundedPct(): number | undefined {
 
 async function runAutoSwgAutoCheck() {
     autoSwgAutoCheckTimer = undefined;
+    autoSwgLastAutoCheckAttemptAt = Date.now();
     let cfg = sys.autoSwg;
     // Turned off, or the return date passed, since this cycle was armed.
     if (!cfg.enabled || !(cfg.autoApplyEnabled || cfg.awayActive)) return;
