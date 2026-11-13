@@ -61,13 +61,13 @@
       "build": true
     },
     {
-      "name": "fix/schedule-defects",
-      "kind": "fix",
-      "status": "legacy",
+      "name": "archive/2026-11-13/fix/schedule-defects",
+      "kind": "archive",
+      "status": "archive",
       "purpose": "Older combined branch; replaced by fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2.",
       "depends": [],
       "upstream": "#1247, #1248, #1249",
-      "build": true
+      "build": false
     },
     {
       "name": "fix/chlorinator-poll-stall",
@@ -115,13 +115,13 @@
       "build": true
     },
     {
-      "name": "feature/dashboard-enhancements",
-      "kind": "feature",
-      "status": "legacy",
+      "name": "archive/2026-11-13/feature/dashboard-enhancements",
+      "kind": "archive",
+      "status": "archive",
       "purpose": "Older combined branch; replaced by feature/chlorinator-rs485-diag and, in dashPanel, feature/dashboard-sun-times.",
       "depends": [],
       "upstream": "#1250",
-      "build": true
+      "build": false
     },
     {
       "name": "feature/temp-average-24h",
@@ -256,7 +256,7 @@
       "build": true
     },
     {
-      "name": "audit-fix-pi",
+      "name": "archive/2026-11-13/audit-fix-pi",
       "kind": "archive",
       "status": "archive",
       "purpose": "Snapshot of an earlier install; fully contained in pool.",
@@ -265,7 +265,7 @@
       "build": false
     },
     {
-      "name": "feature/solar-log",
+      "name": "archive/2026-11-13/feature/solar-log",
       "kind": "archive",
       "status": "archive",
       "purpose": "Old name of feature/solar-enhancements; contained in it.",

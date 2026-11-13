@@ -48,15 +48,15 @@ Base for new branches: master at 10.1.0 (2e7c1efb).
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `fix/schedule-defects` | fix | Older combined branch; replaced by fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
-| `feature/dashboard-enhancements` | feature | Older combined branch; replaced by feature/chlorinator-rs485-diag and, in dashPanel, feature/dashboard-sun-times. | none | #1250 |
+| `archive/2026-11-13/fix/schedule-defects` | archive | Older combined branch; replaced by fix/schedule-restart and fix/solar-restart. Its Cool Point change (#1249) is in upstream 10.0.2. | none | #1247, #1248, #1249 |
+| `archive/2026-11-13/feature/dashboard-enhancements` | archive | Older combined branch; replaced by feature/chlorinator-rs485-diag and, in dashPanel, feature/dashboard-sun-times. | none | #1250 |
 
 ## Kept for history
 
 | Branch | Kind | Purpose | Depends on | Related report |
 |---|---|---|---|---|
-| `audit-fix-pi` | archive | Snapshot of an earlier install; fully contained in pool. | none | none |
-| `feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
+| `archive/2026-11-13/audit-fix-pi` | archive | Snapshot of an earlier install; fully contained in pool. | none | none |
+| `archive/2026-11-13/feature/solar-log` | archive | Old name of feature/solar-enhancements; contained in it. | none | none |
 | `archive/2026-10-11/*` | archive | Tips of branches as they were before being re-cut on current master on 2026-10-11. | none | none |
 | `archive/2026-11-03/*` | archive | Old AutoSwg branch names (feature/auto-swg, -tools, -automation, -clean), moved here on 2026-11-03, and feature/swg-cell-usage, whose content moved to feature/chlorinator-log and feature/swg-assist; their content is in feature/swg-assist and pool. | none | none |
 | `archive/2026-11-03/docs/autoswg-drafts` | archive | Drafts of the AutoSwg guide, advanced modes and release notes (tools/autoswg-check/). Unique work, not in pool: keep until the SWG Assist release notes and wiki are written. | none | none |
