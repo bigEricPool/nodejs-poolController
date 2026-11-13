@@ -68,6 +68,28 @@ export function armWeatherLog(delayMs: number = WEATHER_FIRST_DELAY_MS) {
     }, delayMs);
     weatherTimer.unref();
 }
+import { autoSwgBench, setBenchPumpSource, setBenchWaterTempSource, setBenchWeatherSource } from "../../../controller/AutoSwgBench";
+import { tempHistory } from "../../../controller/TempHistory";
+
+// The SWG Assist Model Bench's hourly inputs (controller/AutoSwgBench.ts). Each is read only when the bench fits or scores, and a source that
+// throws or has nothing simply leaves that input missing in the bench's rows.
+//   weather      the hourly weather log (sunlight, rain), as the station is configured in the `weather` section
+//   water temp   the pool body's hourly mean while the pump ran (TempHistory), from the first hour asked for
+//   pump         the seconds a pump ran in each hour: the longest-running pump of the hour, so no pump id is set here and a second pump
+//                (a booster, say) is not added on top of the filter pump
+setBenchWeatherSource((from, to) => weatherHistory.hours(config.getSection('weather'), from, to));
+setBenchWaterTempSource((from, to) => {
+    const days = Math.max(1, Math.ceil((Date.now() - from) / 86400000) + 1);
+    const r = tempHistory.range(1, days, false);
+    const out: { t: number; v: number }[] = [];
+    for (let i = 0; i < r.t.length; i++) if (r.t[i] >= from && r.t[i] < to && typeof r.v[i] === 'number') out.push({ t: r.t[i], v: r.v[i] });
+    return out;
+});
+setBenchPumpSource((from, to) => {
+    const byHour = new Map<number, number>();
+    for (const h of pumpPower.hours(from, to)) byHour.set(h.t, Math.max(byHour.get(h.t) || 0, Math.min(3600, h.on)));
+    return Array.from(byHour.keys()).sort((x, y) => x - y).map(t => ({ t: t, seconds: byHour.get(t) }));
+});
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
@@ -780,6 +802,7 @@ function refreshAutoSwgArchiveFromPage(page: PageReadings) {
     let r = refreshPoolMathArchiveFromPage(cfg.shareCode, cfg.poolName || undefined, page);
     if (r && (r.updated || r.added || r.removed)) {
         logger.info(`SWG Assist: PoolMath history archive refreshed from the share page: ${r.updated} updated, ${r.added} added, ${r.removed} removed.`);
+        if (r.added) autoSwgBench.onReadings(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
         let sum = poolMathArchiveSummary();
         state.autoSwg.archiveCount = sum.count;
         state.autoSwg.archiveOldest = sum.oldest;
@@ -1153,6 +1176,8 @@ export function registerAutoSwgPoolMath() {
         : []);
     onPoolMathUpdated((kind, result) => {
         showAutoSwgArchiveStatus();
+        // the Model Bench scores its variants against any new FC test
+        autoSwgBench.onReadings(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
         // Whatever the mode, PoolMath is read at least once a day by the top-up; a new test ends Away protection.
         if (kind === 'topUp' && typeof result !== 'undefined' && sys.autoSwg.enabled && sys.autoSwg.shareCode) {
             let newest: { value: number; ts: Date } | undefined;
@@ -1196,6 +1221,8 @@ async function runAutoSwgAutoCheck() {
     finally {
         armAutoSwgAutoCheck();
         runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
+        // the Model Bench freezes its variants' fits; it only reads and writes its own files
+        autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
     }
 }
 
@@ -1934,6 +1961,38 @@ export class StateRoute {
                 state.autoSwg.emitEquipmentChange();
                 next(err);
             }
+        });
+        // SWG Assist Model Bench (controller/AutoSwgBench.ts): the scoreboard of the projection models, their scores (?days=, ?format=csv), a replay
+        // over the past (?since= ISO date or days), and the closed-loop simulator (?rhythm=twiceWeekly|weekly|real&seeds=&days=&runWindow=sun|sunOffset).
+        // Reads the logs and writes only the bench's own files; it never changes the SWG %.
+        app.get('/state/autoSwg/bench', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.scoreboard()); } catch (err) { next(err); }
+        });
+        app.get('/state/autoSwg/bench/scores', (req, res, next) => {
+            try {
+                const days = Math.max(1, Math.min(548, parseInt(req.query.days as string, 10) || 90));
+                if (req.query.format === 'csv') { res.setHeader('Content-Type', 'text/csv'); res.setHeader('Content-Disposition', 'attachment; filename="autoSwgBenchScores.csv"'); return res.status(200).send(autoSwgBench.scoresCsv(days)); }
+                return res.status(200).send(autoSwgBench.scores(days));
+            } catch (err) { next(err); }
+        });
+        app.post('/state/autoSwg/bench/replay', (req, res, next) => {
+            try {
+                const q = (req.query.since as string) || '';
+                let since = /^\d+$/.test(q) ? Date.now() - parseInt(q, 10) * 86400000 : new Date(q).getTime();
+                if (!isFinite(since)) since = Date.now() - 120 * 86400000;
+                void autoSwgBench.replay(since);
+                return res.status(202).send({ started: true, since: new Date(since).toISOString() });
+            } catch (err) { next(err); }
+        });
+        app.post('/state/autoSwg/bench/simulate', (req, res, next) => {
+            try {
+                const q: any = req.query;
+                void autoSwgBench.simulate({ rhythm: q.rhythm, seeds: parseInt(q.seeds, 10), days: parseInt(q.days, 10), runWindow: q.runWindow === 'sunOffset' ? 'sunOffset' : q.runWindow === 'sun' ? 'sun' : undefined });
+                return res.status(202).send(autoSwgBench.simStatus());
+            } catch (err) { next(err); }
+        });
+        app.get('/state/autoSwg/bench/sim', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.simStatus()); } catch (err) { next(err); }
         });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).

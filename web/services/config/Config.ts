@@ -42,6 +42,7 @@ import { checkCellSettings, setCellSettings } from "../../../controller/Chlorina
 import { setPoolMathSettings } from "../../../controller/PoolMathSync";
 import { armWeatherLog } from '../state/State';
 import { normalizeWeatherSettings } from '../../../controller/WeatherHistory';
+import { autoSwgBench } from "../../../controller/AutoSwgBench";
 
 export class ConfigRoute {
     private static securitySessions: Map<string, any> = new Map<string, any>();
@@ -1059,6 +1060,13 @@ export class ConfigRoute {
         // SWG Assist: persisted settings for the PoolMath-driven SWG% recommendation
         // feature. The computed recommendation itself is runtime state, exposed
         // under /state/autoSwg/* (see web/services/state/State.ts).
+        // SWG Assist Model Bench settings: enabled, the pool geometry, the variants. A variant whose definition changes gets a new version.
+        app.get('/config/autoSwg/bench', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.getSettings()); } catch (err) { next(err); }
+        });
+        app.put('/config/autoSwg/bench', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.putSettings(req.body)); } catch (err) { next(err); }
+        });
         app.get('/config/autoSwg', (req, res) => {
             return res.status(200).send(Object.assign({}, sys.autoSwg.get(true), { shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, swgLbsPerDay: sys.autoSwg.swgLbsPerDay, gallons: sys.autoSwg.gallons, gallonsSource: sys.autoSwg.gallonsSource, automationAvailable: sys.autoSwg.automationAvailable, gate: autoSwgGateInfo(sys.autoSwg), awayStatus: sys.autoSwg.awayStatus, swgWindow: autoSwgRunWindowInfo() }));
         });
