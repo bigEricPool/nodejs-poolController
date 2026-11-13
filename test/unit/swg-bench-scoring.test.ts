@@ -52,6 +52,19 @@ describe('input coverage', () => {
         expect(spanCoverage(r, day(5), day(9), st)).toBeCloseTo(0.75, 6);
         expect(spanCoverage(r, day(5), day(5), st)).toBe(0);
     });
+    it('does not flag a pair from before the output and pump logs began (generation from the SWG entries then)', () => {
+        // as on the pool: SWG-entry generation until the output log starts (day 10), no pump time until the power log starts (day 20)
+        const r = rows(30, x => { if (x.t <= day(10)) x.genFrom = 'swg'; if (x.t <= day(20)) delete x.pumpSec; });
+        const st = inputStarts(r);
+        const cov = spanCoverage(r, day(2), day(6), st);
+        expect(cov).toBe(1);
+        expect(scoreFlags({ days: 4, proj: 7, f1: 6, gen: 4, cov: cov }, S)).toEqual([]);
+        // a pair after the power log began, with a day of it missing, is flagged
+        const holes = rows(30, x => { if (x.t <= day(20) || (x.t > day(24) && x.t <= day(25))) delete x.pumpSec; });
+        const c2 = spanCoverage(holes, day(22), day(26), inputStarts(holes));
+        expect(c2).toBeCloseTo(0.75, 6);
+        expect(scoreFlags({ days: 4, proj: 7, f1: 6, gen: 4, cov: c2 }, S)).toEqual(['thinInputs']);
+    });
     it('needs no sun in a dark hour, but does in a sunny one', () => {
         const dark = rows(4, x => { if (!(x.clear > 20)) delete x.sun; });
         expect(spanCoverage(dark, day(1), day(3), inputStarts(dark))).toBe(1);
