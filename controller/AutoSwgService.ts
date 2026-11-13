@@ -776,9 +776,34 @@ export function nextScheduledCheck(now: Date, startTime: string, hours: number, 
         for (let k = 0; k * hours < 24 && anchor + k * intervalMs < nextAnchor; k++) {
             const at = anchor + k * intervalMs;
             if (at >= earliest) return new Date(at);
+            // A check time that falls inside the floor (a restart or a settings save a minute before it) runs at the floor: skipping it would leave a whole interval
+            // (12 hours) without a check. A check time already past (the check that has just run re-arms right after its own time) is not made up here.
+            if (at >= now.getTime()) return new Date(earliest);
         }
     }
     return new Date(earliest + intervalMs);
+}
+
+// Whether a scheduled check time passed while no check ran (njsPC was not running over it): the latest check time at or before `now` is later than the last
+// check (a minute of slack, since a check records its time as it runs) and nothing newer is known. A check that has never run is not "missed" (a fresh setup
+// starts at the next check time). Used at start to make up one check shortly after, not to catch up several.
+export function missedScheduledCheck(now: Date, lastCheckedAt: string | number | undefined, startTime: string, hours: number, timeZone: string): boolean {
+    const last = typeof lastCheckedAt === 'number' ? lastCheckedAt : (lastCheckedAt ? new Date(lastCheckedAt).getTime() : NaN);
+    if (isNaN(last)) return false;
+    const t = parseTimeOfDay(startTime);
+    const intervalMs = hours * 3600000;
+    const today = localYmd(now, timeZone);
+    let prev = -Infinity;
+    for (let d = -1; d <= 1; d++) {
+        const day = addDays(today, d);
+        const anchor = zonedTimeToUtc(day.year, day.month, day.day, t, timeZone).getTime();
+        const nextAnchor = zonedTimeToUtc(addDays(day, 1).year, addDays(day, 1).month, addDays(day, 1).day, t, timeZone).getTime();
+        for (let k = 0; k * hours < 24 && anchor + k * intervalMs < nextAnchor; k++) {
+            const at = anchor + k * intervalMs;
+            if (at <= now.getTime() && at > prev) prev = at;
+        }
+    }
+    return prev > -Infinity && last < prev - 60000;
 }
 
 // 'YYYY-MM-DD HH:mm' wall-clock time of `instant` in `timeZone`.
