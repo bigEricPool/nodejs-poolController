@@ -193,6 +193,28 @@ export function archivedSaltAdditions(): { ts: Date; pounds: number }[] {
 export function saltAdditionPpm(pounds: number, gallons: number): number {
     return gallons > 0 ? pounds * GRAMS_PER_POUND * 1000 / (gallons * 3.785411784) : 0;
 }
+// Stabilizer (CYA) added to the pool is chemical id 24: `unit` 7 (ounces) and `normalizedAmount` in grams. Checked on the pool this was written for:
+// 32 oz on 2026-02-21 and 2026-06-26 and 24 oz on 2026-08-15 were each followed by a CYA test 15 to 20 ppm higher, and 32 oz of cyanuric acid in
+// 12,000 gallons is about 20 ppm.
+export const POOLMATH_STABILIZER_CHEMICAL = 24;
+export function isStabilizerEntry(e: PoolMathArchiveEntry): boolean {
+    return e.type === 'chemlog' && e.chemical === POOLMATH_STABILIZER_CHEMICAL && typeof e.normalizedAmount === 'number' && e.normalizedAmount > 0;
+}
+// ppm of CYA that `grams` of stabilizer adds to a pool of `gallons` (milligrams per liter).
+export function stabilizerPpm(grams: number, gallons: number): number {
+    return gallons > 0 ? grams * 1000 / (gallons * 3.785411784) : 0;
+}
+// The archived stabilizer additions, oldest first: grams, and the ppm of CYA they add to `gallons` (0 when the volume is not known).
+export function stabilizerAdditionsOf(entries: PoolMathArchiveEntry[], gallons?: number): { ts: Date; grams: number; ppm: number }[] {
+    return entries
+        .filter(isStabilizerEntry)
+        .map(e => ({ ts: new Date(e.ts), grams: e.normalizedAmount, ppm: stabilizerPpm(e.normalizedAmount, gallons || 0) }))
+        .sort((a, b) => a.ts.getTime() - b.ts.getTime());
+}
+export function archivedStabilizerAdditions(gallons?: number): { ts: Date; grams: number; ppm: number }[] {
+    const a = readPoolMathArchive();
+    return stabilizerAdditionsOf(a.entries, gallons || (a.pool && a.pool.gallons));
+}
 export function isChlorineEntry(e: PoolMathArchiveEntry): boolean {
     return e.type === 'chemlog' && e.chemical === POOLMATH_LIQUID_CHLORINE && typeof e.percent === 'number' && typeof e.normalizedAmount === 'number';
 }
@@ -220,22 +242,22 @@ export function dropSupersededEntries(archived: PoolMathArchiveEntry[], fetched:
     });
 }
 
-// What a top-up adds to the archive: salt additions it has not got, the extra numbers a new test carried (pH, TA, CH, salt, water
+// What a top-up adds to the archive: salt and stabilizer additions it has not got, the extra numbers a new test carried (pH, TA, CH, salt, water
 // temperature, weather), and tests it does not have at all. FC, CC, CYA, SWG runs and liquid chlorine already archived are left as
 // they are (another reader of the share page may keep those current). Matching is by time, within two minutes, never by id, because
 // entries added from elsewhere can have ids of their own.
-export interface PoolMathTopUpResult { fetched: number; saltAdded: number; testsEnriched: number; testsAdded: number; removed: number; pool?: PoolMathPoolInfo; }
+export interface PoolMathTopUpResult { fetched: number; saltAdded: number; stabilizerAdded?: number; testsEnriched: number; testsAdded: number; removed: number; pool?: PoolMathPoolInfo; }
 const TOP_UP_FIELDS: (keyof PoolMathArchiveEntry)[] = ['ph', 'ta', 'ch', 'salt', 'waterTemp', 'waterTempUnits', 'uvIndex', 'weatherTemp', 'cloudCover'];
 export function mergeTopUp(entries: PoolMathArchiveEntry[], fetched: PoolMathArchiveEntry[], deletedIds: Set<string>, cutoff: number): { entries: PoolMathArchiveEntry[] } & PoolMathTopUpResult {
     const MATCH_MS = 2 * 60 * 1000;
-    let saltAdded = 0, testsEnriched = 0, testsAdded = 0, removed = 0;
-    const out = entries.filter(e => { if (deletedIds.has(e.id) && isSaltEntry(e)) { removed++; return false; } return true; });
+    let saltAdded = 0, stabilizerAdded = 0, testsEnriched = 0, testsAdded = 0, removed = 0;
+    const out = entries.filter(e => { if (deletedIds.has(e.id) && (isSaltEntry(e) || isStabilizerEntry(e))) { removed++; return false; } return true; });
     const have = new Set(out.map(e => e.id));
     for (const e of fetched) {
         const t = new Date(e.ts).getTime();
         if (isNaN(t) || t < cutoff) continue;
-        if (isSaltEntry(e)) {
-            if (!have.has(e.id)) { out.push(e); have.add(e.id); saltAdded++; }
+        if (isSaltEntry(e) || isStabilizerEntry(e)) {
+            if (!have.has(e.id)) { out.push(e); have.add(e.id); if (isSaltEntry(e)) saltAdded++; else stabilizerAdded++; }
             continue;
         }
         if (e.type !== 'testlog') continue;
@@ -256,7 +278,7 @@ export function mergeTopUp(entries: PoolMathArchiveEntry[], fetched: PoolMathArc
         }
     }
     out.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-    return { entries: out, fetched: fetched.length, saltAdded, testsEnriched, testsAdded, removed };
+    return { entries: out, fetched: fetched.length, saltAdded, stabilizerAdded, testsEnriched, testsAdded, removed };
 }
 
 // One request for the newest entries, merged into the archive as above. Does nothing (returns undefined) until the full pull has been done for this
@@ -279,9 +301,9 @@ export async function topUpPoolMathArchive(shareCode: string, poolName?: string)
     const merged = mergeTopUp(archive.entries, fetched, deletedIds, retentionCutoff(new Date()));
     const info = poolInfoOf(pool);
     const infoChanged = JSON.stringify(info) !== JSON.stringify(archive.pool || {});
-    if (merged.saltAdded || merged.testsEnriched || merged.testsAdded || merged.removed || infoChanged)
+    if (merged.saltAdded || merged.stabilizerAdded || merged.testsEnriched || merged.testsAdded || merged.removed || infoChanged)
         writePoolMathArchive({ ...archive, entries: merged.entries, pool: info, toppedUpAt: new Date().toISOString() });
-    return { fetched: merged.fetched, saltAdded: merged.saltAdded, testsEnriched: merged.testsEnriched, testsAdded: merged.testsAdded, removed: merged.removed, pool: info };
+    return { fetched: merged.fetched, saltAdded: merged.saltAdded, stabilizerAdded: merged.stabilizerAdded, testsEnriched: merged.testsEnriched, testsAdded: merged.testsAdded, removed: merged.removed, pool: info };
 }
 
 // The archived liquid chlorine additions, oldest first.
