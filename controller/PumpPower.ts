@@ -195,7 +195,7 @@ function addSeconds(to: Seconds, from: Seconds) {
     for (const k of Object.keys(from)) to[k] = (to[k] || 0) + from[k];
 }
 
-// One hour of one pump for other modules (for example the SWG Assist Model Bench): `t` the start of the hour (ms), the seconds at each speed
+// One hour of one pump for other modules: `t` the start of the hour (ms), the seconds at each speed
 // (by speed id; 0 is the pump on with no speed that applies), the seconds on in all, and the seconds off.
 export interface PumpHour { t: number; pump: number; speeds: { [speedId: string]: number }; on: number; off: number; }
 // The hours that start in [from, to), oldest first, one row per pump and hour, from rows held as { hour start: { pump: seconds } } (lines of the
