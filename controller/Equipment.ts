@@ -1869,6 +1869,15 @@ export class Chlorinator extends EqItem {
     public set cycleRestartsOnPower(val: boolean) { this.setDataVal('cycleRestartsOnPower', val !== false); }
     public get burstFirst(): boolean { return this.data.burstFirst !== false; }
     public set burstFirst(val: boolean) { this.setDataVal('burstFirst', val !== false); }
+    // The relays the cell's power is wired through (a dead-man): it has power only while every one is on. Each is named by the same connection
+    // and device a pump relay or a circuit is bound with. Empty: the power is worked out as before (see ChlorinatorLogService.chlorinatorHasPower).
+    public get powerRelays(): { connectionId: string; deviceBinding: string }[] {
+        return Array.isArray(this.data.powerRelays) ? this.data.powerRelays.filter(r => r && r.connectionId && r.deviceBinding).map(r => ({ connectionId: String(r.connectionId), deviceBinding: String(r.deviceBinding) })) : [];
+    }
+    public set powerRelays(val: { connectionId: string; deviceBinding: string }[]) { this.setDataVal('powerRelays', Array.isArray(val) ? val.map(r => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding })) : []); }
+    // Whether the chlorinator answering on RS-485 counts as proof that it has power (a cell without power cannot answer).
+    public get powerConfirmByComms(): boolean { return this.data.powerConfirmByComms === true; }
+    public set powerConfirmByComms(val: boolean) { this.setDataVal('powerConfirmByComms', val === true); }
 }
 // The pool's PoolMath share (a pool-level section of poolConfig.json): the share code and pool name the history is read for, and what
 // PoolMath says about the pool, kept from the last read of its share (volume in gallons, the SWG rating).
