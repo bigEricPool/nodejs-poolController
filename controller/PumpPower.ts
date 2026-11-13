@@ -134,10 +134,30 @@ function addSeconds(to: Seconds, from: Seconds) {
     for (const k of Object.keys(from)) to[k] = (to[k] || 0) + from[k];
 }
 
+// One hour of one pump for other modules (for example the SWG Assist Model Bench): `t` the start of the hour (ms), the seconds at each speed
+// (by speed id; 0 is the pump on with no speed that applies), the seconds on in all, and the seconds off.
+export interface PumpHour { t: number; pump: number; speeds: { [speedId: string]: number }; on: number; off: number; }
+// The hours that start in [from, to), oldest first, one row per pump and hour, from rows held as { hour start: { pump: seconds } } (lines of the
+// same hour already added up). Pure, so it can be tested.
+export function pumpHourRows(hours: Map<number, { [pump: string]: { [key: string]: number } }>, from: number, to: number, pump?: number): PumpHour[] {
+    const out: PumpHour[] = [];
+    for (const t of Array.from(hours.keys()).filter(t => t >= from && t < to).sort((a, b) => a - b)) {
+        const row = hours.get(t);
+        for (const p of Object.keys(row).sort((a, b) => parseInt(a, 10) - parseInt(b, 10))) {
+            if (typeof pump === 'number' && parseInt(p, 10) !== pump) continue;
+            const speeds: { [speedId: string]: number } = {};
+            let on = 0;
+            for (const k of Object.keys(row[p])) { if (k === 'off') continue; speeds[k] = row[p][k]; on += row[p][k]; }
+            out.push({ t: t, pump: parseInt(p, 10), speeds: speeds, on: on, off: row[p].off || 0 });
+        }
+    }
+    return out;
+}
+
 class PumpPower {
     private getSettings: () => any;
     private timer: NodeJS.Timeout;
-    private hours = new Map<number, HourRow>();     // what the log holds
+    private hours_ = new Map<number, HourRow>();     // what the log holds
     private bucket: { start: number; pumps: HourRow };  // what is not written yet
     private speedNow: { [pump: string]: number } = {};
     private lastSample = 0;
@@ -171,8 +191,8 @@ class PumpPower {
         } catch (err) { logger.warn(`Pump power: could not read the log: ${err.message}`); }
     }
     private addRow(t: number, pump: number, secs: Seconds) {
-        let row = this.hours.get(t);
-        if (!row) this.hours.set(t, row = {});
+        let row = this.hours_.get(t);
+        if (!row) this.hours_.set(t, row = {});
         addSeconds(row[pump] || (row[pump] = {}), secs);
     }
     private sample(now: number = Date.now()) {
@@ -221,11 +241,11 @@ class PumpPower {
     private prune(now: number, keepDays: number) {
         const cut = now - keepDays * DAY_MS;
         let removed = false;
-        for (const t of Array.from(this.hours.keys())) if (t < cut) { this.hours.delete(t); removed = true; }
+        for (const t of Array.from(this.hours_.keys())) if (t < cut) { this.hours_.delete(t); removed = true; }
         if (!removed) return;
         let text = '';
-        for (const t of Array.from(this.hours.keys()).sort((a, b) => a - b)) {
-            const row = this.hours.get(t);
+        for (const t of Array.from(this.hours_.keys()).sort((a, b) => a - b)) {
+            const row = this.hours_.get(t);
             for (const pump of Object.keys(row)) {
                 const s: Seconds = { ...row[pump] };
                 const off = s.off || 0;
@@ -238,6 +258,17 @@ class PumpPower {
             await fs.promises.writeFile(f + '.tmp', text, 'utf8');
             await fs.promises.rename(f + '.tmp', f);
         }).catch(err => { logger.warn(`Pump power: could not rewrite the log: ${err.message}`); });
+    }
+    // The logged hours that start in [from, to), one row per pump and hour, with the hour under way from what is not written yet.
+    public hours(from: number, to: number = Date.now(), pump?: number): PumpHour[] {
+        const all = new Map<number, HourRow>();
+        this.hours_.forEach((row, t) => { const copy: HourRow = {}; for (const p of Object.keys(row)) copy[p] = { ...row[p] }; all.set(t, copy); });
+        if (this.bucket) {
+            const row = all.get(this.bucket.start) || {};
+            for (const p of Object.keys(this.bucket.pumps)) addSeconds(row[p] || (row[p] = {}), this.bucket.pumps[p]);
+            all.set(this.bucket.start, row);
+        }
+        return pumpHourRows(all, from, to, pump);
     }
     // The starts of the periods a range is shown in, oldest first: 24 hours, 7 or 30 days, or 12 months.
     private periods(range: PumpPowerRange, now: number): number[] {
@@ -282,7 +313,7 @@ class PumpPower {
                 if (t >= starts[i]) { addSeconds(buckets[i].seconds, s); addSeconds(sum.range, s); break; }
             }
         };
-        this.hours.forEach((row, t) => { for (const pump of Object.keys(row)) add(t, pump, row[pump]); });
+        this.hours_.forEach((row, t) => { for (const pump of Object.keys(row)) add(t, pump, row[pump]); });
         if (this.bucket) for (const pump of Object.keys(this.bucket.pumps)) add(this.bucket.start, pump, this.bucket.pumps[pump]);
         const total = (secs: Seconds) => {
             let kwh = 0;
