@@ -4010,6 +4010,10 @@ export class AutoSwgState extends EqState {
     public set autoTuneAt(val: string) { this.setDataVal('autoTuneAt', val); }
     public get nextAutoCheckAt(): string { return this.data.nextAutoCheckAt; }
     public set nextAutoCheckAt(val: string) { this.setDataVal('nextAutoCheckAt', val); }
+    // The SWG Assist Model Bench's CYA test advice (AutoSwgBench.ts; the rules are AutoSwgBenchCya.cyaAdvice): { due, rule, reason, since, rules }.
+    // Advisory only: nothing reads it to change the SWG %. An object accessor: the bench sets the whole object, and only when it changed.
+    public get benchCyaAdvice(): any { return this.data.benchCyaAdvice; }
+    public set benchCyaAdvice(val: any) { this.setDataVal('benchCyaAdvice', val); }
     // Background PoolMath history sync (see PoolMathSync.ts): when it last succeeded, how
     // many entries and how far back the archive goes, and the last failure (cleared on success).
     public get archiveSyncedAt(): string { return this.data.archiveSyncedAt; }
