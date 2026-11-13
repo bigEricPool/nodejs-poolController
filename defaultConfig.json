@@ -69,7 +69,8 @@
     "units": "e",
     "backfillDays": 400,
     "keepDays": 800,
-    "clearnessMarginMinutes": 60
+    "clearnessMarginMinutes": 60,
+    "fiveMinute": true
   },
   "web": {
     "servers": {

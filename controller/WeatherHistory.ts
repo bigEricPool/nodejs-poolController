@@ -38,6 +38,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 // Stored in data/weather/<stationId>_<units>/YYYY-MM.json, one file per month of the station's local time, so only the current month is rewritten
 // and a change of station or units starts a separate record. status.json beside them lists the days already asked for.
+//
+// Five-minute sunlight (setting fiveMinute, on unless set to false): the hourly records hold the hour's HIGHEST solar radiation and UV index,
+// which overstates an hour with passing cloud. The station's five-minute observations (observations/all/1day for today, history/all?date= for
+// a past day) are summarized per hour into the mean of their solar radiation and UV readings (each is that five minutes' high, close to its
+// mean), how many there were, and the clearness of that mean against a clear sky. They are kept in fine-YYYY-MM.json beside the month files
+// and added to each hour when the hours are read (solarRadMean, uvMean, clearnessMean, fineN); the hourly records themselves are unchanged.
+// Today's observations are asked for once an hour; past days are asked for one per request, newest first, sharing the limit on requests in
+// one run with the hourly backfill (which goes first), and asked again until they are settled. Errors here are kept apart (fineError), so a
+// key that cannot read them leaves the hourly record working.
 
 import * as fs from 'fs';
 import * as https from 'https';
@@ -51,7 +60,11 @@ const BACKFILL_GAP_MS = 2500;               // ... this far apart
 const RECENT_DAYS = 7;                      // what observations/hourly/7day covers
 const SETTLED_MS = 2 * DAY_MS;              // a day this far in the past will get no more observations
 
-export interface WeatherSettings { enabled: boolean; stationId: string; apiKey: string; units: 'e' | 'm'; backfillDays: number; keepDays: number; clearnessMarginMinutes: number; }
+export interface WeatherSettings { enabled: boolean; stationId: string; apiKey: string; units: 'e' | 'm'; backfillDays: number; keepDays: number; clearnessMarginMinutes: number; fiveMinute: boolean; }
+// One hour of five-minute observations: `k` the hour's key ('YYYY-MM-DDTHH', station local time, the hour the five minutes fall in), `t` the
+// end of the hour (epoch ms), `n` how many observations, `sr` and `uv` the mean of their solar radiation (W/m2) and UV index, `cl` the
+// clearness of the mean (the mean over the mean clear-sky radiation at the same moments; only for hours wholly inside the clearness margin).
+export interface FineHour { k: string; t: number; n: number; sr?: number; uv?: number; cl?: number; }
 // One hour at the station. `lt` is the station's local time at the end of the hour ('YYYY-MM-DDTHH:MM:SS'), `t` the same instant in epoch ms.
 // Temperatures, wind, pressure and rain are in the units the record was requested in. `precipTotal` is the day's rain so far (it starts again at
 // the station's local midnight), `precipRate` the rate reported for the hour. `qc` is the station's quality control status: 1 passed, 0 failed,
@@ -66,6 +79,8 @@ export interface WeatherHour {
     solarRad?: number; uv?: number;
     clearness?: number;
     qc?: number;
+    // From the five-minute observations when there are any for the hour (see FineHour): added when the hours are read, not stored here.
+    solarRadMean?: number; uvMean?: number; clearnessMean?: number; fineN?: number;
 }
 export interface WeatherDay {
     date: string; hours: number;
@@ -75,6 +90,9 @@ export interface WeatherDay {
     precipTotal?: number; precipRateHigh?: number;
     solarRadHigh?: number; uvHigh?: number;
     clearnessAvg?: number;
+    // The day's sunlight energy (kWh/m2) from the five-minute means, and how many of its hours had five-minute observations; a day with
+    // fewer than 24 such hours (a gap, or today) gives less than the whole day's energy.
+    solarEnergy?: number; fineHours?: number;
     qcFailed: number;
 }
 export interface WeatherStatus {
@@ -84,6 +102,8 @@ export interface WeatherStatus {
     backfillDaysLeft: number;
     // Rain is read as a running total for the day. This counts the days on which the total went down from one hour to the next, which should not happen.
     precipTotalDecreases: number;
+    // The five-minute summaries: whether they are read, how many hours have one, the oldest, past days still to ask for and the last error.
+    fiveMinute: boolean; fineHours: number; fineOldest?: string; fineDaysLeft: number; fineError?: string;
 }
 // The station's latest report (observations/current). `lt` and `t` are as in WeatherHour.
 export interface WeatherCurrent {
@@ -99,7 +119,7 @@ export interface WeatherSummary {
     current?: WeatherCurrent; today?: WeatherDay; yesterday?: WeatherDay;
     precip7Days?: number;       // rain over the last seven local days, today included
 }
-interface StatusFile { checked: string[]; lastRunAt?: string; lastSuccessAt?: string; lastError?: string; lat?: number; lon?: number; clearnessMargin?: number; }
+interface StatusFile { checked: string[]; lastRunAt?: string; lastSuccessAt?: string; lastError?: string; lat?: number; lon?: number; clearnessMargin?: number; fineChecked?: string[]; fineError?: string; }
 const CURRENT_CACHE_MS = 10 * 60 * 1000;    // the latest report is asked for at most this often, and only while something is showing it
 
 const num = (v: any): number | undefined => typeof v === 'number' && isFinite(v) ? v : undefined;
@@ -122,7 +142,8 @@ export function normalizeWeatherSettings(cfg: any): WeatherSettings {
         units: cfg.units === 'm' ? 'm' : 'e',
         backfillDays: Math.min(backfillDays, keepDays),
         keepDays: keepDays,
-        clearnessMarginMinutes: Math.min(clearnessMarginMinutes, 240)
+        clearnessMarginMinutes: Math.min(clearnessMarginMinutes, 240),
+        fiveMinute: !(cfg.fiveMinute === false || cfg.fiveMinute === 'false')
     };
 }
 
@@ -167,19 +188,59 @@ export function sunTimes(t: number, lat: number, lon: number): { rise: number; s
 export function hourClearness(tEnd: number, lat: number, lon: number, solarRad: number, marginMinutes: number): number | undefined {
     if (typeof solarRad !== 'number' || !isFinite(solarRad) || solarRad < 0 || !isFinite(lat) || !isFinite(lon)) return undefined;
     const tStart = tEnd - 3600000;
-    const sun = sunTimes(tStart + 1800000, lat, lon);
-    if (typeof sun === 'undefined') return undefined;
+    if (!withinDaylight(tStart, tEnd, lat, lon, marginMinutes)) return undefined;
+    let clear = 0;
+    for (let m = 0; m <= 60; m += 5) clear = Math.max(clear, clearSkyRadiation(tStart + m * 60000, lat, lon));
+    if (clear < 50) return undefined;
+    return round(Math.min(1.5, solarRad / clear), 2);
+}
+// Whether tStart to tEnd lies wholly from marginMinutes after sunrise to marginMinutes before sunset.
+function withinDaylight(tStart: number, tEnd: number, lat: number, lon: number, marginMinutes: number): boolean {
+    const sun = sunTimes((tStart + tEnd) / 2, lat, lon);
+    if (typeof sun === 'undefined') return false;
     // The UTC day of the hour can differ from the local one; the sunrise and sunset nearest the hour are the ones that matter.
     for (const shift of [0, -DAY_MS, DAY_MS]) {
-        const rise = sun.rise + shift, set = sun.set + shift;
-        if (tStart >= rise + marginMinutes * 60000 && tEnd <= set - marginMinutes * 60000) {
-            let clear = 0;
-            for (let m = 0; m <= 60; m += 5) clear = Math.max(clear, clearSkyRadiation(tStart + m * 60000, lat, lon));
-            if (clear < 50) return undefined;
-            return round(Math.min(1.5, solarRad / clear), 2);
-        }
+        if (tStart >= sun.rise + shift + marginMinutes * 60000 && tEnd <= sun.set + shift - marginMinutes * 60000) return true;
     }
-    return undefined;
+    return false;
+}
+
+// The five-minute observations of one request summarized per hour (see FineHour), oldest first. An observation belongs to the hour its five
+// minutes fall in, judged 2.5 minutes before its time, so one stamped 13:00:01 counts for 12:00 to 13:00. The clearness needs the station's place.
+export function summarizeFine(observations: any[], lat: number | undefined, lon: number | undefined, marginMinutes: number): FineHour[] {
+    const byHour = new Map<string, { t: number; off: number; n: number; srSum: number; srN: number; uvSum: number; uvN: number; clearSum: number; clearOk: boolean }>();
+    const placeKnown = typeof lat === 'number' && typeof lon === 'number' && isFinite(lat) && isFinite(lon);
+    for (const o of Array.isArray(observations) ? observations : []) {
+        if (!o || typeof o !== 'object') continue;
+        const t = typeof o.epoch === 'number' && isFinite(o.epoch) ? o.epoch * 1000 : new Date(o.obsTimeUtc).getTime();
+        const m = typeof o.obsTimeLocal === 'string' ? /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(o.obsTimeLocal.trim()) : null;
+        if (isNaN(t) || !m) continue;
+        // The station's local time as if it were UTC, moved back half a five-minute step; its hour is the key.
+        const local = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - 150000;
+        const key = new Date(local).toISOString().slice(0, 13);
+        const off = Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - t) / 900000) * 900000;
+        let a = byHour.get(key);
+        if (!a) { a = { t: Date.parse(`${key}:00:00Z`) + 3600000 - off, off: off, n: 0, srSum: 0, srN: 0, uvSum: 0, uvN: 0, clearSum: 0, clearOk: true }; byHour.set(key, a); }
+        a.n++;
+        const sr = num(o.solarRadiationHigh), uv = num(o.uvHigh);
+        if (typeof sr === 'number' && sr >= 0) {
+            a.srSum += sr; a.srN++;
+            if (placeKnown) a.clearSum += clearSkyRadiation(t - 150000, lat, lon);
+        }
+        else a.clearOk = false;
+        if (typeof uv === 'number' && uv >= 0) { a.uvSum += uv; a.uvN++; }
+    }
+    const out: FineHour[] = [];
+    for (const [k, a] of byHour) {
+        const f: FineHour = { k: k, t: a.t, n: a.n };
+        if (a.srN) f.sr = round(a.srSum / a.srN, 1);
+        if (a.uvN) f.uv = round(a.uvSum / a.uvN, 2);
+        // Clearness only for a full set of readings inside the margin, with enough clear-sky light to compare with (as for the hourly clearness).
+        if (placeKnown && a.clearOk && a.srN >= 10 && a.clearSum / a.srN >= 50 && withinDaylight(a.t - 3600000, a.t, lat, lon, marginMinutes))
+            f.cl = round(Math.min(1.5, a.srSum / a.clearSum), 2);
+        out.push(f);
+    }
+    return out.sort((x, y) => x.t - y.t);
 }
 
 // One observation of the hourly endpoints as a WeatherHour; undefined when it has no usable time.
@@ -243,6 +304,8 @@ export function summarizeDays(hours: WeatherHour[]): WeatherDay[] {
             clearnessAvg: avg(vals(hs, 'clearness'), 2),
             qcFailed: hs.filter(h => h.qc === 0).length
         };
+        const means = vals(hs, 'solarRadMean');
+        if (means.length) { day.solarEnergy = round(means.reduce((a, b) => a + b, 0) / 1000, 2); day.fineHours = means.length; }
         for (const k of Object.keys(day)) if (typeof day[k] === 'undefined') delete day[k];
         out.push(day);
     }
@@ -272,6 +335,8 @@ function httpGetJson(url: string): Promise<{ status: number; data: any }> {
 export class WeatherHistory {
     private months = new Map<string, Map<string, WeatherHour>>();    // 'YYYY-MM' -> hour key ('YYYY-MM-DDTHH') -> the hour
     private dirtyMonths = new Set<string>();
+    private fine = new Map<string, Map<string, FineHour>>();         // the same, for the five-minute summaries
+    private dirtyFine = new Set<string>();
     private status: StatusFile = { checked: [] };
     private loadedFor: string = '';
     private running: boolean = false;
@@ -285,10 +350,22 @@ export class WeatherHistory {
         this.loadedFor = dir;
         this.months.clear();
         this.dirtyMonths.clear();
+        this.fine.clear();
+        this.dirtyFine.clear();
         this.status = { checked: [] };
         try {
             if (!fs.existsSync(dir)) return;
             for (const f of fs.readdirSync(dir)) {
+                const fm = /^fine-(\d{4}-\d{2})\.json$/.exec(f);
+                if (fm) {
+                    try {
+                        const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+                        const map = new Map<string, FineHour>();
+                        if (Array.isArray(data)) for (const h of data) if (h && typeof h.k === 'string' && typeof h.t === 'number' && typeof h.n === 'number') map.set(h.k, h);
+                        this.fine.set(fm[1], map);
+                    } catch (err) { logger.warn(`Weather: could not read ${f}: ${err.message}`); }
+                    continue;
+                }
                 const m = /^(\d{4}-\d{2})\.json$/.exec(f);
                 if (!m) continue;
                 try {
@@ -301,7 +378,8 @@ export class WeatherHistory {
             const sf = path.join(dir, 'status.json');
             if (fs.existsSync(sf)) {
                 const st = JSON.parse(fs.readFileSync(sf, 'utf8'));
-                this.status = { checked: Array.isArray(st.checked) ? st.checked.filter(d => typeof d === 'string') : [], lastRunAt: st.lastRunAt, lastSuccessAt: st.lastSuccessAt, lastError: st.lastError, lat: typeof st.lat === 'number' ? st.lat : undefined, lon: typeof st.lon === 'number' ? st.lon : undefined, clearnessMargin: typeof st.clearnessMargin === 'number' ? st.clearnessMargin : undefined };
+                this.status = { checked: Array.isArray(st.checked) ? st.checked.filter(d => typeof d === 'string') : [], lastRunAt: st.lastRunAt, lastSuccessAt: st.lastSuccessAt, lastError: st.lastError, lat: typeof st.lat === 'number' ? st.lat : undefined, lon: typeof st.lon === 'number' ? st.lon : undefined, clearnessMargin: typeof st.clearnessMargin === 'number' ? st.clearnessMargin : undefined,
+                    fineChecked: Array.isArray(st.fineChecked) ? st.fineChecked.filter(d => typeof d === 'string') : [], fineError: typeof st.fineError === 'string' ? st.fineError : undefined };
             }
         } catch (err) { logger.warn(`Weather: could not read the weather history: ${err.message}`); }
     }
@@ -321,6 +399,13 @@ export class WeatherHistory {
                 else this.writeFile(file, Array.from(map.values()).sort((a, b) => a.t - b.t));
             }
             this.dirtyMonths.clear();
+            for (const month of this.dirtyFine) {
+                const map = this.fine.get(month);
+                const file = path.join(dir, `fine-${month}.json`);
+                if (!map || map.size === 0) { if (fs.existsSync(file)) fs.unlinkSync(file); this.fine.delete(month); }
+                else this.writeFile(file, Array.from(map.values()).sort((a, b) => a.t - b.t));
+            }
+            this.dirtyFine.clear();
             this.writeFile(path.join(dir, 'status.json'), this.status);
         } catch (err) { logger.warn(`Weather: could not save the weather history: ${err.message}`); }
     }
@@ -369,8 +454,37 @@ export class WeatherHistory {
             if (month > cutoffMonth) continue;
             for (const [key, h] of map) if (h.t < cutoff) { map.delete(key); this.dirtyMonths.add(month); }
         }
+        for (const [month, map] of this.fine) {
+            if (month > cutoffMonth) continue;
+            for (const [key, h] of map) if (h.t < cutoff) { map.delete(key); this.dirtyFine.add(month); }
+        }
         const oldest = ymd(cutoff - DAY_MS);
         this.status.checked = this.status.checked.filter(d => d >= oldest);
+        if (this.status.fineChecked) this.status.fineChecked = this.status.fineChecked.filter(d => d >= oldest);
+    }
+    // Adds the five-minute summaries of one request. An hour's summary is replaced only by one with at least as many observations, so a
+    // request that holds part of an hour (today's, or a day at its edge) never shortens a complete one.
+    private mergeFine(observations: any[], s: WeatherSettings): number {
+        let n = 0;
+        for (const o of Array.isArray(observations) ? observations : []) {
+            if (o && typeof o.lat === 'number' && typeof o.lon === 'number' && isFinite(o.lat) && isFinite(o.lon)) { this.status.lat = o.lat; this.status.lon = o.lon; break; }
+        }
+        for (const f of summarizeFine(observations, this.status.lat, this.status.lon, s.clearnessMarginMinutes)) {
+            const month = f.k.slice(0, 7);
+            if (!this.fine.has(month)) this.fine.set(month, new Map());
+            const map = this.fine.get(month), had = map.get(f.k);
+            if (had && (had.n > f.n || JSON.stringify(had) === JSON.stringify(f))) continue;
+            map.set(f.k, f);
+            this.dirtyFine.add(month);
+            n++;
+        }
+        return n;
+    }
+    // The past days (UTC dates, newest first, from yesterday) whose five-minute observations are not yet settled and stored.
+    private fineDaysToBackfill(s: WeatherSettings, now: number): string[] {
+        const checked = new Set(this.status.fineChecked || []), out: string[] = [];
+        for (let i = 1; i <= s.backfillDays; i++) { const d = ymd(now - i * DAY_MS); if (!checked.has(d)) out.push(d); }
+        return out;
     }
     // The past days (UTC dates, newest first) not yet asked for, from the edge of what the seven day request covers back to backfillDays.
     private daysToBackfill(s: WeatherSettings, now: number): string[] {
@@ -396,10 +510,11 @@ export class WeatherHistory {
         const s = normalizeWeatherSettings(cfg);
         if (!s.enabled || !s.stationId || !s.apiKey || this.running) return 0;
         this.running = true;
-        let changed = 0;
+        let changed = 0, requests = 0;
         try {
             this.load(s);
             this.status.lastRunAt = new Date(now).toISOString();
+            let hourlyOk = false;
             try {
                 changed += this.merge(await this.fetch(s, 'observations/hourly/7day'), s);
                 // The days the seven day request fully covered and that are over need not be asked for again.
@@ -409,6 +524,7 @@ export class WeatherHistory {
                 const todo = this.daysToBackfill(s, now).slice(0, BACKFILL_DAYS_PER_RUN);
                 for (const d of todo) {
                     if (gapMs > 0) await sleep(gapMs);
+                    requests++;
                     let obs: any[];
                     // A day the station has nothing for comes back as 204 or, for a day before it existed, 404; either way it is not asked for again.
                     try { obs = await this.fetch(s, 'history/hourly', `&date=${d.replace(/-/g, '')}`); }
@@ -420,10 +536,35 @@ export class WeatherHistory {
                 if (this.status.lastError) logger.info(`Weather: station ${s.stationId} is being read again.`);
                 this.status.lastSuccessAt = new Date(now).toISOString();
                 this.status.lastError = undefined;
+                hourlyOk = true;
             }
             catch (err) {
                 if (this.status.lastError !== err.message) logger.warn(`Weather: could not read station ${s.stationId}: ${err.message}`);
                 this.status.lastError = err.message;
+            }
+            // The five-minute observations: today's, then past days within what is left of this run's requests. Skipped when the hourly
+            // requests failed (the key or the station does not work, or the service is down).
+            if (s.fiveMinute && hourlyOk) {
+                try {
+                    if (!this.status.fineChecked) this.status.fineChecked = [];
+                    changed += this.mergeFine(await this.fetch(s, 'observations/all/1day'), s);
+                    const todo = this.fineDaysToBackfill(s, now).slice(0, Math.max(0, BACKFILL_DAYS_PER_RUN - requests));
+                    for (const d of todo) {
+                        if (gapMs > 0) await sleep(gapMs);
+                        let obs: any[];
+                        try { obs = await this.fetch(s, 'history/all', `&date=${d.replace(/-/g, '')}`); }
+                        catch (err) { if (/HTTP 404/.test(err.message)) obs = []; else throw err; }
+                        changed += this.mergeFine(obs, s);
+                        if (now - new Date(`${d}T00:00:00Z`).getTime() >= SETTLED_MS) this.status.fineChecked.push(d);
+                    }
+                    this.status.fineChecked.sort();
+                    if (this.status.fineError) logger.info(`Weather: the five-minute observations of station ${s.stationId} are being read again.`);
+                    this.status.fineError = undefined;
+                }
+                catch (err) {
+                    if (this.status.fineError !== err.message) logger.warn(`Weather: could not read the five-minute observations of station ${s.stationId}: ${err.message}`);
+                    this.status.fineError = err.message;
+                }
             }
             changed += this.fillClearness(s);
             this.prune(s, now);
@@ -441,7 +582,19 @@ export class WeatherHistory {
         const first = ymd(from - DAY_MS).slice(0, 7), last = ymd(to + DAY_MS).slice(0, 7), out: WeatherHour[] = [];
         for (const [month, map] of this.months) {
             if (month < first || month > last) continue;
-            for (const h of map.values()) if (h.t >= from && h.t <= to) out.push(h);
+            const fineMap = this.fine.get(month);
+            for (const h of map.values()) {
+                if (h.t < from || h.t > to) continue;
+                // The five-minute summary of the hour, on a copy so the stored hour is unchanged.
+                const f = fineMap ? fineMap.get(h.lt.slice(0, 13)) : undefined;
+                if (!f) { out.push(h); continue; }
+                const c: WeatherHour = Object.assign({}, h);
+                if (typeof f.sr === 'number') c.solarRadMean = f.sr;
+                if (typeof f.uv === 'number') c.uvMean = f.uv;
+                if (typeof f.cl === 'number') c.clearnessMean = f.cl;
+                c.fineN = f.n;
+                out.push(c);
+            }
         }
         return out.sort((a, b) => a.t - b.t);
     }
@@ -520,12 +673,17 @@ export class WeatherHistory {
             }
             decreases += down.size;
         }
+        let fineHours = 0, fineOldest: FineHour | undefined;
+        if (s.stationId) for (const map of this.fine.values()) for (const f of map.values()) { fineHours++; if (!fineOldest || f.t < fineOldest.t) fineOldest = f; }
         return {
             enabled: s.enabled, configured: !!(s.stationId && s.apiKey), stationId: s.stationId, units: s.units, backfillDays: s.backfillDays, keepDays: s.keepDays,
             hours: count, oldest: oldest ? oldest.lt : undefined, newest: newest ? newest.lt : undefined,
             lastRunAt: this.status.lastRunAt, lastSuccessAt: this.status.lastSuccessAt, lastError: this.status.lastError,
             backfillDaysLeft: s.stationId && s.apiKey ? this.daysToBackfill(s, now).length : 0,
-            precipTotalDecreases: decreases
+            precipTotalDecreases: decreases,
+            fiveMinute: s.fiveMinute, fineHours: fineHours, fineOldest: fineOldest ? fineOldest.k : undefined,
+            fineDaysLeft: s.fiveMinute && s.stationId && s.apiKey ? this.fineDaysToBackfill(s, now).length : 0,
+            fineError: this.status.fineError
         };
     }
 }
