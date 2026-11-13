@@ -557,10 +557,11 @@ export function plainRate(intervals: Interval[], asOf: number, windowDays: numbe
 // Fits a model variant as of `asOf` on the intervals that lie within its last fitDays days (FC linear between the two readings of each).
 // Fewer than minIntervals usable intervals: the fit falls back to the 14-day plain average. With the temperature factor every c of TEMP_C_GRID is
 // fitted and the one with the smallest squared error is kept; with the rain wash-in the rain of each interval is a third column.
-export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaInput, asOf: number): Fit | undefined {
+// `skip` leaves intervals out of the fit (the bench's flagged ones: a long gap or thin inputs); the plain fallback still sees every interval.
+export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHour[], cyaTests: CyaInput, asOf: number, skip?: (iv: Interval) => boolean): Fit | undefined {
     const L = (v.fitDays || 30) * DAY_MS, minGap = (typeof v.minGapDays === 'number' ? v.minGapDays : 0.3) * DAY_MS;
     const cya = cyaFor(v, cyaTests, asOf);
-    const usable = intervals.filter(iv => !(iv.t2 > asOf || iv.t1 < asOf - L || iv.t2 - iv.t1 <= minGap));
+    const usable = intervals.filter(iv => !(iv.t2 > asOf || iv.t1 < asOf - L || iv.t2 - iv.t1 <= minGap) && !(skip && skip(iv)));
     const ridge = typeof v.ridge === 'number' ? v.ridge : 0.5;
     let best: { w: number[]; c: number; n: number; sse: number } | undefined, nUsed = 0;
     for (const c of v.temp ? TEMP_C_GRID : [0]) {
@@ -677,26 +678,100 @@ export function quantile(xs: number[], p: number): number {
     return s[f] + (s[c] - s[f]) * (k - f);
 }
 
+// ---------------------------------------------------------------- pairs the bench cannot score fairly
+//
+// The same rule for the live projection and every challenger, live and replay. A flagged pair stays in the scores file and on the page (its `flags`), but
+// is left out of the headline figures and the paired difference against live, and counted apart:
+//   longGap      the gap is longer than maxGapDays
+//   thinInputs   under minCoverage of its hours have every input (generation, pump time, sun) whose log had begun by then
+//   implausible  the projection is below zero, or above the start reading plus the chlorine credited over the gap (a negative burn)
+// Long-gap and thin-input intervals are also left out of the model fits (judged on the inputs, never on the miss). A gap band's half-width and MAE are
+// shown only from minGapN pairs on; below that only its count.
+export interface ScoringSettings { maxGapDays: number; minCoverage: number; minGapN: number; }
+export const DEFAULT_SCORING: ScoringSettings = { maxGapDays: 10, minCoverage: 0.9, minGapN: 8 };
+export function normalizeScoring(raw: any): ScoringSettings {
+    const s: ScoringSettings = Object.assign({}, DEFAULT_SCORING);
+    if (!raw || typeof raw !== 'object') return s;
+    const num = (k: keyof ScoringSettings, lo: number, hi: number) => { const x = Number(raw[k]); if (raw[k] !== undefined && raw[k] !== null && raw[k] !== '' && isFinite(x)) s[k] = Math.max(lo, Math.min(hi, x)); };
+    num('maxGapDays', 1, 60); num('minCoverage', 0, 1); num('minGapN', 1, 100);
+    s.minGapN = Math.round(s.minGapN);
+    return s;
+}
+export type ScoreFlag = 'longGap' | 'thinInputs' | 'implausible';
+// When each input's log begins in the rows: the first hour with generation, pump time and sun. An hour before an input's log began does not count
+// against the coverage (a pair is thin when its logs have holes, not because a log is newer than the pair).
+export interface InputStarts { gen?: number; pump?: number; sun?: number; }
+export function inputStarts(rows: BenchHour[]): InputStarts {
+    const s: InputStarts = {};
+    for (const r of rows) {
+        if (s.gen === undefined && r.genFrom !== 'none') s.gen = r.t;
+        if (s.pump === undefined && typeof r.pumpSec === 'number') s.pump = r.t;
+        if (s.sun === undefined && typeof r.sun === 'number') s.sun = r.t;
+        if (s.gen !== undefined && s.pump !== undefined && s.sun !== undefined) break;
+    }
+    return s;
+}
+// The share of the hours that end in (t1, t2] with every input whose log had begun (a dark hour needs no sun). No hours: 0.
+export function spanCoverage(rows: BenchHour[], t1: number, t2: number, starts: InputStarts): number {
+    let n = 0, ok = 0;
+    for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t <= t2; i++) {
+        const r = rows[i];
+        n++;
+        const gen = starts.gen === undefined || r.t < starts.gen || r.genFrom !== 'none';
+        const pump = starts.pump === undefined || r.t < starts.pump || typeof r.pumpSec === 'number';
+        const sun = starts.sun === undefined || r.t < starts.sun || typeof r.sun === 'number' || !(r.clear > 20);
+        if (gen && pump && sun) ok++;
+    }
+    return n ? ok / n : 0;
+}
+// The flags of a scored pair: `gen` is the chlorine credited over the gap, `cov` its input coverage (either may be missing on older rows).
+export function scoreFlags(r: { days: number; proj: number; f1: number; gen?: number; cov?: number }, s: ScoringSettings): ScoreFlag[] {
+    const f: ScoreFlag[] = [];
+    if (r.days > s.maxGapDays) f.push('longGap');
+    if (typeof r.cov === 'number' && r.cov < s.minCoverage) f.push('thinInputs');
+    if (r.proj < 0 || (typeof r.gen === 'number' && r.proj > r.f1 + r.gen + 1e-6)) f.push('implausible');
+    return f;
+}
+
+export interface GapStats { label: string; n: number; flagged?: number; halfWidth90?: number; mae?: number; note?: string; }
 export interface ScoreStats {
     n: number; mae?: number; bias?: number; halfWidth90?: number; p5?: number; p95?: number;
-    byGap: { label: string; n: number; halfWidth90?: number; mae?: number }[];
+    byGap: GapStats[];
+    nAll?: number;                                                              // with the flagged pairs
+    excluded?: { longGap: number; thinInputs: number; implausible: number };   // a pair with two flags counts in both
 }
 export const GAP_BANDS: [string, number, number][] = [['under 2 d', 0, 2], ['2-4 d', 2, 4], ['4-7 d', 4, 7], ['7 d or more', 7, Infinity]];
 
 // The summary of a set of misses (test minus projection): n, mean absolute miss, bias, the 90% half-width of |miss| (the "next test will read X to Y"
-// band), the 5% and 95% points, and the same by gap length.
-export function scoreSummary(rows: { miss: number; days: number }[]): ScoreStats {
+// band), the 5% and 95% points, and the same by gap length. With `flagsOf` the flagged pairs are left out and counted apart; a gap band shows its
+// half-width and MAE only from `minGapN` pairs on.
+export function scoreSummary<T extends { miss: number; days: number }>(all: T[], opts: { flagsOf?: (r: T) => ScoreFlag[]; minGapN?: number } = {}): ScoreStats {
+    const flags = all.map(r => opts.flagsOf ? opts.flagsOf(r) : []);
+    const rows = all.filter((r, k) => !flags[k].length);
     const m = rows.map(r => r.miss);
     const out: ScoreStats = { n: rows.length, byGap: [] };
+    if (opts.flagsOf) {
+        out.nAll = all.length;
+        out.excluded = { longGap: 0, thinInputs: 0, implausible: 0 };
+        for (const f of flags) for (const x of f) out.excluded[x]++;
+    }
     if (rows.length) {
         out.mae = m.reduce((s, x) => s + Math.abs(x), 0) / m.length;
         out.bias = m.reduce((s, x) => s + x, 0) / m.length;
         out.halfWidth90 = quantile(m.map(Math.abs), 0.9);
         out.p5 = quantile(m, 0.05); out.p95 = quantile(m, 0.95);
     }
+    const minN = Math.max(1, opts.minGapN || 1);
     for (const [label, lo, hi] of GAP_BANDS) {
         const sel = rows.filter(r => r.days >= lo && r.days < hi);
-        out.byGap.push({ label: label, n: sel.length, halfWidth90: sel.length ? quantile(sel.map(r => Math.abs(r.miss)), 0.9) : undefined, mae: sel.length ? sel.reduce((s, r) => s + Math.abs(r.miss), 0) / sel.length : undefined });
+        const g: GapStats = { label: label, n: sel.length };
+        if (opts.flagsOf) g.flagged = all.filter((r, k) => flags[k].length && r.days >= lo && r.days < hi).length;
+        if (sel.length >= minN) {
+            g.halfWidth90 = quantile(sel.map(r => Math.abs(r.miss)), 0.9);
+            g.mae = sel.reduce((s, r) => s + Math.abs(r.miss), 0) / sel.length;
+        }
+        else if (sel.length) g.note = `only ${sel.length} pair${sel.length === 1 ? '' : 's'}; the band needs ${minN}`;
+        out.byGap.push(g);
     }
     return out;
 }
