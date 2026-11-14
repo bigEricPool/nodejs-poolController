@@ -30,6 +30,8 @@ Base for new branches: master at 10.1.0 (2e7c1efb).
 | `feature/power-pump-speeds` | feature | Pump power speeds set on each pump relay (name, rpm, watts, priority), power tracking per pump, warnings for missing settings; moves the old config.json pumpPower speeds onto the relays once. | feature/power-tracking | none |
 | `feature/swg-bench` | feature | SWG Assist Model Bench: scores alternative projection models against the FC tests, replay and simulator; reads logs, writes only its own files, never changes the SWG %. | feature/swg-assist | none (fork only) |
 | `feature/swg-bench-wiring` | feature | Feeds the bench the weather log, water temperature history and hourly pump power. Based on pool itself; merging it brings feature/swg-bench in. | feature/swg-bench, feature/pws-weather, feature/temp-average-24h, feature/power-tracking | none (fork only) |
+| `feature/historyPanel` | feature | History registry and routes for the dashboard History panel (temperature, chlorinator, PoolMath sources). Built through feature/historyPanel-swg-assist. | feature/chlorinator-log, feature/temp-average-24h | none |
+| `feature/historyPanel-swg-assist` | feature | feature/historyPanel plus SWG Assist's projected FC and FC range as a History source; the branch pool takes. Fork only. | feature/historyPanel, feature/swg-assist | none (fork only) |
 | `local/pi-tools` | local | Backup, log trim and post-boot check scripts for the controller. Not for upstream. | none | none |
 | `local/npm` | local | package.json allowScripts and the audit-fix lock file. Not for upstream. | none | none |
 

@@ -238,6 +238,30 @@
       "build": true
     },
     {
+      "name": "feature/historyPanel",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "One history registry for the dashboard (controller/History.ts, HistorySources.ts; GET /state/history/kinds and /state/history) with temperature, chlorinator and PoolMath sources. Upstream candidate after feature/chlorinator-log. No CI workflow of its own; built through feature/historyPanel-swg-assist.",
+      "depends": [
+        "feature/chlorinator-log",
+        "feature/temp-average-24h"
+      ],
+      "upstream": "",
+      "build": false
+    },
+    {
+      "name": "feature/historyPanel-swg-assist",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "feature/historyPanel plus SWG Assist's projected FC and FC range as a History source (controller/AutoSwgHistorySource.ts). The branch pool takes. Fork only.",
+      "depends": [
+        "feature/historyPanel",
+        "feature/swg-assist"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "local/pi-tools",
       "kind": "local",
       "status": "active",
