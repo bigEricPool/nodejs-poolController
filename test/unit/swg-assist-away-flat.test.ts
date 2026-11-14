@@ -83,7 +83,7 @@ describe('Away protection with the Trip Maintenance Multiplier', () => {
         const flat = await computeRecommendation(Object.assign(away(2), { asOf: new Date(lastAt + 60000) }), HTML, [], undefined, archive);
         expect(r.awayBasis.maintenancePct).toBe(flat.awayFlat.maintenancePct);   // the same numbers the flat % uses, though 10 days later
         expect(r.awayBasis.burnPpmPerDay).toBe(flat.awayFlat.burnPpmPerDay);
-        // the highest running average in the last 60 days is the 1.0 ppm/day before the burn fell: 1.0 / about 0.79, plus 10%, rounded up to 1.5
+        // the highest running average in the last 30 days is the 1.0 ppm/day before the burn fell: 1.0 / about 0.79 = 1.27, rounded up to 1.5
         expect(r.awayBasis.peakBurnPpmPerDay).toBeCloseTo(1.0, 1);
         expect(new Date(r.awayBasis.peakAt).getTime()).toBeLessThan(lastAt - 6 * DAY);
         expect(r.awayBasis.suggestedMultiplier).toBe(1.5);
