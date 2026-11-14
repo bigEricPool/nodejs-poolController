@@ -56,6 +56,9 @@ import type { BandDecision } from './SwgAssistBand';
 // How old the newest FC reading can be before the result says its projection is mostly
 // extrapolation.
 const STALE_FC_DAYS = 3;
+// The suggested Trip Maintenance Multiplier (AutoSwgResult.awayBasis): how far back to look for the highest running average, and the margin on top of it.
+const AWAY_SUGGEST_LOOKBACK_DAYS = 60;
+const AWAY_SUGGEST_MARGIN = 0.1;
 
 // Default for params.fcAnomalyTolerancePpm: an FC rise that the SWG output and logged additions fall
 // short of explaining by more than this many ppm (a test varies by about a ppm) marks the interval
@@ -257,6 +260,9 @@ export interface AutoSwgResult {
     // Away protection with the Trip Maintenance Multiplier: the maintenance % as of the newest FC reading (and the burn behind it), the multiplier, the flat %
     // (maintenance x multiplier, rounded) and the storm or outage extra on top of it. recommendedPctForTarget is basePct + extraPct (at most 100).
     awayFlat?: { maintenancePct: number; burnPpmPerDay: number; multiplier: number; basePct: number; extraPct: number; asOf: string };
+    // On every check: the burn and maintenance % (one decimal) as of the newest FC reading (asOf), and the suggested Trip Maintenance Multiplier with the
+    // highest running average over the last AWAY_SUGGEST_LOOKBACK_DAYS days (peakBurnPpmPerDay, at the reading peakAt) it came from.
+    awayBasis?: { burnPpmPerDay: number; maintenancePct: number; asOf: string; peakBurnPpmPerDay: number; peakAt: string; suggestedMultiplier: number };
     bandStaleAt?: string;                    // the same: ISO time the last reading is BAND_STALE_DAYS old, when the hold ends whatever the projection says
     fcModelChange: number;           // the modelled FC change since the last reading, before weighting (generated minus consumed)
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
@@ -1581,23 +1587,58 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     // no one testing, the window would otherwise slide past the readings and the % drift while away (Away protection ends on the next reading anyway). The
     // water temperature adjustment, when on, is carried over in proportion. The extra makes up what the storm or outage took off the projection over
     // targetPeriodsBelow run periods, within storm.maxExtraPct points, and the step back to the flat % at that deadline ends it.
-    let awayFlat: AutoSwgResult['awayFlat'];
-    const awayMult = params.away && params.away.active && typeof params.away.maintMultiplier === 'number' && params.away.maintMultiplier >= 1 ? params.away.maintMultiplier : 0;
-    if (awayMult > 0 && swgHours > 0 && maxDailyPpmAtFull > 0) {
+    // The burn and maintenance % as of the newest FC reading, and a suggested Trip Maintenance Multiplier, on every check (so they can be shown before Away
+    // protection is turned on). The suggestion is the highest running average at any reading over the last AWAY_SUGGEST_LOOKBACK_DAYS days over the burn at the
+    // newest reading, plus AWAY_SUGGEST_MARGIN, rounded up to the next 0.5 and held to 1 to 3. Only on a live check: the reports that re-run the calculation at
+    // past times (asOf: Projection Accuracy, Tune, the what-if sweep) don't use it, and the scan would slow them by about a fifth.
+    let awayBasis: AutoSwgResult['awayBasis'];
+    let burnAtReading = avgPerDay, maintAtReadingRaw = 0;
+    if (maxDailyPpmAtFull > 0) {
         const atReading = averageAsOf(lastFc.ts);
         const liveRaw = coveredDays > 0 ? weightedTotal / coveredDays : 0;
         const readingRaw = atReading.coveredDays > 0 ? atReading.weightedTotal / atReading.coveredDays : liveRaw;
-        const burn = liveRaw > 0 ? avgPerDay * (readingRaw / liveRaw) : readingRaw;
-        const maintAtReading = roundDutyCyclePct(Math.max(0, Math.min(100, (burn / maxDailyPpmAtFull) * 100)));
-        const basePct = Math.max(0, Math.min(100, Math.round(maintAtReading * awayMult)));
+        burnAtReading = liveRaw > 0 ? avgPerDay * (readingRaw / liveRaw) : readingRaw;
+        maintAtReadingRaw = Math.max(0, Math.min(100, (burnAtReading / maxDailyPpmAtFull) * 100));
+    }
+    if (maxDailyPpmAtFull > 0 && typeof asOfMs === 'undefined') {
+        const atReading = averageAsOf(lastFc.ts);
+        const readingRaw = atReading.coveredDays > 0 ? atReading.weightedTotal / atReading.coveredDays : (coveredDays > 0 ? weightedTotal / coveredDays : 0);
+        let peak = readingRaw, peakAt = lastFc.ts;
+        for (const e of fcEvents) {
+            if (e.ts.getTime() > lastFc.ts.getTime() || e.ts.getTime() < lastFc.ts.getTime() - AWAY_SUGGEST_LOOKBACK_DAYS * 86400000) continue;
+            const then = averageAsOf(e.ts);
+            if (!(then.coveredDays > 0)) continue;
+            const v = then.weightedTotal / then.coveredDays;
+            if (v > peak) { peak = v; peakAt = e.ts; }
+        }
+        const suggested = readingRaw > 0 ? Math.max(1, Math.min(3, Math.ceil((peak / readingRaw) * (1 + AWAY_SUGGEST_MARGIN) * 2 - 1e-9) / 2)) : 3;
+        awayBasis = {
+            burnPpmPerDay: Math.round(burnAtReading * 100) / 100, maintenancePct: Math.round(maintAtReadingRaw * 10) / 10, asOf: lastFc.ts.toISOString(),
+            peakBurnPpmPerDay: Math.round(peak * 100) / 100, peakAt: peakAt.toISOString(), suggestedMultiplier: suggested
+        };
+    }
+
+    // Away protection with the Trip Maintenance Multiplier: no glide to the vacation target. The % is the maintenance % times the multiplier, held flat for the
+    // trip, with the storm and outage extra on top. The maintenance % is taken from the average as it stood at the newest FC reading (above), not at this moment:
+    // with no one testing, the window would otherwise slide past the readings and the % drift while away (Away protection ends on the next reading anyway). The
+    // water temperature adjustment, when on, is carried over in proportion. The maintenance % is multiplied before rounding: rounding it first turned the small
+    // rise as a sunrise-to-sunset run window shortens (the same chlorine needs a slightly higher %) into a step of a whole point times the multiplier.
+    // The extra makes up what the storm or outage took off the projection over targetPeriodsBelow run periods, within storm.maxExtraPct points, and the step
+    // back to the flat % at that deadline ends it.
+    let awayFlat: AutoSwgResult['awayFlat'];
+    const awayMult = params.away && params.away.active && typeof params.away.maintMultiplier === 'number' && params.away.maintMultiplier >= 1 ? params.away.maintMultiplier : 0;
+    if (awayMult > 0 && swgHours > 0 && maxDailyPpmAtFull > 0) {
+        const burn = burnAtReading;
+        const maintShown = Math.round(maintAtReadingRaw * 10) / 10;
+        const basePct = Math.max(0, Math.min(100, Math.round(maintAtReadingRaw * awayMult)));
         const flatPeriods = Math.max(0.5, typeof params.targetPeriodsBelow === 'number' && params.targetPeriodsBelow > 0 ? params.targetPeriodsBelow : 1);
         let extraPct = 0;
         if (stormApplied && stormLossPpm > 0 && params.storm) extraPct = Math.max(0, Math.min(params.storm.maxExtraPct, (stormLossPpm / (maxDailyPpmAtFull * flatPeriods)) * 100));
         const flatDeadline = deadlineAfterRunHours(rightNow, flatPeriods * swgHours, swgStart, swgStop, params.timezone);
         rationale.splice(rationaleMark);
-        rationale.push(`Away protection is on with the Trip Maintenance Multiplier: the SWG runs at the maintenance ${maintAtReading}% (a burn of ${burn.toFixed(2)} ppm/day, as of the last FC reading at ${formatLocalDateTime(lastFc.ts, params.timezone)}) x ${awayMult} = ${basePct}%, held flat until a new FC reading ends Away protection. The vacation target is not used.`);
+        rationale.push(`Away protection is on with the Trip Maintenance Multiplier: the SWG runs at the maintenance ${maintShown}% (a burn of ${burn.toFixed(2)} ppm/day, as of the last FC reading at ${formatLocalDateTime(lastFc.ts, params.timezone)}) x ${awayMult} = ${basePct}%, held flat until a new FC reading ends Away protection. The vacation target is not used.`);
         if (extraPct >= 0.05) rationale.push(`The storm or outage response adds ${extraPct.toFixed(1)} points for the ${stormLossPpm.toFixed(2)} ppm it took off the projection (made up over ${flatPeriods} run period${flatPeriods === 1 ? '' : 's'}, at most ${params.storm.maxExtraPct} points), until ${formatLocalDateTime(flatDeadline, params.timezone)}: ${Math.min(100, basePct + extraPct).toFixed(1)}%.`);
-        awayFlat = { maintenancePct: maintAtReading, burnPpmPerDay: Math.round(burn * 100) / 100, multiplier: awayMult, basePct: basePct, extraPct: Math.round(extraPct * 10) / 10, asOf: lastFc.ts.toISOString() };
+        awayFlat = { maintenancePct: maintShown, burnPpmPerDay: Math.round(burn * 100) / 100, multiplier: awayMult, basePct: basePct, extraPct: Math.round(extraPct * 10) / 10, asOf: lastFc.ts.toISOString() };
         targetDate = flatDeadline;
         targetDays = (flatDeadline.getTime() - rightNow.getTime()) / 86400000;
         refreshed = false;
@@ -1688,6 +1729,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         bandReachAt: bandReachAt ? bandReachAt.toISOString() : undefined,
         bandStaleAt: bandStaleAt ? bandStaleAt.toISOString() : undefined,
         awayFlat: awayFlat,
+        awayBasis: awayBasis,
         targetFcUsed: targetFc,
         targetDateUsed: targetDate.toISOString(),
         targetDaysUsed: targetDays,
