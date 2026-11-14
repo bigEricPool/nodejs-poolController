@@ -1892,6 +1892,10 @@ export class PoolMathSettings extends EqItem {
     public set gallons(val: number) { this.setDataVal('gallons', val > 0 ? val : 0); }
     public get swgLbsPerDay(): number { return this.data.swgLbsPerDay > 0 ? this.data.swgLbsPerDay : 0; }
     public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val > 0 ? val : 0); }
+    // The kinds of PoolMath data shown as history (kind ids, see PoolMathArchive.historyKindsOf); undefined means the defaults
+    // (PoolMathSync.DEFAULT_HISTORY_KINDS). Only what is shown: everything PoolMath sends is archived whatever this says.
+    public get historyKinds(): string[] | undefined { return Array.isArray(this.data.historyKinds) ? this.data.historyKinds.filter(k => typeof k === 'string') : undefined; }
+    public set historyKinds(val: string[] | undefined) { this.setDataVal('historyKinds', Array.isArray(val) ? val.slice() : undefined); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }
