@@ -22,9 +22,10 @@ import { logger } from "../logger/Logger";
 // a projection...) and a function that gives their points over a span of time. A source that cannot recompute its history keeps it itself;
 // this registry stores nothing. A kind is named to the outside as `<source>:<kind>`, so two sources can use the same kind name.
 //
-// A point is { t, v?, lo?, hi?, text?, o? }: t the time (ms), v the value, lo and hi a band (the low and high of an hour or a day, or the
+// A point is { t, v?, lo?, hi?, text?, o?, seg? }: t the time (ms), v the value, lo and hi a band (the low and high of an hour or a day, or the
 // levels a setting holds between), text a note or an addition written out, and o: 1 for a reading taken while the equipment was off (shown
-// apart from the others). How a kind is best drawn is given by its style:
+// apart from the others), and seg, where given, the line a point belongs to (a line kind whose points carry different seg values is drawn as
+// one line for each, such as a projection remade by each calculation). How a kind is best drawn is given by its style:
 //   line     a value that is followed continuously (with a band where the points carry lo and hi)
 //   band     a range in force at each time (lo to hi), stepped where it changed
 //   steps    a setting that holds until the next point
@@ -37,7 +38,7 @@ export interface HistoryKind {
     kind: string; name: string; unit: string; group: string; style: HistoryStyle;
     future?: boolean; view?: string; count?: number; first?: string; last?: string; selected?: boolean;
 }
-export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; }
+export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; seg?: number; }
 export interface HistorySource {
     id: string;             // short and without ':' (for example 'temps', 'poolMath')
     name: string;           // shown to the user as the heading of the source's kinds
