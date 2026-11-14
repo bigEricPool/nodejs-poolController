@@ -170,7 +170,9 @@ export interface AutoSwgParams {
     targetPeriodsBelow: number;
     // Away protection, for the explanation: while it is on, the Target FC is the vacation target (and goes back to originalTargetFc when it ends); for a few days
     // after it ended, what ending it did.
-    away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
+    // maintMultiplier (1 to 3; 0 or unset = off): while Away protection is on, the % is the maintenance % as of the newest FC reading times this, held flat, plus
+    // the storm and outage extra (within storm.maxExtraPct); the glide to the vacation target is not used. See awayFlat in the result.
+    away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string; maintMultiplier?: number };
     // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
     // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
     band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean; peakCap?: boolean; integral?: number; scaledBias?: boolean };
@@ -252,6 +254,9 @@ export interface AutoSwgResult {
     bandMode?: 'coast' | 'boost' | 'hold';   // range control only: what it did (held the maintenance %, boosted toward the middle, or held the SWG at 0% above the range)
     bandCoasting?: boolean;                  // range control only: the coasting state to keep for the next decision
     bandReachAt?: string;                    // range control, held at 0% above the range: ISO time the projection reaches the release level (the top less BAND_RELEASE_PPM) with no more chlorine made; absent when it does not within 30 days
+    // Away protection with the Trip Maintenance Multiplier: the maintenance % as of the newest FC reading (and the burn behind it), the multiplier, the flat %
+    // (maintenance x multiplier, rounded) and the storm or outage extra on top of it. recommendedPctForTarget is basePct + extraPct (at most 100).
+    awayFlat?: { maintenancePct: number; burnPpmPerDay: number; multiplier: number; basePct: number; extraPct: number; asOf: string };
     bandStaleAt?: string;                    // the same: ISO time the last reading is BAND_STALE_DAYS old, when the hold ends whatever the projection says
     fcModelChange: number;           // the modelled FC change since the last reading, before weighting (generated minus consumed)
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
@@ -1571,6 +1576,42 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         catch (err) { logger.warn(`SWG Assist: range control failed, using the target instead: ${err && err.message}`); }
     }
 
+    // Away protection with the Trip Maintenance Multiplier: no glide to the vacation target. The % is the maintenance % times the multiplier, held flat for the
+    // trip, with the storm and outage extra on top. The maintenance % is taken from the average as it stood at the newest FC reading, not at this moment: with
+    // no one testing, the window would otherwise slide past the readings and the % drift while away (Away protection ends on the next reading anyway). The
+    // water temperature adjustment, when on, is carried over in proportion. The extra makes up what the storm or outage took off the projection over
+    // targetPeriodsBelow run periods, within storm.maxExtraPct points, and the step back to the flat % at that deadline ends it.
+    let awayFlat: AutoSwgResult['awayFlat'];
+    const awayMult = params.away && params.away.active && typeof params.away.maintMultiplier === 'number' && params.away.maintMultiplier >= 1 ? params.away.maintMultiplier : 0;
+    if (awayMult > 0 && swgHours > 0 && maxDailyPpmAtFull > 0) {
+        const atReading = averageAsOf(lastFc.ts);
+        const liveRaw = coveredDays > 0 ? weightedTotal / coveredDays : 0;
+        const readingRaw = atReading.coveredDays > 0 ? atReading.weightedTotal / atReading.coveredDays : liveRaw;
+        const burn = liveRaw > 0 ? avgPerDay * (readingRaw / liveRaw) : readingRaw;
+        const maintAtReading = roundDutyCyclePct(Math.max(0, Math.min(100, (burn / maxDailyPpmAtFull) * 100)));
+        const basePct = Math.max(0, Math.min(100, Math.round(maintAtReading * awayMult)));
+        const flatPeriods = Math.max(0.5, typeof params.targetPeriodsBelow === 'number' && params.targetPeriodsBelow > 0 ? params.targetPeriodsBelow : 1);
+        let extraPct = 0;
+        if (stormApplied && stormLossPpm > 0 && params.storm) extraPct = Math.max(0, Math.min(params.storm.maxExtraPct, (stormLossPpm / (maxDailyPpmAtFull * flatPeriods)) * 100));
+        const flatDeadline = deadlineAfterRunHours(rightNow, flatPeriods * swgHours, swgStart, swgStop, params.timezone);
+        rationale.splice(rationaleMark);
+        rationale.push(`Away protection is on with the Trip Maintenance Multiplier: the SWG runs at the maintenance ${maintAtReading}% (a burn of ${burn.toFixed(2)} ppm/day, as of the last FC reading at ${formatLocalDateTime(lastFc.ts, params.timezone)}) x ${awayMult} = ${basePct}%, held flat until a new FC reading ends Away protection. The vacation target is not used.`);
+        if (extraPct >= 0.05) rationale.push(`The storm or outage response adds ${extraPct.toFixed(1)} points for the ${stormLossPpm.toFixed(2)} ppm it took off the projection (made up over ${flatPeriods} run period${flatPeriods === 1 ? '' : 's'}, at most ${params.storm.maxExtraPct} points), until ${formatLocalDateTime(flatDeadline, params.timezone)}: ${Math.min(100, basePct + extraPct).toFixed(1)}%.`);
+        awayFlat = { maintenancePct: maintAtReading, burnPpmPerDay: Math.round(burn * 100) / 100, multiplier: awayMult, basePct: basePct, extraPct: Math.round(extraPct * 10) / 10, asOf: lastFc.ts.toISOString() };
+        targetDate = flatDeadline;
+        targetDays = (flatDeadline.getTime() - rightNow.getTime()) / 86400000;
+        refreshed = false;
+        targetWarning = undefined;
+        targetInfo = undefined;
+        targetDateExtended = false;
+        longerDeadlineNote = undefined;
+        troughAddPpm = 0;
+        targetMarginPpm = 0;
+        periodDayEquivalents = dayEquivalents(rightNow, flatDeadline);
+        runHoursInPeriod = runWindowHoursBetween(rightNow, flatDeadline, swgStart, swgStop, params.timezone);
+        recommendedPctForTarget = Math.min(100, basePct + extraPct);
+    }
+
     // With the last reading STALE_FC_DAYS or more old, never hold the SWG below the maintenance % (what matches the average consumption).
     // The projection is mostly an average by now, and its taper (projectionTaperStartDays to projectionTaperEndDays) stops crediting any
     // consumption at all, so a glide to a target above the current FC would keep the SWG at 0% -- and push the target date out at every
@@ -1585,7 +1626,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
 
     // However far the storm response lowered the projected FC, it adds at most maxExtraPct points to the % the plan would have used without it. The
     // glide to a target you set, and the maintenance floor, are not limited by it.
-    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0 && !bandResult) {
+    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0 && !bandResult && !awayFlat) {
         const neededWithoutStorm = (targetFc + targetMarginPpm + troughAddPpm - (projectedCurrentFc + stormLossPpm)) + (avgPerDay * periodDayEquivalents);
         let withoutStorm = Math.max(0, Math.min(100, (neededWithoutStorm / producibleAtFull) * 100));
         if (staleFcNote && withoutStorm < recommendedPct) withoutStorm = recommendedPct;
@@ -1646,6 +1687,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         bandCoasting: bandResult ? bandResult.coasting : undefined,
         bandReachAt: bandReachAt ? bandReachAt.toISOString() : undefined,
         bandStaleAt: bandStaleAt ? bandStaleAt.toISOString() : undefined,
+        awayFlat: awayFlat,
         targetFcUsed: targetFc,
         targetDateUsed: targetDate.toISOString(),
         targetDaysUsed: targetDays,

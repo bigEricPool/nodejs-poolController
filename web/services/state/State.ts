@@ -335,8 +335,8 @@ function windowKeyTime(t: string): string {
 // calculation uses, whether typed in or taken from the selected SWG schedule, to the nearest 10
 // minutes: editing the schedule counts, the daily drift of a sunrise or sunset based window does not.
 // What the calculation says about Away protection: while it is on, the vacation target and what it goes back to; for three days after it ended, what ending it did.
-function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string } {
-    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText };
+function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string; maintMultiplier?: number } {
+    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText, maintMultiplier: cfg.awayMaintMultiplier };
     const endedAt = cfg.awayEndedAt ? new Date(cfg.awayEndedAt).getTime() : NaN;
     if (cfg.awayEndedNote && !isNaN(endedAt) && Date.now() - endedAt < 3 * 86400000) return { active: false, endedNote: cfg.awayEndedNote };
     return { active: false };
@@ -353,7 +353,7 @@ function autoSwgSettingsKey(): string {
     catch (err) { /* the typed-in window is the fallback */ }
     return [
         cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.bandBoostPeriods, cfg.bandPeakCap, cfg.bandIntegral, cfg.bandScaledBias, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
-        cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus,
+        cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus, cfg.awayMaintMultiplier,
         cfg.shareCode, cfg.poolName, cfg.scheduleId, windowKeyTime(start), windowKeyTime(stop)
     ].join('|');
 }
@@ -479,7 +479,8 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
     // "match demand" is kept as maintenancePct for context only (it's also
     // still spelled out in the rationale text below).
     state.autoSwg.recommendedPct = result.recommendedPctForTarget;
-    state.autoSwg.maintenancePct = result.recommendedPct;
+    // With the Trip Maintenance Multiplier, the flat % (maintenance x multiplier) is what Away protection holds and what a storm or outage extra steps back to.
+    state.autoSwg.maintenancePct = result.awayFlat ? result.awayFlat.basePct : result.recommendedPct;
     state.autoSwg.avgConsumptionPpmPerDay = result.avgConsumptionPpmPerDay;
     state.autoSwg.avgConsumptionSummary = result.avgConsumptionSummary;
     state.autoSwg.avgWindowStart = result.avgWindowStart;
@@ -1150,7 +1151,8 @@ export function registerAutoSwgPoolMath() {
     showAutoSwgArchiveStatus();
 }
 
-// The SWG % Away protection may apply: the recommendation (the glide to the target you set, plus what a storm or outage adds, which the calculation
+// The SWG % Away protection may apply. With the Trip Maintenance Multiplier on, the maintenancePct is the flat % (see runAutoSwgRecommendation), so this is that
+// plus any storm or outage extra. Otherwise: the recommendation (the glide to the target you set, plus what a storm or outage adds, which the calculation
 // limits to stormMaxExtraPct points), but never below the maintenance %. Away protection can only add chlorine.
 function awayBoundedPct(): number | undefined {
     let maintenance = state.autoSwg.maintenancePct, recommended = state.autoSwg.recommendedPct;
