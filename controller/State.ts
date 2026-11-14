@@ -4435,6 +4435,18 @@ export class AutoSwgState extends EqState {
     public set bandCoasting(val: boolean) { this.setDataVal('bandCoasting', val === true); }
     public get stepPct(): number { return this.data.stepPct; }
     public set stepPct(val: number) { this.setDataVal('stepPct', val); }
+    // Range control, as of the last applied calculation (for the status under "SWG Assist applied ..."): what it did ('coast' = held at 0% above the range, 'hold', 'boost'), the FC it
+    // projected and the burn it used, and, when held at 0%, when the projection reaches the release level and when the reading is old enough that the hold ends anyway.
+    public get lastAppliedBandMode(): string { return this.data.lastAppliedBandMode; }
+    public set lastAppliedBandMode(val: string) { this.setDataVal('lastAppliedBandMode', val); }
+    public get lastAppliedProjectedFc(): number { return this.data.lastAppliedProjectedFc; }
+    public set lastAppliedProjectedFc(val: number) { this.setDataVal('lastAppliedProjectedFc', val); }
+    public get lastAppliedAvgConsumption(): number { return this.data.lastAppliedAvgConsumption; }
+    public set lastAppliedAvgConsumption(val: number) { this.setDataVal('lastAppliedAvgConsumption', val); }
+    public get lastAppliedBandReachAt(): string { return this.data.lastAppliedBandReachAt; }
+    public set lastAppliedBandReachAt(val: string) { this.setDataVal('lastAppliedBandReachAt', val); }
+    public get lastAppliedBandStaleAt(): string { return this.data.lastAppliedBandStaleAt; }
+    public set lastAppliedBandStaleAt(val: string) { this.setDataVal('lastAppliedBandStaleAt', val); }
 }
 export class CommsState {
     public keepAlives: number;

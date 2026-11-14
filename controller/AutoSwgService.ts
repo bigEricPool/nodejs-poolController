@@ -49,7 +49,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import * as https from 'https';
 import { logger } from '../logger/Logger';
-import { bandDecision } from './SwgAssistBand';
+import { BAND_RELEASE_PPM, BAND_STALE_DAYS, bandDecision } from './SwgAssistBand';
 import { noteShareRequest } from './PoolMathArchive';
 import type { BandDecision } from './SwgAssistBand';
 
@@ -114,6 +114,22 @@ export function projectionWeight(base: number, days: number, start: number, end:
     if (days <= start) return b;
     if (days >= end) return 0;
     return b * (end - days) / (end - start);
+}
+
+// When the projected FC reaches `level` ppm with no more chlorine made from `now` on (the SWG held at 0%): the first hour from now at which the projection, worked out as a
+// calculation does (the last reading plus the weighted modelled change, with the same day-equivalents and taper), is at or under it. Undefined when it does not within
+// `maxDays` (default 30), for example when the taper has stopped crediting any consumption.
+export function coastReachTime(o: { now: Date; lastFcTs: Date; lastFcValue: number; generated: number; added: number; avgPerDay: number; baseWeight: number; taperStart: number; taperEnd: number;
+    level: number; dayEq: (a: Date, b: Date) => number; maxDays?: number }): Date | undefined {
+    const maxHours = Math.round((typeof o.maxDays === 'number' ? o.maxDays : 30) * 24);
+    for (let h = 0; h <= maxHours; h++) {
+        const t = new Date(o.now.getTime() + h * 3600000);
+        const elapsed = (t.getTime() - o.lastFcTs.getTime()) / 86400000;
+        const w = projectionWeight(o.baseWeight, elapsed, o.taperStart, o.taperEnd);
+        const proj = o.lastFcValue + w * (o.generated - o.avgPerDay * o.dayEq(o.lastFcTs, t)) + o.added;
+        if (proj <= o.level) return t;
+    }
+    return undefined;
 }
 
 export interface AutoSwgParams {
@@ -214,6 +230,8 @@ export interface AutoSwgResult {
     projectedCurrentFc: number;
     bandMode?: 'coast' | 'boost' | 'hold';   // range control only: what it did (held the maintenance %, boosted toward the middle, or held the SWG at 0% above the range)
     bandCoasting?: boolean;                  // range control only: the coasting state to keep for the next decision
+    bandReachAt?: string;                    // range control, held at 0% above the range: ISO time the projection reaches the release level (the top less BAND_RELEASE_PPM) with no more chlorine made; absent when it does not within 30 days
+    bandStaleAt?: string;                    // the same: ISO time the last reading is BAND_STALE_DAYS old, when the hold ends whatever the projection says
     fcModelChange: number;           // the modelled FC change since the last reading, before weighting (generated minus consumed)
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
     projectionWeight: number;       // the weight applied to the modelled change
@@ -1552,6 +1570,17 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     delete inputsUsed.saltDrop;
     delete inputsUsed.storm;
 
+    // Range control holding the SWG at 0% above the range: when the projection falls to the release level, and when the reading is old enough that the hold ends anyway.
+    let bandReachAt: Date | undefined, bandStaleAt: Date | undefined;
+    if (bandResult && bandResult.mode === 'coast' && params.band) {
+        bandStaleAt = new Date(lastFc.ts.getTime() + BAND_STALE_DAYS * 86400000);
+        bandReachAt = coastReachTime({
+            now: rightNow, lastFcTs: lastFc.ts, lastFcValue: lastFc.value, generated: swgGeneratedSinceReading, added: addedSinceReading, avgPerDay: avgPerDay, baseWeight: baseWeight,
+            taperStart: typeof params.projectionTaperStartDays === 'number' ? params.projectionTaperStartDays : 3, taperEnd: typeof params.projectionTaperEndDays === 'number' ? params.projectionTaperEndDays : 0,
+            level: params.band.high - BAND_RELEASE_PPM, dayEq: dayEquivalents
+        });
+    }
+
     return {
         currentPct: latestSwg.pct,
         recommendedPct: roundDutyCyclePct(recommendedPct),
@@ -1577,6 +1606,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         projectedFcBeforeStorm: Math.round((projectedCurrentFc + stormLossPpm) * 100) / 100,
         bandMode: bandResult ? bandResult.mode : undefined,
         bandCoasting: bandResult ? bandResult.coasting : undefined,
+        bandReachAt: bandReachAt ? bandReachAt.toISOString() : undefined,
+        bandStaleAt: bandStaleAt ? bandStaleAt.toISOString() : undefined,
         targetFcUsed: targetFc,
         targetDateUsed: targetDate.toISOString(),
         targetDaysUsed: targetDays,
