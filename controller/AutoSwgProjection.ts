@@ -29,7 +29,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //            are that run's projection at the top of each hour in between (the reading carried forward by its own rules). `run` is that run.
 // Points of one run, joined in time order, are that run's line: its `lead` points, its `after`, then its `hourly` and `reading` points, then the `before` of the
 // apply that replaced it. Where a run has lead points, the run before it ends at the test (read() drops that run's later points): the test replaced it there.
-// The points are worked out from the history of applies (data/autoSwgHistory.json), the PoolMath archive and the PoolMath page the last calculation read,
+// The points are worked out from the history of applies (data/autoSwgHistory.jsonl), the PoolMath archive and the PoolMath page the last calculation read,
 // so nothing here contacts PoolMath. The work is done in the background after a calculation or an apply, a little at a time (updateProjectionPoints), and
 // changes no calculation.
 
