@@ -41,8 +41,8 @@ describe('Away protection with the Trip Maintenance Multiplier', () => {
         const r = await computeRecommendation(Object.assign(away(2), { asOf: new Date(lastAt + 60000) }), HTML, [], undefined, archive);
         expect(r.awayFlat).toBeDefined();
         expect(r.awayFlat.multiplier).toBe(2);
-        expect(r.awayFlat.maintenancePct).toBe(r.recommendedPct);                 // a minute after the reading, the live and at-reading averages agree
-        expect(r.awayFlat.basePct).toBe(Math.round(r.awayFlat.maintenancePct * 2));
+        expect(Math.abs(r.awayFlat.maintenancePct - r.recommendedPct)).toBeLessThanOrEqual(0.5);   // a minute after the reading, the live and at-reading averages agree
+        expect(Math.abs(r.awayFlat.basePct - r.awayFlat.maintenancePct * 2)).toBeLessThanOrEqual(0.6);   // multiplied before rounding
         expect(r.awayFlat.extraPct).toBe(0);
         expect(r.recommendedPctForTarget).toBe(r.awayFlat.basePct);
         expect(r.rationale.some(x => /Trip Maintenance Multiplier/.test(x))).toBe(true);
@@ -59,6 +59,34 @@ describe('Away protection with the Trip Maintenance Multiplier', () => {
         expect(later.awayFlat.maintenancePct).toBe(first.awayFlat.maintenancePct);
         expect(later.awayFlat.basePct).toBe(first.awayFlat.basePct);
         expect(later.recommendedPctForTarget).toBe(first.recommendedPctForTarget);
+    });
+
+    it('moves by at most about the run-window change when the window shortens, not by a whole point times the multiplier', async () => {
+        // A sunrise-to-sunset window loses a few minutes a day into December: the same chlorine needs a slightly higher %. Rounding the maintenance % before
+        // multiplying made that a step of 2 points at x2 (8% to 9%) about 20 days into a trip.
+        const asOf = new Date(lastAt + 60000);
+        const long = await computeRecommendation(Object.assign(away(2), { asOf }), HTML, [], undefined, archive);
+        const short = await computeRecommendation(Object.assign(away(2), { asOf, swgStopTime: '16:40' }), HTML, [], undefined, archive);
+        const scaled = long.awayFlat.maintenancePct * 2 * (10 / (9 + 40 / 60));
+        expect(Math.abs(short.awayFlat.basePct - scaled)).toBeLessThanOrEqual(0.6);
+        expect(short.awayFlat.basePct - long.awayFlat.basePct).toBeLessThanOrEqual(2);
+    });
+
+    it('reports the burn at the last reading and a suggested multiplier on every live check, Away or not', async () => {
+        // live (no asOf): the last reading in this history is 12 days old
+        const r = await computeRecommendation(Object.assign({}, base), HTML, [], undefined, archive);
+        expect(r.awayFlat).toBeUndefined();
+        expect(r.awayBasis).toBeDefined();
+        // the reports that re-run the calculation at past times skip it
+        const past = await computeRecommendation(Object.assign({}, base, { asOf: new Date(lastAt + DAY) }), HTML, [], undefined, archive);
+        expect(past.awayBasis).toBeUndefined();
+        const flat = await computeRecommendation(Object.assign(away(2), { asOf: new Date(lastAt + 60000) }), HTML, [], undefined, archive);
+        expect(r.awayBasis.maintenancePct).toBe(flat.awayFlat.maintenancePct);   // the same numbers the flat % uses, though 10 days later
+        expect(r.awayBasis.burnPpmPerDay).toBe(flat.awayFlat.burnPpmPerDay);
+        // the highest running average in the last 60 days is the 1.0 ppm/day before the burn fell: 1.0 / about 0.79, plus 10%, rounded up to 1.5
+        expect(r.awayBasis.peakBurnPpmPerDay).toBeCloseTo(1.0, 1);
+        expect(new Date(r.awayBasis.peakAt).getTime()).toBeLessThan(lastAt - 6 * DAY);
+        expect(r.awayBasis.suggestedMultiplier).toBe(1.5);
     });
 
     it('is off with multiplier 0, unset, or Away protection off', async () => {

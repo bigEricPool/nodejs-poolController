@@ -481,6 +481,15 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
     state.autoSwg.recommendedPct = result.recommendedPctForTarget;
     // With the Trip Maintenance Multiplier, the flat % (maintenance x multiplier) is what Away protection holds and what a storm or outage extra steps back to.
     state.autoSwg.maintenancePct = result.awayFlat ? result.awayFlat.basePct : result.recommendedPct;
+    // For choosing the Trip Maintenance Multiplier (shown in the Vacation group whether or not Away protection is on).
+    if (result.awayBasis) {
+        state.autoSwg.awayBurnPpmPerDay = result.awayBasis.burnPpmPerDay;
+        state.autoSwg.awayMaintenancePct = result.awayBasis.maintenancePct;
+        state.autoSwg.awayBasisAt = result.awayBasis.asOf;
+        state.autoSwg.awaySuggestedMultiplier = result.awayBasis.suggestedMultiplier;
+        state.autoSwg.awayPeakBurnPpmPerDay = result.awayBasis.peakBurnPpmPerDay;
+        state.autoSwg.awayPeakBurnAt = result.awayBasis.peakAt;
+    }
     state.autoSwg.avgConsumptionPpmPerDay = result.avgConsumptionPpmPerDay;
     state.autoSwg.avgConsumptionSummary = result.avgConsumptionSummary;
     state.autoSwg.avgWindowStart = result.avgWindowStart;

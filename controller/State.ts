@@ -3985,6 +3985,20 @@ export class AutoSwgState extends EqState {
     // The vacation target while Away protection is on (for the dashboard), and what the check made when it was turned on or off did to the SWG %.
     public get awayTargetFc(): number { return this.data.awayTargetFc; }
     public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
+    // From the last check (see AutoSwgResult.awayBasis), for choosing the Trip Maintenance Multiplier before a trip: the burn and maintenance % as of the newest
+    // FC reading, the suggested multiplier, and the highest running average over the last 60 days (and the reading it was at) the suggestion came from.
+    public get awayBurnPpmPerDay(): number { return this.data.awayBurnPpmPerDay; }
+    public set awayBurnPpmPerDay(val: number) { this.setDataVal('awayBurnPpmPerDay', val); }
+    public get awayMaintenancePct(): number { return this.data.awayMaintenancePct; }
+    public set awayMaintenancePct(val: number) { this.setDataVal('awayMaintenancePct', val); }
+    public get awayBasisAt(): string { return this.data.awayBasisAt; }
+    public set awayBasisAt(val: string) { this.setDataVal('awayBasisAt', val); }
+    public get awaySuggestedMultiplier(): number { return this.data.awaySuggestedMultiplier; }
+    public set awaySuggestedMultiplier(val: number) { this.setDataVal('awaySuggestedMultiplier', val); }
+    public get awayPeakBurnPpmPerDay(): number { return this.data.awayPeakBurnPpmPerDay; }
+    public set awayPeakBurnPpmPerDay(val: number) { this.setDataVal('awayPeakBurnPpmPerDay', val); }
+    public get awayPeakBurnAt(): string { return this.data.awayPeakBurnAt; }
+    public set awayPeakBurnAt(val: string) { this.setDataVal('awayPeakBurnAt', val); }
     // How the SWG % is steered, as of the last save of the settings (see AutoSwg.controlMode): 'band' keeps FC between fcLow and fcHigh, 'target' steers to one Target FC.
     public get controlMode(): string { return this.data.controlMode; }
     public set controlMode(val: string) { this.setDataVal('controlMode', val); }
