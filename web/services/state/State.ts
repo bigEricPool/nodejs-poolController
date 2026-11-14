@@ -30,7 +30,7 @@ import { ServiceParameterError } from "../../../controller/Errors";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage } from "../../../controller/ChlorinatorLogService";
-import { poolMathSyncStatus } from "../../../controller/PoolMathSync";
+import { poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 
 export class StateRoute {
     public static initRoutes(app: express.Application) {
@@ -553,6 +553,29 @@ export class StateRoute {
         // The PoolMath history archive: when it was pulled, how many entries, how far back, and the pool's details from PoolMath.
         app.get('/state/poolMath', (req, res, next) => {
             try { return res.status(200).send(poolMathSyncStatus()); } catch (err) { next(err); }
+        });
+        // Every kind of data in the PoolMath archive: [{ kind, name, unit, group, count, first, last, selected }], selected = shown as history.
+        app.get('/state/poolMath/history/kinds', (req, res, next) => {
+            try { return res.status(200).send(poolMathHistoryKinds()); } catch (err) { next(err); }
+        });
+        // PoolMath history: ?kinds=fc,ph,chem:14 (default: the kinds shown as history) &days=N (default: all archived) ->
+        // { from, to, series: { <kind>: [{ t, v?, text? }] } }, times in ms, oldest first; kinds with no data are left out.
+        app.get('/state/poolMath/history', (req, res, next) => {
+            try {
+                const kinds = typeof req.query.kinds === 'string' && req.query.kinds.trim() ? req.query.kinds.split(',').map(k => k.trim()).filter(k => k) : undefined;
+                let days: number | undefined;
+                if (typeof req.query.days !== 'undefined') {
+                    days = parseFloat(req.query.days as string);
+                    if (!Number.isFinite(days) || days <= 0) return res.status(400).send({ error: 'days must be a positive number.' });
+                }
+                return res.status(200).send(poolMathHistory(kinds, days));
+            } catch (err) { next(err); }
+        });
+        // Read PoolMath now: { full: true } pulls the whole history again, otherwise the newest entries. Answers when the read is done;
+        // a read within a few minutes of the last one (a day, for a full pull) answers with that one's result and fresh: false.
+        app.put('/state/poolMath/refresh', async (req, res, next) => {
+            try { return res.status(200).send(await requestPoolMathRefresh({ full: !!(req.body && req.body.full === true) })); }
+            catch (err) { next(err); }
         });
         // this ../setChlor should really be EOL for PUT /state/chlorinator above
         app.put('/state/chlorinator/setChlor', async (req, res, next) => {
