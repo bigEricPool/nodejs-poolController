@@ -52,9 +52,11 @@ describe('HistoryRegistry', () => {
         expect(calls).toEqual([['1:out', '1:set']]);
         expect(s).toEqual({ 'b:1:out': [{ t: 10, v: 1 }, { t: 20, v: 2 }] });
     });
-    it('drops points outside the span and leaves out a source that fails', () => {
+    it('keeps only the last point before the span (the value in force at its start), drops points after it, and leaves out a source that fails', () => {
         const r = new HistoryRegistry();
-        r.register(src('a', [], () => ({ x: [{ t: 5, v: 1 }, { t: 50, v: 2 }, { t: 500, v: 3 }] })));
+        r.register(src('b', [], () => ({ x: [{ t: 1, v: 0 }, { t: 5, v: 1 }, { t: 500, v: 3 }], y: [{ t: 2, v: 1 }, { t: 7, v: 2 }] })));
+        expect(r.series(['b:x', 'b:y'], 10, 100)).toEqual({ 'b:x': [{ t: 5, v: 1 }], 'b:y': [{ t: 7, v: 2 }] });
+        r.register(src('a', [], () => ({ x: [{ t: 50, v: 2 }, { t: 500, v: 3 }] })));
         r.register(src('c', [], () => { throw new Error('boom'); }));
         r.register({ id: 'd', name: 'D', kinds: () => { throw new Error('boom'); }, series: () => ({}) });
         expect(r.series(['a:x', 'c:y'], 10, 100)).toEqual({ 'a:x': [{ t: 50, v: 2 }] });

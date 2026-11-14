@@ -42,6 +42,8 @@ export interface HistorySource {
     id: string;             // short and without ':' (for example 'temps', 'poolMath')
     name: string;           // shown to the user as the heading of the source's kinds
     kinds(): HistoryKind[];
+    // The points of each kind between from and to (ms). For a band or steps kind, also the last point before `from`, so the range or setting in
+    // force at the start of the span shows.
     series(kinds: string[], from: number, to: number): { [kind: string]: HistoryPoint[] };
 }
 export interface ListedHistoryKind extends HistoryKind { id: string; source: string; sourceName: string; }
@@ -69,8 +71,9 @@ export class HistoryRegistry {
         }
         return out;
     }
-    // The points of the given kinds (`<source>:<kind>` ids) between from and to (ms), oldest first, by id. Ids of sources not registered,
-    // and kinds a source has no points for, are left out; a source that fails is left out (and logged).
+    // The points of the given kinds (`<source>:<kind>` ids) between from and to (ms), oldest first, by id, with the last point before `from`
+    // when the source gives one (the value in force at the start). Ids of sources not registered, and kinds a source has no points for, are
+    // left out; a source that fails is left out (and logged).
     public series(ids: string[], from: number, to: number): { [id: string]: HistoryPoint[] } {
         const bySource = new Map<string, string[]>();
         for (const id of ids) {
@@ -91,7 +94,11 @@ export class HistoryRegistry {
             for (const kind of kinds) {
                 const pts = s[kind];
                 if (!Array.isArray(pts) || pts.length === 0) continue;
-                out[`${srcId}:${kind}`] = pts.filter(p => p && typeof p.t === 'number' && p.t >= from && p.t <= to).sort((a, b) => a.t - b.t);
+                const ok = pts.filter(p => p && typeof p.t === 'number' && p.t <= to).sort((a, b) => a.t - b.t);
+                let first = 0;
+                while (first + 1 < ok.length && ok[first + 1].t < from) first++;
+                const kept = ok.length && ok[first].t < from ? ok.slice(first) : ok.filter(p => p.t >= from);
+                if (kept.length) out[`${srcId}:${kind}`] = kept;
             }
         }
         return out;
