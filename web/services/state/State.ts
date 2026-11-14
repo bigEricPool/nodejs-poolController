@@ -31,6 +31,8 @@ import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage } from "../../../controller/ChlorinatorLogService";
 import { poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
+import { historyRegistry, parseHistoryQuery } from "../../../controller/History";
+import { registerBuiltInHistorySources } from "../../../controller/HistorySources";
 
 export class StateRoute {
     public static initRoutes(app: express.Application) {
@@ -470,6 +472,21 @@ export class StateRoute {
         app.get('/state/temps/history', (req, res, next) => {
             try { return res.status(200).send(state.getTempHistory(typeof req.query.range === 'string' ? req.query.range : undefined)); }
             catch (err) { next(err); }
+        });
+        // Every kind of history any part of njsPC offers (see controller/History.ts): [{ id, source, sourceName, kind, name, unit, group, style, future? }].
+        // Registered before /state/:section, which would otherwise take 'history' as a section.
+        registerBuiltInHistorySources();
+        app.get('/state/history/kinds', (req, res, next) => {
+            try { return res.status(200).send(historyRegistry.kinds()); } catch (err) { next(err); }
+        });
+        // The points of the given kinds: ?kinds=temps:body1,poolMath:fc &days=N (default 1) or &from=&to= (ms or a date; to may be ahead of now)
+        // -> { from, to, series: { <id>: [{ t, v?, lo?, hi?, text?, o? }] } }, times in ms, oldest first; kinds with no points are left out.
+        app.get('/state/history', (req, res, next) => {
+            try {
+                const q = parseHistoryQuery(req.query);
+                if ('error' in q) return res.status(400).send({ error: q.error });
+                return res.status(200).send({ from: q.from, to: q.to, series: historyRegistry.series(q.kinds, q.from, q.to) });
+            } catch (err) { next(err); }
         });
         app.put('/state/body/heatMode', async (req, res, next) => {
             // RKS: 06-24-20 -- Changed this so that users can send in the body id, circuit id, or the name.
