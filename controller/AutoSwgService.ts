@@ -67,17 +67,38 @@ const ANOMALY_TOLERANCE_PPM = 2;
 // can be before the calculation warns.
 const SWG_RATING_TOLERANCE = 0.15;
 
-// The range shown for what the next FC test is likely to read (AutoSwgResult.projectedFcRange). Its spread is how far the
-// projection has missed the FC readings that followed it over the last FC_RANGE_LOOKBACK_DAYS (the same weighting applied to each
-// interval between two readings, which needs no replay), so it includes the variation of the test itself and of real day-to-day consumption -- on the pool this was
-// built on, that variation is most of the miss, and the miss barely grows with the gap between tests. A small term grows the spread
-// with the age of the last reading. FC_RANGE_Z gives about 90% on that pool's history (the Projection Accuracy report shows how often
-// the range held on yours). With fewer than FC_RANGE_MIN_INTERVALS intervals to measure it from, FC_RANGE_DEFAULT_SD is used.
+// The range shown for what the next FC test is likely to read (AutoSwgResult.projectedFcRange). Its half-width is the 90th
+// percentile of how far the projection missed the FC readings that followed it over the last FC_RANGE_LOOKBACK_DAYS, each interval
+// projected walk-forward (with the average and weighting a calculation would have used then, see computeRecommendation), so it
+// includes the variation of the test itself and of real day-to-day consumption. A small term grows it with the age of the last
+// reading. The percentile is taken from the misses themselves rather than from z times their standard deviation: the misses have
+// heavy tails (a few 3 ppm misses among many under 1), so 1.97 standard deviations held about 93-100% of the time on the pool this
+// was built on, not the 90% the card states. FC_RANGE_Z still scales the default spread and the growth term. With fewer than
+// FC_RANGE_MIN_INTERVALS intervals to measure it from, FC_RANGE_DEFAULT_SD is used.
 const FC_RANGE_LOOKBACK_DAYS = 90;
 const FC_RANGE_MIN_INTERVALS = 6;
 const FC_RANGE_DEFAULT_SD = 1.8;
 const FC_RANGE_GROWTH_PPM_PER_DAY = 0.1;
 const FC_RANGE_Z = 1.97;
+const FC_RANGE_QUANTILE = 0.9;
+
+// The half-width of the range for the next test from the walk-forward misses (projected minus measured) and the age of the last reading
+// in days. baseHalfWidth is the 90th percentile of |miss| (interpolated between the nearest ranks), or FC_RANGE_Z x FC_RANGE_DEFAULT_SD
+// when there are too few misses; the growth term is added in quadrature. sd is the root mean square miss combined with the growth, for
+// reference.
+export function fcRangeHalfWidth(misses: number[], elapsedDays: number): { halfWidth: number; baseHalfWidth: number; sd: number; basis: 'history' | 'default' } {
+    const growth = FC_RANGE_GROWTH_PPM_PER_DAY * Math.max(0, elapsedDays);
+    const history = misses.length >= FC_RANGE_MIN_INTERVALS;
+    let base: number, baseSd: number;
+    if (history) {
+        const abs = misses.map(m => Math.abs(m)).sort((a, b) => a - b);
+        const k = (abs.length - 1) * FC_RANGE_QUANTILE, lo = Math.floor(k), hi = Math.ceil(k);
+        base = abs[lo] + (abs[hi] - abs[lo]) * (k - lo);
+        baseSd = Math.sqrt(misses.reduce((a, m) => a + m * m, 0) / misses.length);
+    }
+    else { base = FC_RANGE_Z * FC_RANGE_DEFAULT_SD; baseSd = FC_RANGE_DEFAULT_SD; }
+    return { halfWidth: Math.sqrt(base * base + Math.pow(FC_RANGE_Z * growth, 2)), baseHalfWidth: base, sd: Math.sqrt(baseSd * baseSd + growth * growth), basis: history ? 'history' : 'default' };
+}
 
 // The most the target is ever raised by (see AutoSwgParams.overshootPpmPerDay and AutoSwgResult.targetMarginPpm).
 const OVERSHOOT_MARGIN_CAP_PPM = 1;
@@ -236,7 +257,7 @@ export interface AutoSwgResult {
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
     projectionWeight: number;       // the weight applied to the modelled change
     // Where the next FC test is likely to read (about 90%): the projection plus or minus how far it has recently missed. See FC_RANGE_Z.
-    projectedFcRange: { low: number; high: number; sd: number; basis: 'history' | 'default'; intervals: number };
+    projectedFcRange: { low: number; high: number; sd: number; halfWidth?: number; basis: 'history' | 'default'; intervals: number };   // halfWidth: the projection to low/high (before low is held at 0); sd: root mean square miss with the growth, for reference
     targetMarginPpm: number;         // how far above the target the % for the target was aimed (0 = at the target itself); see AutoSwgParams.overshootPpmPerDay
     burnTempNote?: string;           // set when the water temperature adjustment was asked for: what it did or why it did nothing
     saltNote?: string;               // set when the chlorinator's salt reading fell noticeably (dilution by rain or a water change); informational, nothing is adjusted unless stormApplied
@@ -1104,39 +1125,48 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     }
 
     const rightNow = params.asOf ? new Date(params.asOf) : new Date();
-    let windowStart = new Date(rightNow.getTime() - params.windowDays * 86400000);
-    // Require at least MIN_FC_READINGS_IN_WINDOW readings so the average spans
-    // more than a single interval. If the configured window (which ends at
-    // calculation time) holds fewer, reach back to the Nth-most-recent reading.
-    const readingsInWindow = fcEvents.filter(e => e.ts.getTime() >= windowStart.getTime() && e.ts.getTime() <= rightNow.getTime()).length;
-    const windowExtended = readingsInWindow < MIN_FC_READINGS_IN_WINDOW && fcEvents.length >= MIN_FC_READINGS_IN_WINDOW;
-    if (windowExtended) windowStart = fcEvents[fcEvents.length - MIN_FC_READINGS_IN_WINDOW].ts;
-    const windowDaysUsed = windowExtended ? (rightNow.getTime() - windowStart.getTime()) / 86400000 : params.windowDays;
-    let weightedTotal = 0;
-    let coveredDays = 0;
-    const suspects: typeof intervals = [];
-    let uncoveredLeftOut = 0;
-    const overlapOf = (iv: { t1: Date; t2: Date }): number => {
-        const clipStart = new Date(Math.max(iv.t1.getTime(), windowStart.getTime()));
-        const clipEnd = new Date(Math.min(iv.t2.getTime(), rightNow.getTime()));
-        return clipEnd.getTime() > clipStart.getTime() ? dayEquivalents(clipStart, clipEnd) : 0;
+    // The running average as it stood at `end`, from the readings logged by then (intervals that end after it are not known yet). The live
+    // calculation uses it at rightNow; the range for the next test (below) uses it at each past reading, which is what a calculation run then
+    // would have used -- the same walk-forward the Projection Accuracy report does with a full calculation per reading.
+    const averageAsOf = (end: Date) => {
+        const endMs = end.getTime();
+        let start = new Date(endMs - params.windowDays * 86400000);
+        // Require at least MIN_FC_READINGS_IN_WINDOW readings so the average spans
+        // more than a single interval. If the configured window (which ends at
+        // calculation time) holds fewer, reach back to the Nth-most-recent reading.
+        const known = fcEvents.filter(e => e.ts.getTime() <= endMs);
+        const inWindow = known.filter(e => e.ts.getTime() >= start.getTime()).length;
+        const extended = inWindow < MIN_FC_READINGS_IN_WINDOW && known.length >= MIN_FC_READINGS_IN_WINDOW;
+        if (extended) start = known[known.length - MIN_FC_READINGS_IN_WINDOW].ts;
+        const overlap = (iv: { t1: Date; t2: Date }): number => {
+            const clipStart = new Date(Math.max(iv.t1.getTime(), start.getTime()));
+            const clipEnd = new Date(Math.min(iv.t2.getTime(), endMs));
+            return clipEnd.getTime() > clipStart.getTime() ? dayEquivalents(clipStart, clipEnd) : 0;
+        };
+        let total = 0, covered = 0, uncovered = 0;
+        const flagged: typeof intervals = [];
+        for (const iv of intervals) {
+            if (iv.t2.getTime() > endMs || iv.t2.getTime() <= start.getTime()) continue;
+            const overlapDays = overlap(iv);
+            if (overlapDays <= 0) continue;
+            if (iv.uncovered) { uncovered++; continue; } // no SWG record behind it
+            if (iv.suspect) { flagged.push(iv); continue; } // left out of the average -- see fcAnomalyNote
+            total += iv.perDay * overlapDays;
+            covered += overlapDays;
+        }
+        // The flagged intervals only protect the average from a bad number. If they are ALL the window
+        // holds there is nothing else to average, and assuming no consumption at all would be worse, so
+        // keep them (and say so in the note).
+        let kept = false;
+        if (covered === 0 && flagged.length) {
+            kept = true;
+            for (const iv of flagged) { const o = overlap(iv); total += iv.perDay * o; covered += o; }
+        }
+        return { windowStart: start, windowExtended: extended, overlapOf: overlap, weightedTotal: total, coveredDays: covered, suspects: flagged, uncoveredLeftOut: uncovered, anomalyKept: kept };
     };
-    for (const iv of intervals) {
-        const overlapDays = overlapOf(iv);
-        if (overlapDays <= 0) continue;
-        if (iv.uncovered) { uncoveredLeftOut++; continue; } // no SWG record behind it
-        if (iv.suspect) { suspects.push(iv); continue; } // left out of the average -- see fcAnomalyNote
-        weightedTotal += iv.perDay * overlapDays;
-        coveredDays += overlapDays;
-    }
-    // The flagged intervals only protect the average from a bad number. If they are ALL the window
-    // holds there is nothing else to average, and assuming no consumption at all would be worse, so
-    // keep them (and say so in the note).
-    let anomalyKept = false;
-    if (coveredDays === 0 && suspects.length) {
-        anomalyKept = true;
-        for (const iv of suspects) { const o = overlapOf(iv); weightedTotal += iv.perDay * o; coveredDays += o; }
-    }
+    const liveAverage = averageAsOf(rightNow);
+    const { windowStart, windowExtended, overlapOf, weightedTotal, coveredDays, suspects, uncoveredLeftOut, anomalyKept } = liveAverage;
+    const windowDaysUsed = windowExtended ? (rightNow.getTime() - windowStart.getTime()) / 86400000 : params.windowDays;
     const firstSwgLabel = formatLocalDateTime(new Date(firstSwgMs), params.timezone);
     if (coveredDays === 0 && uncoveredLeftOut > 0) {
         // Everything in the window predates the SWG record: there is nothing to base a burn rate on, and
@@ -1317,27 +1347,35 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         }
     }
 
-    // Where the next FC test is likely to read: the projection plus or minus how far the same weighting has recently missed the readings
-    // that followed it (for each interval between two readings in the last FC_RANGE_LOOKBACK_DAYS, the projection from the first to the
-    // second, which needs no replay), grown a little with the age of the last reading. Intervals left out of the average (before the SWG
-    // record, or flagged as suspect) are left out here too.
+    // Where the next FC test is likely to read: the projection plus or minus how far it has recently missed the readings that followed it,
+    // grown a little with the age of the last reading. This is for display only (range control decides from the projection and the band,
+    // not from this range). Each interval between two readings in the last FC_RANGE_LOOKBACK_DAYS is projected as a calculation run a minute
+    // before its second reading would have projected it: from its first reading, with the running average as it stood then (averageAsOf),
+    // the weighting for that gap and the SWG output credited the same way as the live projection. That is the walk-forward the Projection
+    // Accuracy report scores. Scoring old intervals with today's average instead made every interval from a time when the burn was
+    // different look like a large miss (2 ppm/day in the summer against 0.5 in November gave +/-5 where the projection missed by about
+    // +/-2). Not replayed: the optional water temperature adjustment, the storm and outage corrections (a past calculation does not apply
+    // them either). Intervals left out of the average (before the SWG record, or flagged as suspect) are left out here too.
     const rangeTaperStart = typeof params.projectionTaperStartDays === 'number' ? params.projectionTaperStartDays : 3;
     const rangeTaperEnd = typeof params.projectionTaperEndDays === 'number' ? params.projectionTaperEndDays : 0;
-    let rangeSumSq = 0, rangeCount = 0;
+    const rangeMisses: number[] = [];
     for (const iv of intervals) {
         const gap = (iv.t2.getTime() - iv.t1.getTime()) / 86400000;
         if (iv.t1.getTime() < lastFc.ts.getTime() - FC_RANGE_LOOKBACK_DAYS * 86400000 || iv.uncovered || iv.suspect || gap < 0.1 || gap > 14) continue;
-        const miss = projectionWeight(baseWeight, gap, rangeTaperStart, rangeTaperEnd) * (iv.gen - avgPerDay * iv.days) + iv.added - iv.rise;
-        rangeSumSq += miss * miss;
-        rangeCount++;
+        const asOfThen = new Date(iv.t2.getTime() - 60000);
+        const then = averageAsOf(asOfThen);
+        if (!(then.coveredDays > 0)) continue;   // a calculation then would have had nothing to average (the report skips it too)
+        const elapsedThen = (asOfThen.getTime() - iv.t1.getTime()) / 86400000;
+        const generatedThen = swgGeneratedSinceLastReading(swgEvents, iv.t1, asOfThen, swgStart, params.timezone);
+        const projectedRise = projectionWeight(baseWeight, elapsedThen, rangeTaperStart, rangeTaperEnd) * (generatedThen - (then.weightedTotal / then.coveredDays) * dayEquivalents(iv.t1, asOfThen)) + addedBetween(iv.t1, asOfThen);
+        rangeMisses.push(projectedRise - iv.rise);
     }
-    const rangeBaseSd = rangeCount >= FC_RANGE_MIN_INTERVALS ? Math.sqrt(rangeSumSq / rangeCount) : FC_RANGE_DEFAULT_SD;
-    const rangeSd = Math.sqrt(rangeBaseSd * rangeBaseSd + Math.pow(FC_RANGE_GROWTH_PPM_PER_DAY * elapsedDays, 2));
+    const rangeSpread = fcRangeHalfWidth(rangeMisses, elapsedDays);
     const projectedFcRange = {
-        low: Math.max(0, projectedCurrentFc - FC_RANGE_Z * rangeSd), high: projectedCurrentFc + FC_RANGE_Z * rangeSd, sd: rangeSd,
-        basis: (rangeCount >= FC_RANGE_MIN_INTERVALS ? 'history' : 'default') as 'history' | 'default', intervals: rangeCount
+        low: Math.max(0, projectedCurrentFc - rangeSpread.halfWidth), high: projectedCurrentFc + rangeSpread.halfWidth, sd: rangeSpread.sd, halfWidth: rangeSpread.halfWidth,
+        basis: rangeSpread.basis, intervals: rangeMisses.length
     };
-    rationale.push(`Where the next FC test is likely to read (about 90%): ${projectedFcRange.low.toFixed(1)} to ${projectedFcRange.high.toFixed(1)} ppm, the projection plus or minus ${(FC_RANGE_Z * rangeSd).toFixed(1)} ppm. ${projectedFcRange.basis === 'history' ? `That is how far the projection has missed the tests that followed it over the last ${FC_RANGE_LOOKBACK_DAYS} days (${rangeCount} intervals), part of it the test itself and part real day-to-day differences in consumption (sun, rain, temperature).` : `There are too few intervals in the last ${FC_RANGE_LOOKBACK_DAYS} days to measure that, so a typical value was used.`}`);
+    rationale.push(`Where the next FC test is likely to read (about 90%): ${projectedFcRange.low.toFixed(1)} to ${projectedFcRange.high.toFixed(1)} ppm, the projection plus or minus ${rangeSpread.halfWidth.toFixed(1)} ppm. ${projectedFcRange.basis === 'history' ? `9 in 10 of the tests over the last ${FC_RANGE_LOOKBACK_DAYS} days (${rangeMisses.length} intervals) read within ${rangeSpread.baseHalfWidth.toFixed(1)} ppm of what the projection said a minute before them, each projected with the average and weighting in use then${rangeSpread.halfWidth > rangeSpread.baseHalfWidth + 0.05 ? `; it is widened a little because the last reading is ${elapsedDays.toFixed(1)} days old` : ''}. Part of the miss is the test itself and part real day-to-day differences in consumption (sun, rain, temperature).` : `There are too few intervals in the last ${FC_RANGE_LOOKBACK_DAYS} days to measure that, so a typical value was used.`}`);
 
     const rationaleMark = rationale.length;   // range control replaces what the point target says from here on (see below)
     // What to aim at. If there's an in-flight target and the projected FC is still within
@@ -1594,7 +1632,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         fcModelChange: modelChange,
         fcAdded: addedSinceReading,
         projectionWeight: effectiveWeight,
-        projectedFcRange: { low: Math.round(projectedFcRange.low * 100) / 100, high: Math.round(projectedFcRange.high * 100) / 100, sd: Math.round(projectedFcRange.sd * 100) / 100, basis: projectedFcRange.basis, intervals: projectedFcRange.intervals },
+        projectedFcRange: { low: Math.round(projectedFcRange.low * 100) / 100, high: Math.round(projectedFcRange.high * 100) / 100, sd: Math.round(projectedFcRange.sd * 100) / 100, halfWidth: Math.round(projectedFcRange.halfWidth * 100) / 100, basis: projectedFcRange.basis, intervals: projectedFcRange.intervals },
         targetMarginPpm: Math.round(targetMarginPpm * 100) / 100,
         burnTempNote: burnTempNote,
         saltNote: saltNote,
