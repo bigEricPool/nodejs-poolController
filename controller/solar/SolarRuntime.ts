@@ -73,9 +73,8 @@ export class SolarRuntime {
     // going past the collector stop, when that began and the water then.
     public returnGains: Map<number, { at: number; gain: number }[]> = new Map<number, { at: number; gain: number }[]>();
     public returnUp: Set<number> = new Set<number>();
-    // The block feature's state as last logged, per heater (true while it blocks solar), and the setting last warned about as naming no feature.
+    // The heater's Valve Closed setting (Heater.solarBlocked) as last logged, per heater.
     public blocked: Map<number, boolean> = new Map<number, boolean>();
-    public blockMissing: string = undefined;
     public returnHeld: Map<number, { at: number; water: number }> = new Map<number, { at: number; water: number }>();
     // The water reading from the last pass on which solar was running, per heater, and when that was. After solar turns off the pump goes back to its
     // normal speed and the sensor reads lower, so a dashboard is given this reading (marked, with its time) in place of the live one until the next

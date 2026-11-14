@@ -18,7 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import { logger } from '../../logger/Logger';
 import { Body, Heater, sys } from '../Equipment';
 import { BodyTempState, HeaterState, state } from '../State';
-import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain, solarBlockFeature } from './SolarSettings';
+import { solarSettleMs, solarHysteresis, solarValveDelayMs, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain } from './SolarSettings';
 import { solarRuntime as rt, SOLAR_START_WATCH_MS, SOLAR_RUN_LOG_MS, SOLAR_RETURN_WINDOW_MS, SOLAR_RETURN_FLOOR, SOLAR_RETURN_FLUSH_MS } from './SolarRuntime';
 
 // What the solar decision is given for one solar heater on one body, from HeaterCommands.syncHeaterStates. isHeating, isCooling,
@@ -172,22 +172,13 @@ export class SolarDecision {
         const coolPoint = typeof backupTop === 'number' ? Math.max(cfgBody.coolSetpoint, backupTop + hysteresis) : cfgBody.coolSetpoint;
         const valveMs = solarValveDelayMs();
         const nowMs = new Date().getTime();
-        // The block feature (controller.solar.blockFeature): while it is on, the valve that feeds the collector is closed and solar does not run.
-        // Every rule that starts or keeps solar running is false while it blocks; the change is logged once each way.
-        const block = solarBlockFeature();
-        const blocked = typeof block !== 'undefined' && block.found && block.isOn === true;
-        if (typeof block !== 'undefined' && !block.found) {
-            if (rt.blockMissing !== block.setting) {
-                rt.blockMissing = block.setting;
-                logger.warn(`Solar: controller.solar.blockFeature is set to '${block.setting}', but no feature has that id or name, so solar is not blocked.`);
-                logger.solar(`Solar: controller.solar.blockFeature is set to '${block.setting}', but no feature has that id or name, so solar is not blocked.`);
-            }
-        }
-        else rt.blockMissing = undefined;
+        // Valve Closed on the solar heater (Heater.solarBlocked): a valve keeps water out of the collector, so solar does not run. Every rule that
+        // starts or keeps solar running is false while it is set; the change is logged once each way.
+        const blocked = heater.solarBlocked === true;
         if (blocked !== (rt.blocked.get(heater.id) === true)) {
             rt.blocked.set(heater.id, blocked);
-            if (blocked) logger.solar(`Solar ${heater.name} (${body.name}): blocked: the feature ${block.name} is on (the valve to the collector is closed), so solar does not run until it is turned off${hState.isOn ? '; solar turns off now' : ''}.`);
-            else logger.solar(`Solar ${heater.name} (${body.name}): no longer blocked: ${typeof block !== 'undefined' && block.found ? 'the feature ' + block.name + ' is off' : 'controller.solar.blockFeature no longer names a feature'}; solar runs by its usual rules again.`);
+            if (blocked) logger.solar(`Solar ${heater.name} (${body.name}): blocked: Valve Closed is set on the heater (the valve to the collector is closed), so solar does not run until it is cleared${hState.isOn ? '; solar turns off now' : ''}.`);
+            else logger.solar(`Solar ${heater.name} (${body.name}): no longer blocked: Valve Closed was cleared on the heater; solar runs by its usual rules again.`);
         }
         let blockStart = false, waitStop = false, stopNow = false, stopFar = false, holdWhy = '', holdLeftMs = 0, holdTotalMs = settleMs, stopAt = 0, settleHeld = false, failedHold = false;
         if (settleMs > 0) {
@@ -370,12 +361,12 @@ export class SolarDecision {
         // pool, where the pump draws from the main drain and the skimmer and probably takes a different mix of the two at a different speed), and a
         // start turned down on that jump was tried and turned down again every few minutes.
         let valveWait = false;
-        // A valve delay check under way when the block feature comes on is cancelled, so the pump goes back to its normal speed.
+        // A valve delay check under way when Valve Closed is set is cancelled, so the pump goes back to its normal speed.
         if (blocked && rt.valveTrial.has(heater.id)) {
             const bt = rt.valveTrial.get(heater.id);
             rt.valveTrial.delete(heater.id);
             const secs = Math.round((nowMs - bt.at) / 1000);
-            logger.solar(`Solar ${heater.name} (${body.name}): the valve delay was cancelled after ${secs} s because the feature ${block.name} is on; ${rt.valveTally(heater.id, 'cancelled', secs)}.`);
+            logger.solar(`Solar ${heater.name} (${body.name}): the valve delay was cancelled after ${secs} s because Valve Closed is set on the heater; ${rt.valveTally(heater.id, 'cancelled', secs)}.`);
         }
         // A start the check has decided on stands until the heater reports it is on. Switching the valve relay on takes a moment, and a pass made
         // in that moment sees the heater still off; with the water reading right at the setpoint it used to judge the start again, turn it down,
@@ -528,7 +519,7 @@ export class SolarDecision {
                 rt.returnHeld.delete(heater.id);
                 let why: string;
                 if (isOn) why = `the collector lead rose to ${r1(lead)}, above the run delta again`;
-                else if (blocked) why = `the feature ${block.name} is on (the valve to the collector is closed)`;
+                else if (blocked) why = 'Valve Closed is set on the heater (the valve to the collector is closed)';
                 else if (stopNow) why = 'the water reached its stop level';
                 else if (!solarReturnHold()) why = 'returnHold was turned off';
                 else if (typeof returnAvg !== 'number') why = 'the return stopped reading';
@@ -556,7 +547,7 @@ export class SolarDecision {
             // The reheat guard is for a stop the collector caused (flow cooled it, a cloud, the evening): it must climb again before the next start.
             // When the water reached its target the collector was fine, so there is nothing to wait for and no guard is set.
             const solarT = state.temps.solar;
-            // A stop for the block feature sets no guard: the collector did not cause it.
+            // A stop for Valve Closed sets no guard: the collector did not cause it.
             const collectorStop = !blocked && (hState.isCooling
                 ? (coolTime && (!(solarT < waterTemp) || !((waterTemp - solarT) > heater.stopTempDelta)))
                 : (!(solarT > waterTemp) || !((solarT - waterTemp) > heater.stopTempDelta)));
@@ -568,7 +559,7 @@ export class SolarDecision {
             const restartAt = hState.isCooling ? (coolPoint + hysteresis) : (cfgBody.heatSetpoint - hysteresis);
             rt.offNoted.add(heater.id);
             if (firstOffPass && typeof solarReturn !== 'undefined') logger.solar(`Solar ${heater.name} (${body.name}): as it turned off the return read ${solarReturn}, ${Math.abs(Math.round((solarReturn - body.temp) * 10) / 10)} ${solarReturn - body.temp >= 0 ? 'above' : 'below'} the water at ${Math.round(body.temp * 100) / 100}.`);
-            if (logger.solarExplain && firstOffPass) logger.solar(`Solar ${heater.name} (${body.name}) turned off because ${blocked ? 'the feature ' + block.name + ' is on (the valve to the collector is closed; no reheat guard set)' : collectorStop ? 'the collector lead over the water fell to the run delta ' + heater.stopTempDelta + ' (reheat guard set: the collector must rise ' + heater.startTempDelta + ' above ' + (Math.round(solarT * 10) / 10) + ')' : 'the water was ' + (hState.isCooling ? 'at or below ' : 'at or above ') + stopAt + (stopFar ? ' by ' + Math.max(hysteresis, 1) + ' or more, so there was no wait' : ' for ' + Math.round(settleMs / 1000) + ' s') + ' (no reheat guard set; solar restarts when the water is ' + (hState.isCooling ? 'above ' : 'below ') + restartAt + ')'}.`);
+            if (logger.solarExplain && firstOffPass) logger.solar(`Solar ${heater.name} (${body.name}) turned off because ${blocked ? 'Valve Closed is set on the heater (the valve to the collector is closed; no reheat guard set)' : collectorStop ? 'the collector lead over the water fell to the run delta ' + heater.stopTempDelta + ' (reheat guard set: the collector must rise ' + heater.startTempDelta + ' above ' + (Math.round(solarT * 10) / 10) + ')' : 'the water was ' + (hState.isCooling ? 'at or below ' : 'at or above ') + stopAt + (stopFar ? ' by ' + Math.max(hysteresis, 1) + ' or more, so there was no wait' : ' for ' + Math.round(settleMs / 1000) + ' s') + ' (no reheat guard set; solar restarts when the water is ' + (hState.isCooling ? 'above ' : 'below ') + restartAt + ')'}.`);
         } // 6  
         // With log.solar.explain on, the readings while a settle delay is holding the decision, once a minute, and when it ends.
         {
@@ -675,7 +666,7 @@ export class SolarDecision {
                 logger.solar(`Solar ${heater.name} ${solarNow} (${body.name}, mode ${mode}): water ${r2(body.temp)}, setpoint ${cfgBody.heatSetpoint}, cool setpoint ${cfgBody.coolSetpoint}, solar ${r1(state.temps.solar)}, collector minus water ${r1(state.temps.solar - body.temp)} (run delta ${heater.stopTempDelta}), collector at last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(prevOff)}, collector minus last off ${typeof prevOff === 'undefined' ? 'n/a' : r1(state.temps.solar - prevOff)} (start delta ${heater.startTempDelta}), night ${state.heliotrope.isNight}${this.returnReadings(body)}`);
             }
         }
-        if (blocked && !isOn) heatNote = `Solar off: ${block.name} is on (the valve to the collector is closed)`;
+        if (blocked && !isOn) heatNote = 'Solar off: the valve to the collector is closed (Valve Closed in the heater settings)';
         return { isOn, isHeating, isCooling, heatNote, solarCheckTemp, solarCheckTime, solarChecking, solarReturn, solarGain, holdsOthers: solarHolds };
     }
     // The return and its difference from the water, for a log line: empty when there is no return sensor or it is not reading.

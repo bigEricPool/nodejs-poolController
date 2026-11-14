@@ -147,20 +147,4 @@ function solarReturnHoldGain(): number {
     } catch (err) { /* the default applies */ }
     return deg;
 }
-// controller.solar.blockFeature in config.json ('' by default; file only): a feature, by its id or its name, that stands for a valve keeping water out
-// of the solar collector (closed for the winter, or for work on the panels). While that feature is on, solar does not start, a running solar
-// stops, and a valve delay check under way is cancelled; the heat mode is left as it is, so solar resumes by its usual rules once the feature is
-// off. Returns undefined when no feature is set, and { found: false } when the setting names no feature that exists (solar is then not blocked).
-function solarBlockFeature(): { found: boolean; id?: number; name?: string; isOn?: boolean; setting: string } {
-    let v: any;
-    try { v = config.getSection('controller.solar').blockFeature; } catch (err) { return undefined; }
-    if (typeof v === 'undefined' || v === null || v === '') return undefined;
-    const setting = String(v).trim();
-    if (setting === '') return undefined;
-    const asId = /^\d+$/.test(setting) ? parseInt(setting, 10) : undefined;
-    const f = sys.features.find(x => (typeof asId === 'number' && x.id === asId) || (typeof x.name === 'string' && x.name.trim().toLowerCase() === setting.toLowerCase()));
-    if (typeof f === 'undefined' || f === null) return { found: false, setting: setting };
-    const fs = state.features.find(x => x.id === f.id);
-    return { found: true, id: f.id, name: f.name, isOn: typeof fs !== 'undefined' && fs !== null && fs.isOn === true, setting: setting };
-}
-export { solarSettleMs, solarHysteresis, solarValveDelayMs, SOLAR_RETURN_SENSORS, solarReturnSensor, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain, solarBlockFeature };
+export { solarSettleMs, solarHysteresis, solarValveDelayMs, SOLAR_RETURN_SENSORS, solarReturnSensor, solarReturnTemp, solarCheckPeriodMs, solarStartMargin, solarCoolAnyTime, solarMinRunMs, solarReturnHold, solarReturnHoldGain };
