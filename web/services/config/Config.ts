@@ -582,7 +582,8 @@ export class ConfigRoute {
                 return res.status(200).send(opts);
             } catch (err) { next(err); }
         });
-        // The pool's PoolMath share (the history archive is read for it): GET/PUT /config/poolMath { shareCode, poolName }
+        // The pool's PoolMath share (the history archive is read for it): GET/PUT /config/poolMath { shareCode, poolName, historyKinds }
+        // (historyKinds: the kinds shown as history, null for the defaults; see GET /state/poolMath/history/kinds)
         app.get('/config/poolMath', (req, res, next) => {
             try { return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
         });

@@ -41,13 +41,12 @@ import { projectionLog, updateHourlyProjection, updateProjectionPoints } from ".
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, poolMathArchiveSummary, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
-import { refreshPoolMathArchiveFromPage } from "../../../controller/AutoSwgArchivePage";
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
 import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
-import { onPoolMathUpdated, poolMathSyncStatus } from "../../../controller/PoolMathSync";
+import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
@@ -752,19 +751,13 @@ function autoSwgResponse(skipped?: string) {
     return skipped ? Object.assign({}, data, { skipped: skipped }) : data;
 }
 
-// Called with what each read of the PoolMath share page found: that page is the freshest data,
-// so it overwrites the archived readings for the period it covers (PoolMath entries can be edited
-// or deleted). A no-op until the archive has been pulled for this share code.
+// Called with what each read of the PoolMath share page found. The page is no longer written into the archive: the logging layer's own refresh
+// (PoolMathSync.ts, every 45 minutes by PoolMath log id) keeps the archive exact, including edits and deletions, and the page's rounded display values
+// must not replace its exact ones. A calculation still uses the page for its newest entries (they win over the archive's for the period the page
+// covers), and a read of the page asks for a refresh now, so the archive catches up too; the read is coalesced and rate-limited there, and not waited for.
 function refreshAutoSwgArchiveFromPage(page: PageReadings) {
-    let cfg = sys.autoSwg;
-    let r = refreshPoolMathArchiveFromPage(cfg.shareCode, cfg.poolName || undefined, page);
-    if (r && (r.updated || r.added || r.removed)) {
-        logger.info(`SWG Assist: PoolMath history archive refreshed from the share page: ${r.updated} updated, ${r.added} added, ${r.removed} removed.`);
-        let sum = poolMathArchiveSummary();
-        state.autoSwg.archiveCount = sum.count;
-        state.autoSwg.archiveOldest = sum.oldest;
-        state.autoSwg.emitEquipmentChange();
-    }
+    if (!page.coverageStart || !sys.poolMath.shareCode) return;
+    requestPoolMathRefresh().catch(err => logger.warn(`SWG Assist: could not ask for a PoolMath refresh: ${err.message}`));
 }
 
 // The PoolMath archive as the reports use it, alongside what the share page lists (empty until the archive has
@@ -1775,6 +1768,29 @@ export class StateRoute {
         // The PoolMath history archive: when it was pulled, how many entries, how far back, and the pool's details from PoolMath.
         app.get('/state/poolMath', (req, res, next) => {
             try { return res.status(200).send(poolMathSyncStatus()); } catch (err) { next(err); }
+        });
+        // Every kind of data in the PoolMath archive: [{ kind, name, unit, group, count, first, last, selected }], selected = shown as history.
+        app.get('/state/poolMath/history/kinds', (req, res, next) => {
+            try { return res.status(200).send(poolMathHistoryKinds()); } catch (err) { next(err); }
+        });
+        // PoolMath history: ?kinds=fc,ph,chem:14 (default: the kinds shown as history) &days=N (default: all archived) ->
+        // { from, to, series: { <kind>: [{ t, v?, text? }] } }, times in ms, oldest first; kinds with no data are left out.
+        app.get('/state/poolMath/history', (req, res, next) => {
+            try {
+                const kinds = typeof req.query.kinds === 'string' && req.query.kinds.trim() ? req.query.kinds.split(',').map(k => k.trim()).filter(k => k) : undefined;
+                let days: number | undefined;
+                if (typeof req.query.days !== 'undefined') {
+                    days = parseFloat(req.query.days as string);
+                    if (!Number.isFinite(days) || days <= 0) return res.status(400).send({ error: 'days must be a positive number.' });
+                }
+                return res.status(200).send(poolMathHistory(kinds, days));
+            } catch (err) { next(err); }
+        });
+        // Read PoolMath now: { full: true } pulls the whole history again, otherwise the newest entries. Answers when the read is done;
+        // a read within a few minutes of the last one (a day, for a full pull) answers with that one's result and fresh: false.
+        app.put('/state/poolMath/refresh', async (req, res, next) => {
+            try { return res.status(200).send(await requestPoolMathRefresh({ full: !!(req.body && req.body.full === true) })); }
+            catch (err) { next(err); }
         });
         // this ../setChlor should really be EOL for PUT /state/chlorinator above
         app.put('/state/chlorinator/setChlor', async (req, res, next) => {

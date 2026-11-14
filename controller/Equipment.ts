@@ -1833,6 +1833,15 @@ export class Chlorinator extends EqItem {
     public set cycleRestartsOnPower(val: boolean) { this.setDataVal('cycleRestartsOnPower', val !== false); }
     public get burstFirst(): boolean { return this.data.burstFirst !== false; }
     public set burstFirst(val: boolean) { this.setDataVal('burstFirst', val !== false); }
+    // The relays the cell's power is wired through (a dead-man): it has power only while every one is on. Each is named by the same connection
+    // and device a pump relay or a circuit is bound with. Empty: the power is worked out as before (see ChlorinatorLogService.chlorinatorHasPower).
+    public get powerRelays(): { connectionId: string; deviceBinding: string }[] {
+        return Array.isArray(this.data.powerRelays) ? this.data.powerRelays.filter(r => r && r.connectionId && r.deviceBinding).map(r => ({ connectionId: String(r.connectionId), deviceBinding: String(r.deviceBinding) })) : [];
+    }
+    public set powerRelays(val: { connectionId: string; deviceBinding: string }[]) { this.setDataVal('powerRelays', Array.isArray(val) ? val.map(r => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding })) : []); }
+    // Whether the chlorinator answering on RS-485 counts as proof that it has power (a cell without power cannot answer).
+    public get powerConfirmByComms(): boolean { return this.data.powerConfirmByComms === true; }
+    public set powerConfirmByComms(val: boolean) { this.setDataVal('powerConfirmByComms', val === true); }
 }
 // The pool's PoolMath share (a pool-level section of poolConfig.json): the share code and pool name the history is read for, and what
 // PoolMath says about the pool, kept from the last read of its share (volume in gallons, the SWG rating).
@@ -1847,6 +1856,10 @@ export class PoolMathSettings extends EqItem {
     public set gallons(val: number) { this.setDataVal('gallons', val > 0 ? val : 0); }
     public get swgLbsPerDay(): number { return this.data.swgLbsPerDay > 0 ? this.data.swgLbsPerDay : 0; }
     public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val > 0 ? val : 0); }
+    // The kinds of PoolMath data shown as history (kind ids, see PoolMathArchive.historyKindsOf); undefined means the defaults
+    // (PoolMathSync.DEFAULT_HISTORY_KINDS). Only what is shown: everything PoolMath sends is archived whatever this says.
+    public get historyKinds(): string[] | undefined { return Array.isArray(this.data.historyKinds) ? this.data.historyKinds.filter(k => typeof k === 'string') : undefined; }
+    public set historyKinds(val: string[] | undefined) { this.setDataVal('historyKinds', Array.isArray(val) ? val.slice() : undefined); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }

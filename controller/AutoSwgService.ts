@@ -411,10 +411,9 @@ interface ParsedCards {
     tempEvents: FcEvent[];      // water temperature logged with a test (value is the temperature, in the units it was logged in)
 }
 
-// What a read of the share page found, for refreshing the history archive (see
-// AutoSwgArchivePage.refreshPoolMathArchiveFromPage): the test readings it lists and the
-// time its oldest entry of any kind goes back to -- everything newer is what the page vouches
-// for, so edits and deletions made in PoolMath within that span show up here.
+// What a read of the share page found: the test readings it lists and the time its oldest entry of any kind goes back to -- everything newer is
+// what the page vouches for, so edits and deletions made in PoolMath within that span show up in a calculation. (It is no longer written into the
+// history archive: the logging layer's own refresh, PoolMathSync.ts, keeps that exact.)
 export interface PageReadings {
     coverageStart?: Date;
     fc: { ts: Date; value: number }[];
