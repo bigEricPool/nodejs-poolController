@@ -49,6 +49,7 @@ import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowe
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 import { historyRegistry, parseHistoryQuery } from "../../../controller/History";
 import { registerBuiltInHistorySources } from "../../../controller/HistorySources";
+import { autoSwgHistorySource } from "../../../controller/AutoSwgHistorySource";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
@@ -1691,6 +1692,8 @@ export class StateRoute {
         // Every kind of history any part of njsPC offers (see controller/History.ts): [{ id, source, sourceName, kind, name, unit, group, style, future? }].
         // Registered before /state/:section, which would otherwise take 'history' as a section.
         registerBuiltInHistorySources();
+        // SWG Assist's projected FC and FC range, beside the PoolMath FC tests in the History panel's FC view.
+        historyRegistry.register(autoSwgHistorySource);
         app.get('/state/history/kinds', (req, res, next) => {
             try { return res.status(200).send(historyRegistry.kinds()); } catch (err) { next(err); }
         });
