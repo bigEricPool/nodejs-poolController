@@ -24,7 +24,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //            `before` and `after` at the same time is what the refresh changed. `run` is the previous run's id.
 //   reading  the FC the previous run expected at the time of an FC test, so the test and the projection can be compared. `run` is the run that was current.
 //   hourly   the FC the run in force expected at the top of each hour, so the line between applies is drawn hour by hour. `run` is that run.
-// Points of one run, joined in time order, are that run's line: its `after`, then its `hourly` and `reading` points, then the `before` of the apply that replaced it.
+//   lead     for a run that came from a NEW FC test (the reading it used is newer than the one the run before it used): the FC that run expects from the time of
+//            the test up to its own apply, so its line starts at the test and not at the check that read it. The first lead point is the test itself, the rest
+//            are that run's projection at the top of each hour in between (the reading carried forward by its own rules). `run` is that run.
+// Points of one run, joined in time order, are that run's line: its `lead` points, its `after`, then its `hourly` and `reading` points, then the `before` of the
+// apply that replaced it. Where a run has lead points, the run before it ends at the test (read() drops that run's later points): the test replaced it there.
 // The points are worked out from the history of applies (data/autoSwgHistory.json), the PoolMath archive and the PoolMath page the last calculation read,
 // so nothing here contacts PoolMath. The work is done in the background after a calculation or an apply, a little at a time (updateProjectionPoints), and
 // changes no calculation.
@@ -45,9 +49,45 @@ const PAUSE_MS = 40;                   // between two calculations, so the rest 
 const HOURLY_DAYS = 7;                 // how far back the hourly points are filled in the first time; after that one is added every hour
 const MAX_TASKS = 400;
 
-export type ProjectionKind = 'after' | 'before' | 'reading' | 'hourly';
+export type ProjectionKind = 'after' | 'before' | 'reading' | 'hourly' | 'lead';
 export interface ProjectionPoint { t: number; fc: number; kind: ProjectionKind; run: number; tf?: number; td?: number; }
-const KIND_ORDER = { before: 0, hourly: 1, reading: 2, after: 3 };
+const KIND_ORDER = { before: 0, hourly: 1, lead: 1, reading: 2, after: 3 };
+const LEAD_MAX_MS = HOURLY_DAYS * 86400000;   // a test further back than this from the check that read it is not led in (the line starts at the check, as before)
+
+// Where a run came from a new test: its reading, the FC of that test, and the hours between the test and its apply. `record` is the run's apply record.
+export interface LeadWindow { run: number; readingT: number; value: number; hours: number[]; record: any; }
+// The runs (oldest first, see runRecords) whose reading is newer than the previous run's reading and older than their own apply, from `fromMs` on.
+export function leadWindows(runs: any[], fromMs: number): LeadWindow[] {
+    const out: LeadWindow[] = [];
+    for (let i = 1; i < runs.length; i++) {
+        const prev = runs[i - 1], next = runs[i];
+        const t = idOf(next);
+        const reading = next.outputs && next.outputs.mostRecentFc, prevReading = prev.outputs && prev.outputs.mostRecentFc;
+        if (!reading || !prevReading) continue;
+        const r = new Date(reading.ts).getTime(), pr = new Date(prevReading.ts).getTime();
+        if (!isFinite(r) || !isFinite(pr) || typeof reading.value !== 'number' || !isFinite(reading.value)) continue;
+        if (r <= pr || r >= t || t < fromMs || t - r > LEAD_MAX_MS) continue;
+        const hours: number[] = [];
+        for (let h = Math.ceil(r / 3600000) * 3600000; h < t; h += 3600000) if (h > r) hours.push(h);
+        out.push({ run: t, readingT: r, value: reading.value, hours: hours, record: next });
+    }
+    return out;
+}
+
+// The test replaced the run in force at its time: that run's points after the test are left out (its line ends at the test, where its `reading` point is,
+// so the miss shows), and the new run's line starts there. Points of a run that has no later run with lead points are all kept.
+export function clipSuperseded(points: ProjectionPoint[]): ProjectionPoint[] {
+    const starts = new Map<number, number>();
+    for (const p of points) if (p.kind === 'lead') { const s = starts.get(p.run); if (typeof s === 'undefined' || p.t < s) starts.set(p.run, p.t); }
+    if (starts.size === 0) return points;
+    const runs = Array.from(starts.keys()).sort((a, b) => a - b);
+    return points.filter(p => {
+        if (p.kind === 'lead') return true;
+        let lo = 0, hi = runs.length;                    // the first lead run after this point's run
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (runs[mid] > p.run) hi = mid; else lo = mid + 1; }
+        return lo >= runs.length || p.t <= (starts.get(runs[lo]) as number);
+    });
+}
 
 function keyOf(kind: string, t: number, run: number): string { return kind === 'after' ? `after|${run}` : `${kind}|${t}`; }
 
@@ -113,7 +153,7 @@ class ProjectionLog {
         this.load();
         const from = Date.now() - days * 86400000;
         const thin = days > THIN_AFTER_DAYS;
-        return this.points.filter(p => p.t >= from && (!thin || p.kind !== 'hourly' || Math.round(p.t / 3600000) % 6 === 0)).sort((a, b) => (a.t - b.t) || (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]));
+        return clipSuperseded(this.points).filter(p => p.t >= from && (!thin || p.kind !== 'hourly' || Math.round(p.t / 3600000) % 6 === 0)).sort((a, b) => (a.t - b.t) || (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]));
     }
 }
 export const projectionLog = new ProjectionLog();
@@ -152,9 +192,12 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (isFinite(td)) point.td = td;
             return point;
         }));
+        const from = Date.now() - LOOKBACK_DAYS * 86400000;
+        // The tests that started a run: the test itself is the first point of that run's line (no calculation).
+        const leads = leadWindows(runs, from);
+        projectionLog.add(leads.map(w => ({ t: w.readingT, fc: round2(w.value), kind: 'lead' as ProjectionKind, run: w.run })));
         const html = cachedPageHtml(HTML_MAX_AGE_MS);
         if (!html || !cfg.shareCode) return false;
-        const from = Date.now() - LOOKBACK_DAYS * 86400000;
         const base = { shareCode: cfg.shareCode, poolName: cfg.poolName || undefined, inFlight: undefined as any };
         const tasks: { kind: ProjectionKind; t: number; run: number; params: any }[] = [];
         // What the previous run expected at the time of each apply, from only the readings it had.
@@ -189,6 +232,14 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             const readingAt = new Date(current.outputs.mostRecentFc.ts);
             if (isNaN(readingAt.getTime())) continue;
             tasks.push({ kind: 'hourly', t: t, run: run, params: Object.assign({}, current.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+        }
+        // What a run that came from a new test expected at the top of each hour between the test and its apply, from only what it knew (as for the hourly points).
+        for (const w of leads) {
+            const readingAt = new Date(w.readingT);
+            for (const t of w.hours) {
+                if (projectionLog.has('lead', t, w.run) || failed.has(keyOf('lead', t, w.run))) continue;
+                tasks.push({ kind: 'lead', t: t, run: w.run, params: Object.assign({}, w.record.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+            }
         }
         if (tasks.length === 0) return true;
         const local = toLocalSwgEntries(history);
