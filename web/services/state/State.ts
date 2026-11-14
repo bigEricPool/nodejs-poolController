@@ -268,6 +268,11 @@ async function runAutoSwgStep() {
     state.autoSwg.lastAppliedTargetInfo = undefined;
     state.autoSwg.lastAppliedStaleFcNote = undefined;
     state.autoSwg.lastAppliedFcAnomalyNote = undefined;
+    state.autoSwg.lastAppliedBandMode = undefined;
+    state.autoSwg.lastAppliedProjectedFc = undefined;
+    state.autoSwg.lastAppliedAvgConsumption = undefined;
+    state.autoSwg.lastAppliedBandReachAt = undefined;
+    state.autoSwg.lastAppliedBandStaleAt = undefined;
     state.autoSwg.lastAppliedRatingNote = undefined;
     try {
         let win = resolveAutoSwgRunWindow(cfg);
@@ -510,6 +515,8 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         projectedFcBeforeStorm: result.projectedFcBeforeStorm,
         bandMode: result.bandMode,
         bandCoasting: result.bandCoasting,
+        bandReachAt: result.bandReachAt,
+        bandStaleAt: result.bandStaleAt,
         targetMarginPpm: result.targetMarginPpm,
         burnTempNote: result.burnTempNote,
         runHoursInPeriod: result.runHoursInPeriod,
@@ -571,6 +578,13 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
     // state.autoSwg.pending, which only that function sets) there's no date to record, and
     // none is invented -- so no refine is offered and no step is scheduled off it.
     state.autoSwg.bandCoasting = sys.autoSwg.bandActive && !!(state.autoSwg.details && state.autoSwg.details.bandCoasting);
+    // What range control did in THIS calculation, kept with the applied % for the status line under "SWG Assist applied ..." (a later Check Now does not change it).
+    const appliedBand = sys.autoSwg.bandActive && state.autoSwg.details && state.autoSwg.details.bandMode ? state.autoSwg.details : undefined;
+    state.autoSwg.lastAppliedBandMode = appliedBand ? appliedBand.bandMode : undefined;
+    state.autoSwg.lastAppliedProjectedFc = appliedBand ? state.autoSwg.projectedCurrentFc : undefined;
+    state.autoSwg.lastAppliedAvgConsumption = appliedBand ? state.autoSwg.avgConsumptionPpmPerDay : undefined;
+    state.autoSwg.lastAppliedBandReachAt = appliedBand ? appliedBand.bandReachAt : undefined;
+    state.autoSwg.lastAppliedBandStaleAt = appliedBand ? appliedBand.bandStaleAt : undefined;
     state.autoSwg.lastAppliedTargetFc = typeof state.autoSwg.pendingTargetFc === 'number' ? state.autoSwg.pendingTargetFc : sys.autoSwg.effectiveTargetFc;
     state.autoSwg.lastAppliedTargetDate = state.autoSwg.pendingTargetDate;
     state.autoSwg.lastAppliedPeriodsKey = state.autoSwg.pendingPeriodsKey;
@@ -1200,6 +1214,11 @@ export class StateRoute {
             state.autoSwg.lastAppliedTargetInfo = undefined;
             state.autoSwg.lastAppliedStaleFcNote = undefined;
             state.autoSwg.lastAppliedFcAnomalyNote = undefined;
+            state.autoSwg.lastAppliedBandMode = undefined;
+            state.autoSwg.lastAppliedProjectedFc = undefined;
+            state.autoSwg.lastAppliedAvgConsumption = undefined;
+            state.autoSwg.lastAppliedBandReachAt = undefined;
+            state.autoSwg.lastAppliedBandStaleAt = undefined;
             state.autoSwg.lastAppliedRatingNote = undefined;
             // A human just acted directly on the chlorinator -- nothing unreviewed left to warn about.
             state.autoSwg.lastAutoApplyLargeChange = false;
