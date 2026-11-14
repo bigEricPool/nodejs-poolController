@@ -1913,6 +1913,10 @@ export class Heater extends EqItem {
     public set isActive(val: boolean) { this.setDataVal('isActive', val); }
     public get coolingEnabled(): boolean { return this.data.coolingEnabled; }
     public set coolingEnabled(val: boolean) { this.setDataVal('coolingEnabled', val); }
+    // Solar heaters run by njsPC: true while a valve keeps water out of the collector (closed for the winter, or for work on the panels).
+    // Solar then does not run whatever the heat mode. Kept on the heater, so it outlasts a restart and comes back with a restore.
+    public get solarBlocked(): boolean { return this.data.solarBlocked === true; }
+    public set solarBlocked(val: boolean) { this.setDataVal('solarBlocked', val === true || (val as any) === 'true'); }
     public get heatingEnabled(): boolean { return this.data.heatingEnabled; }
     public set heatingEnabled(val: boolean) { this.setDataVal('heatingEnabled', val); }
     public get differentialTemp(): number { return this.data.differentialTemp; }
