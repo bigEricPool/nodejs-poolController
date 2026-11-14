@@ -3986,7 +3986,7 @@ export class AutoSwgState extends EqState {
     public get awayTargetFc(): number { return this.data.awayTargetFc; }
     public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
     // From the last check (see AutoSwgResult.awayBasis), for choosing the Trip Maintenance Multiplier before a trip: the burn and maintenance % as of the newest
-    // FC reading, the suggested multiplier, and the highest running average over the last 60 days (and the reading it was at) the suggestion came from.
+    // FC reading, the suggested multiplier, and the highest running average over the last 30 days (and the reading it was at) the suggestion came from.
     public get awayBurnPpmPerDay(): number { return this.data.awayBurnPpmPerDay; }
     public set awayBurnPpmPerDay(val: number) { this.setDataVal('awayBurnPpmPerDay', val); }
     public get awayMaintenancePct(): number { return this.data.awayMaintenancePct; }

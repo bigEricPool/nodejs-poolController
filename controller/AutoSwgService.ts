@@ -56,9 +56,9 @@ import type { BandDecision } from './SwgAssistBand';
 // How old the newest FC reading can be before the result says its projection is mostly
 // extrapolation.
 const STALE_FC_DAYS = 3;
-// The suggested Trip Maintenance Multiplier (AutoSwgResult.awayBasis): how far back to look for the highest running average, and the margin on top of it.
-const AWAY_SUGGEST_LOOKBACK_DAYS = 60;
-const AWAY_SUGGEST_MARGIN = 0.1;
+// The suggested Trip Maintenance Multiplier (AutoSwgResult.awayBasis): how far back to look for the highest running average, and the margin on top of it. 30 days, no margin (user, 2026-11-14): 60 days reached the summer burn (1.80 ppm/day against 0.54) and suggested the cap of 3.
+const AWAY_SUGGEST_LOOKBACK_DAYS = 30;
+const AWAY_SUGGEST_MARGIN = 0;
 
 // Default for params.fcAnomalyTolerancePpm: an FC rise that the SWG output and logged additions fall
 // short of explaining by more than this many ppm (a test varies by about a ppm) marks the interval
