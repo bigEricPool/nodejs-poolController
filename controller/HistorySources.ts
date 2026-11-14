@@ -36,8 +36,9 @@ export function tempRangeFor(from: number, now: number = Date.now()): string {
 const num = (v: any): boolean => typeof v === 'number' && isFinite(v);
 
 // Turns one body of GET /state/temps/history into the water temperature points and, where the body shows solar levels, the solar band.
-export function tempPointsOf(b: any): { water: HistoryPoint[]; solar: HistoryPoint[] } {
-    const water: HistoryPoint[] = [], solar: HistoryPoint[] = [];
+// The check points are what a solar check is expected to read at the solar pump speed, where the solar enhancements give a speed offset.
+export function tempPointsOf(b: any): { water: HistoryPoint[]; solar: HistoryPoint[]; check: HistoryPoint[] } {
+    const water: HistoryPoint[] = [], solar: HistoryPoint[] = [], check: HistoryPoint[] = [];
     const t: number[] = Array.isArray(b && b.t) ? b.t : [];
     const h = num(b.hysteresis) ? b.hysteresis : undefined;
     const daily = Array.isArray(b.hi);
@@ -51,8 +52,9 @@ export function tempPointsOf(b: any): { water: HistoryPoint[]; solar: HistoryPoi
         else if (num(v)) water.push(b.o && b.o[i] ? { t: t[i], v: v, o: 1 } : { t: t[i], v: v });
         const s = b.s && b.s[i];
         if (typeof h !== 'undefined' && num(s)) solar.push({ t: t[i], lo: s - h, hi: s + h });
+        if (b.p && num(b.p[i])) check.push({ t: t[i], v: b.p[i] });
     }
-    return { water, solar };
+    return { water, solar, check };
 }
 
 export const tempHistorySource: HistorySource = {
@@ -62,8 +64,9 @@ export const tempHistorySource: HistorySource = {
         const h = state.getTempHistory();
         const unit = tempUnit();
         for (const b of (h && h.bodies) || []) {
-            out.push({ kind: `body${b.id}`, name: `${b.name} Water`, unit, group: 'temperature', style: 'line' });
-            if (num(b.hysteresis)) out.push({ kind: `body${b.id}:solar`, name: `${b.name} Solar Limits`, unit, group: 'temperature', style: 'band' });
+            out.push({ kind: `body${b.id}`, name: `${b.name} Water`, unit, group: 'temperature', style: 'line', view: 'Temperature' });
+            if (num(b.hysteresis)) out.push({ kind: `body${b.id}:solar`, name: `${b.name} Solar Limits`, unit, group: 'temperature', style: 'band', view: 'Temperature' });
+            if (Array.isArray(b.p) && b.p.some(num)) out.push({ kind: `body${b.id}:check`, name: `${b.name} Solar Check Reading`, unit, group: 'temperature', style: 'line', view: 'Temperature' });
         }
         return out;
     },
@@ -71,11 +74,12 @@ export const tempHistorySource: HistorySource = {
         const out: { [kind: string]: HistoryPoint[] } = {};
         const h = state.getTempHistory(tempRangeFor(from));
         for (const b of (h && h.bodies) || []) {
-            const want = kinds.indexOf(`body${b.id}`) !== -1, wantSolar = kinds.indexOf(`body${b.id}:solar`) !== -1;
-            if (!want && !wantSolar) continue;
+            const id = `body${b.id}`;
+            if (kinds.indexOf(id) === -1 && kinds.indexOf(`${id}:solar`) === -1 && kinds.indexOf(`${id}:check`) === -1) continue;
             const p = tempPointsOf(b);
-            if (want) out[`body${b.id}`] = p.water;
-            if (wantSolar) out[`body${b.id}:solar`] = p.solar;
+            if (kinds.indexOf(id) !== -1) out[id] = p.water;
+            if (kinds.indexOf(`${id}:solar`) !== -1) out[`${id}:solar`] = p.solar;
+            if (kinds.indexOf(`${id}:check`) !== -1) out[`${id}:check`] = p.check;
         }
         return out;
     }
@@ -123,7 +127,7 @@ export const chlorinatorHistorySource: HistorySource = {
 };
 
 // PoolMath: the kinds chosen as Of Interest under PoolMath History. Tests and PoolMath's weather at each entry are drawn as dots; additions,
-// notes and other logs as markers.
+// notes and other logs as markers. The FC tests start in an FC view.
 export function poolMathStyleOf(group: string, kind: string): HistoryStyle {
     if (kind === 'notes' || group === 'addition' || group === 'log') return 'markers';
     return 'dots';
@@ -132,7 +136,8 @@ export const poolMathHistorySource: HistorySource = {
     id: 'poolMath', name: 'PoolMath',
     kinds(): HistoryKind[] {
         return poolMathHistoryKinds().filter(k => k.selected)
-            .map(k => ({ kind: k.kind, name: k.name, unit: k.unit, group: k.group, style: poolMathStyleOf(k.group, k.kind), count: k.count, first: k.first, last: k.last, selected: true }));
+            .map(k => ({ kind: k.kind, name: k.name, unit: k.unit, group: k.group, style: poolMathStyleOf(k.group, k.kind), view: k.kind === 'fc' ? 'FC' : undefined,
+                count: k.count, first: k.first, last: k.last, selected: true }));
     },
     series(kinds: string[], from: number, to: number) {
         return historySeriesOf(readPoolMathArchive().entries, kinds, from, to);

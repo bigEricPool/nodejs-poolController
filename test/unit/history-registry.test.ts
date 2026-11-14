@@ -97,9 +97,10 @@ describe('temperature source', () => {
         expect(tempRangeFor(now - 365 * DAY, now)).toBe('year');
     });
     it('turns minute readings into points, marking off readings, and the setpoints into the solar band', () => {
-        const p = tempPointsOf({ hysteresis: 1, t: [1, 2, 3], v: [80, 81, null], o: [null, 1, null], s: [85, null, 86] });
+        const p = tempPointsOf({ hysteresis: 1, t: [1, 2, 3], v: [80, 81, null], o: [null, 1, null], s: [85, null, 86], p: [null, 82, null] });
         expect(p.water).toEqual([{ t: 1, v: 80 }, { t: 2, v: 81, o: 1 }]);
         expect(p.solar).toEqual([{ t: 1, lo: 84, hi: 86 }, { t: 3, lo: 85, hi: 87 }]);
+        expect(p.check).toEqual([{ t: 2, v: 82 }]);
     });
     it('turns hourly rows into points with the low and high, and off rows into off points; no band without hysteresis', () => {
         const p = tempPointsOf({ t: [1, 2], v: [80, null], hi: [82, null], lo: [79, null], ov: [null, 75], s: [85, 85] });
@@ -107,9 +108,10 @@ describe('temperature source', () => {
         expect(p.solar).toEqual([]);
     });
     it('offers each body, and its solar limits only when the body has them', () => {
-        fx.tempHistory = { bodies: [{ id: 1, name: 'Pool', hysteresis: 1, t: [] }, { id: 2, name: 'Spa', t: [] }] };
-        expect(tempHistorySource.kinds().map(k => [k.kind, k.name, k.unit, k.style]))
-            .toEqual([['body1', 'Pool Water', '°F', 'line'], ['body1:solar', 'Pool Solar Limits', '°F', 'band'], ['body2', 'Spa Water', '°F', 'line']]);
+        fx.tempHistory = { bodies: [{ id: 1, name: 'Pool', hysteresis: 1, t: [], p: [null, 81] }, { id: 2, name: 'Spa', t: [] }] };
+        expect(tempHistorySource.kinds().map(k => [k.kind, k.name, k.unit, k.style, k.view])).toEqual([
+            ['body1', 'Pool Water', '°F', 'line', 'Temperature'], ['body1:solar', 'Pool Solar Limits', '°F', 'band', 'Temperature'],
+            ['body1:check', 'Pool Solar Check Reading', '°F', 'line', 'Temperature'], ['body2', 'Spa Water', '°F', 'line', 'Temperature']]);
         fx.tempHistory = { bodies: [{ id: 1, name: 'Pool', hysteresis: 1, t: [5], v: [80], s: [85] }] };
         expect(tempHistorySource.series(['body1:solar'], 0, 10)).toEqual({ 'body1:solar': [{ t: 5, lo: 84, hi: 86 }] });
     });
@@ -144,7 +146,7 @@ describe('PoolMath source', () => {
             { kind: 'ph', name: 'pH', unit: '', group: 'test', count: 3, selected: false },
             { kind: 'chem:0', name: 'Liquid Chlorine', unit: 'fl oz', group: 'addition', count: 1, selected: true },
         ];
-        expect(poolMathHistorySource.kinds().map(k => [k.kind, k.style])).toEqual([['fc', 'dots'], ['chem:0', 'markers']]);
+        expect(poolMathHistorySource.kinds().map(k => [k.kind, k.style, k.view])).toEqual([['fc', 'dots', 'FC'], ['chem:0', 'markers', undefined]]);
         expect(poolMathStyleOf('test', 'notes')).toBe('markers');
         expect(poolMathStyleOf('weather', 'weather:temp')).toBe('dots');
         expect(poolMathHistorySource.series(['fc'], 0, 10)).toEqual({ fc: [{ t: 5, v: 7 }] });

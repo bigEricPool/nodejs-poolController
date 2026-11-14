@@ -30,11 +30,12 @@ import { logger } from "../logger/Logger";
 //   steps    a setting that holds until the next point
 //   dots     occasional readings (tests)
 //   markers  events with text (additions, notes)
-// `future` marks a kind with points ahead of now (a projection), so a chart can run past the present.
+// `future` marks a kind with points ahead of now (a projection), so a chart can run past the present. `view` names the view a dashboard
+// shows the kind in before the user has set up views of their own (kinds with the same view name share it).
 export type HistoryStyle = 'line' | 'band' | 'steps' | 'dots' | 'markers';
 export interface HistoryKind {
     kind: string; name: string; unit: string; group: string; style: HistoryStyle;
-    future?: boolean; count?: number; first?: string; last?: string; selected?: boolean;
+    future?: boolean; view?: string; count?: number; first?: string; last?: string; selected?: boolean;
 }
 export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; }
 export interface HistorySource {
