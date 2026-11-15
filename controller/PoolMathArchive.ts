@@ -85,9 +85,12 @@ export interface PoolMathArchive {
     entries: PoolMathArchiveEntry[];
 }
 
-// What PoolMath calls its chemicals, by its chemical id. Only ids checked against the share page's own wording are named; any other is
-// shown as "Chemical <id>". normalizedAmount is in mL for a liquid, grams for a dry chemical, and ppm for an SWG run.
-export const POOLMATH_CHEMICALS: { [id: number]: string } = { 0: 'Liquid Chlorine', 14: 'Muriatic Acid', 24: 'Dry Stabilizer', 26: 'Salt', 27: 'SWG' };
+// What PoolMath calls its chemicals, by its chemical id. Only ids checked against the share page's own wording, or named by the pool owner
+// from their own log (10, 23), are named; any other is shown as "Chemical <id>". normalizedAmount is in mL for a liquid, grams for a dry
+// chemical, and ppm for an SWG run.
+export const POOLMATH_CHEMICALS: { [id: number]: string } = {
+    0: 'Liquid Chlorine', 10: 'Boric Acid', 14: 'Muriatic Acid', 23: 'Calcium Chloride Dihydrate', 24: 'Dry Stabilizer', 26: 'Salt', 27: 'SWG'
+};
 // PoolMath's amount units, by unit id (checked against the share page and normalizedAmount).
 export const POOLMATH_UNITS: { [id: number]: string } = { 4: 'fl oz', 6: 'lb', 7: 'oz', 8: 'ppm' };
 export function chemicalName(id: number): string { return typeof POOLMATH_CHEMICALS[id] === 'string' ? POOLMATH_CHEMICALS[id] : `Chemical ${id}`; }
