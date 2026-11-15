@@ -19,7 +19,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Runs the chlorinator output log: samples every configured chlorinator every ten minutes (ChlorinatorLog.ts), credits each hour
 // written to that chlorinator's cell usage totals (ChlorinatorUsage.ts), and recounts the totals from the install date when the
 // cell's install date, rating or cycle settings change. Also writes when each chlorinator's power comes on and goes off
-// (ChlorinatorPowerLog.ts), checked every 15 seconds, which places the cycles of a cell counted by cycles.
+// (ChlorinatorPowerLog.ts), checked every 15 seconds, which places the cycles of a cell counted by cycles, and, with the same check, when
+// each chlorinator's super chlorinate goes on and off (ChlorinatorSuperChlorLog.ts).
 
 import { logger } from '../logger/Logger';
 import { ServiceParameterError } from './Errors';
@@ -28,6 +29,7 @@ import { Chlorinator, sys } from './Equipment';
 import { state } from './State';
 import { chlorinatorLog, ChlorinatorOutputHour, clockLooksSet } from './ChlorinatorLog';
 import { chlorinatorPowerLog } from './ChlorinatorPowerLog';
+import { chlorinatorSuperChlorLog, poweredHoursBetween, SuperChlorReading } from './ChlorinatorSuperChlorLog';
 import { cellUsageForHour, cellUsageFromInstall, CycleContext, mergeSwgEntries, pctAtFromHours, SwgEntry } from './ChlorinatorUsage';
 
 const SAMPLE_MS = 10 * 60 * 1000;
@@ -149,6 +151,27 @@ export function checkChlorinatorPower(now: number = Date.now()) {
         }
         catch (err) { logger.warn(`Chlorinator power log: could not check chlorinator ${chlor.id}: ${err.message}`); }
     }
+}
+
+// The hours a chlorinator's cell had power between two times, from the power log.
+export function poweredHoursOf(id: number, from: number, to: number): number {
+    const days = Math.ceil((to - from) / 86400000) + 1;
+    return poweredHoursBetween(chlorinatorPowerLog.read(days, to, id), from, to);
+}
+// What the super chlorinate log needs to know about each chlorinator.
+function superChlorReadings(): SuperChlorReading[] {
+    const out: SuperChlorReading[] = [];
+    for (const chlor of sys.chlorinators.toArray()) {
+        const cstate = state.chlorinators.getItemById(chlor.id);
+        let bodyOn = true;
+        try { bodyOn = sys.board.bodies.isBodyOn(chlor.body); } catch (err) { /* unknown: taken as on */ }
+        out.push({ id: chlor.id, on: cstate.superChlor === true, remainingSec: cstate.superChlorRemaining, superChlorHours: chlor.superChlorHours, bodyOn, commsLost: cstate.status === 128 });
+    }
+    return out;
+}
+// Writes each chlorinator's super chlorinate going on and off.
+export function checkSuperChlor(now: number = Date.now()) {
+    chlorinatorSuperChlorLog.check(superChlorReadings(), poweredHoursOf, now);
 }
 
 // On Nixie njsPC drives the circuits itself (through its relay boards), so they go off while it is not running, and a cell powered by
@@ -360,6 +383,7 @@ export function startChlorinatorLog() {
     // the power every 15 seconds, from half a minute after start (when the bodies' state is known)
     powerTimer = setTimeout(function check() {
         try { checkChlorinatorPower(); } catch (err) { logger.warn(`Chlorinator power log: ${err.message}`); }
+        try { checkSuperChlor(); } catch (err) { logger.warn(`Super chlorinate log: ${err.message}`); }
         powerTimer = setTimeout(check, POWER_CHECK_MS);
     }, 30000);
     // a first sample a minute after start, when the chlorinators have reported, then every ten minutes
@@ -372,6 +396,7 @@ export function startChlorinatorLog() {
 export function stopChlorinatorLog() {
     if (timer) { clearTimeout(timer); timer = undefined; }
     if (powerTimer) { clearTimeout(powerTimer); powerTimer = undefined; }
+    try { chlorinatorSuperChlorLog.markSeen(sys.chlorinators.toArray().map(c => c.id)); } catch (err) { logger.warn(`Super chlorinate log: ${err.message}`); }
     markPowerOffWhileStopped();
     try { chlorinatorLog.flush(); } catch (err) { logger.warn(`Chlorinator log: could not write the last hour: ${err.message}`); }
 }

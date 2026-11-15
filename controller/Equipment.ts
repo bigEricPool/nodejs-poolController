@@ -1901,6 +1901,13 @@ export class PoolMathSettings extends EqItem {
     // (PoolMathSync.DEFAULT_HISTORY_KINDS). Only what is shown: everything PoolMath sends is archived whatever this says.
     public get historyKinds(): string[] | undefined { return Array.isArray(this.data.historyKinds) ? this.data.historyKinds.filter(k => typeof k === 'string') : undefined; }
     public set historyKinds(val: string[] | undefined) { this.setDataVal('historyKinds', Array.isArray(val) ? val.slice() : undefined); }
+    // Writing SWG entries to the owner's PoolMath log when the SWG % changes (PoolMathSwgLog.ts): off by default, and the SWG run hours a day
+    // sent with each entry (whole hours; 0 when not set). The sign-in comes from an encrypted file outside njsPC (PoolMathClient.ts), never
+    // from here: this section is served by GET /config/poolMath.
+    public get swgLogEnabled(): boolean { return this.data.swgLogEnabled === true; }
+    public set swgLogEnabled(val: boolean) { this.setDataVal('swgLogEnabled', val === true); }
+    public get swgLogHours(): number { return Number.isInteger(this.data.swgLogHours) && this.data.swgLogHours > 0 && this.data.swgLogHours <= 24 ? this.data.swgLogHours : 0; }
+    public set swgLogHours(val: number) { this.setDataVal('swgLogHours', Number.isInteger(val) && val > 0 && val <= 24 ? val : 0); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }
