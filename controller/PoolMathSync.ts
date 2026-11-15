@@ -23,6 +23,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // the poolMath section, and the archived SWG entries are offered to the cell usage count (ChlorinatorLogService.ts) for the time before the
 // output log began. The archive keeps everything PoolMath sends; the poolMath section's historyKinds say which kinds are shown as history.
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { logger } from '../logger/Logger';
 import { sys } from './Equipment';
 import {
@@ -35,9 +37,11 @@ const SYNC_FIRST_DELAY_MS = 3 * 60 * 1000;
 const SYNC_RETRY_MS = 30 * 60 * 1000;
 const TOPUP_FIRST_DELAY_MS = 15 * 60 * 1000;
 const TOPUP_MS = 45 * 60 * 1000;                // a small top-up this often
-const TOPUP_WIDE_MS = 24 * 3600 * 1000;         // and a wide one this often (the first after a start is wide)
+const TOPUP_WIDE_MS = 24 * 3600 * 1000;         // and a wide one this often
 const TOPUP_RETRY_MS = 3 * 3600 * 1000;
 const TOPUP_NOT_READY_MS = 30 * 60 * 1000;
+// After a start, a top-up that is already due (one was missed while njsPC was stopped) waits this long, so the start settles first.
+const TOPUP_STARTUP_SETTLE_MS = 2 * 60 * 1000;
 // A request for a read now gets the last result instead when one ran this recently.
 const REFRESH_MIN_MS = 2 * 60 * 1000;
 const FULL_REFRESH_MIN_MS = 24 * 3600 * 1000;
@@ -47,6 +51,40 @@ let topUpTimer: NodeJS.Timeout | undefined;
 // The read running now (a sync or a top-up, scheduled or asked for); reads never overlap.
 let running: Promise<PoolMathRefreshResult> | undefined;
 let lastWideAt = 0;
+let lastTopUpAt = 0;
+
+// When the last successful top-up and the last wide read (a wide top-up or a full sync) ran, kept in data/poolMathReadTimes.json so a
+// restart does not read PoolMath again before the next scheduled read is due. Only times are kept here.
+function readTimesPath(): string { return path.join(process.cwd(), 'data', 'poolMathReadTimes.json'); }
+export function loadReadTimes(): { topUpAt: number; wideAt: number } {
+    try {
+        const j = JSON.parse(fs.readFileSync(readTimesPath(), 'utf8'));
+        const t = (v: any) => { const ms = typeof v === 'string' ? Date.parse(v) : NaN; return Number.isFinite(ms) ? ms : 0; };
+        return { topUpAt: t(j && j.topUpAt), wideAt: t(j && j.wideAt) };
+    }
+    catch (err) {
+        if (err && err.code !== 'ENOENT') logger.warn(`PoolMath: could not read ${readTimesPath()}: ${err.message}`);
+        return { topUpAt: 0, wideAt: 0 };
+    }
+}
+function saveReadTimes() {
+    try {
+        const file = readTimesPath();
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const iso = (ms: number) => ms > 0 ? new Date(ms).toISOString() : undefined;
+        fs.writeFileSync(`${file}.tmp`, JSON.stringify({ topUpAt: iso(lastTopUpAt), wideAt: iso(lastWideAt) }), 'utf8');
+        fs.renameSync(`${file}.tmp`, file);
+    }
+    catch (err) { logger.warn(`PoolMath: could not save the read times: ${err.message}`); }
+}
+
+// How long after a start the first top-up waits: until the next scheduled one is due (the last top-up + TOPUP_MS), or TOPUP_STARTUP_SETTLE_MS
+// when that time has passed (one was missed) or was never set. A clock that went backwards (a last top-up in the future) waits a full TOPUP_MS.
+export function firstTopUpDelayMs(lastTopUp: number, now: number): number {
+    if (!(lastTopUp > 0)) return TOPUP_STARTUP_SETTLE_MS;
+    if (lastTopUp > now) return TOPUP_MS;
+    return Math.max(TOPUP_STARTUP_SETTLE_MS, lastTopUp + TOPUP_MS - now);
+}
 
 export interface PoolMathRefreshResult {
     kind: 'sync' | 'topUp';
@@ -114,6 +152,7 @@ function doSync(): Promise<PoolMathRefreshResult> {
             status.error = undefined;
             applyPoolInfo(r.pool);
             lastWideAt = Date.now();
+            saveReadTimes();
             logger.info(`PoolMath: history sync: ${r.fetched} entries returned (asked for ${r.requested}), ${r.added} new, ${r.total} archived back to ${r.oldest ? r.oldest.slice(0, 10) : 'n/a'}.`);
             lastSync = { kind: 'sync', ranAt: new Date().toISOString(), fresh: true, sync: r };
             notify('sync');
@@ -135,7 +174,9 @@ function doTopUp(size: number): Promise<PoolMathRefreshResult> {
             const r = await topUpPoolMathArchive(cfg.shareCode, cfg.poolName || undefined, size);
             if (typeof r === 'undefined') return { kind: 'topUp', ranAt: ranAt(), fresh: true } as PoolMathRefreshResult;
             status.error = undefined;
-            if (size >= TOP_UP_WIDE) lastWideAt = Date.now();
+            lastTopUpAt = Date.now();
+            if (size >= TOP_UP_WIDE) lastWideAt = lastTopUpAt;
+            saveReadTimes();
             applyPoolInfo(r.pool);
             if (r.added || r.updated || r.removed) logger.info(`PoolMath: archive top-up: ${r.added} added, ${r.updated} updated, ${r.removed} removed.`);
             lastTopUp = { kind: 'topUp', ranAt: ranAt(), fresh: true, topUp: r };
@@ -258,7 +299,15 @@ export function startPoolMathSync() {
     // PoolMath's history is the pool's, so its SWG entries count for the cell only when there is one chlorinator.
     setPoolLogSwgEntriesSource(() => sys.chlorinators.length === 1 ? archivedSwgEvents().map(e => ({ ts: e.ts.getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct })) : []);
     armPoolMathSync();
-    armPoolMathTopUp();
+    // A restart reads PoolMath only when a scheduled read was missed: the first top-up waits until the next one is due, and it is the wide
+    // one only when the last wide read (or full sync) is a day old. Without a saved time, the archive's last changed top-up stands in for it.
+    const times = loadReadTimes();
+    const archive = readPoolMathArchive();
+    const archivedTopUp = Date.parse(archive.toppedUpAt || '');
+    const archivedSync = Date.parse(archive.syncedAt || '');
+    lastTopUpAt = times.topUpAt || (Number.isFinite(archivedTopUp) ? archivedTopUp : 0);
+    lastWideAt = Math.max(times.wideAt, Number.isFinite(archivedSync) ? archivedSync : 0);
+    armPoolMathTopUp(firstTopUpDelayMs(lastTopUpAt, Date.now()));
 }
 
 export function stopPoolMathSync() {
