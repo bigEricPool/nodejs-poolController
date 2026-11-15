@@ -19,10 +19,11 @@ import * as extend from 'extend';
 import { ncp } from "../nixie/Nixie";
 import { NixieHeaterBase } from "../nixie/heaters/Heater";
 import { Timestamp, utils } from '../Constants';
-import {SystemBoard, byteValueMap, BodyCommands, FilterCommands, PumpCommands, SystemCommands, CircuitCommands, FeatureCommands, ValveCommands, HeaterCommands, ChlorinatorCommands, ChemControllerCommands, EquipmentIdRange} from './SystemBoard';
+import {SystemBoard, byteValueMap, BodyCommands, FilterCommands, PumpCommands, SystemCommands, CircuitCommands, FeatureCommands, ValveCommands, HeaterCommands, ChlorinatorCommands, ChemControllerCommands, EquipmentIdRange, ScheduleCommands} from './SystemBoard';
+import { calcSunWindow, ISunWindowSchedule, SunWindowTracker, SUN_WINDOW_MAX_HOURS } from '../nixie/schedules/SunWindow';
 import { logger } from '../../logger/Logger';
 import { state, CircuitState, ICircuitState, ICircuitGroupState, LightGroupState, ValveState, FilterState, BodyTempState, FeatureState } from '../State';
-import { sys, Equipment, General, PoolSystem, CircuitGroupCircuit, CircuitGroup, ChemController, Circuit, Feature, Valve, ICircuit, Heater, LightGroup, LightGroupCircuit, ControllerType, Filter } from '../Equipment';
+import { sys, Equipment, General, PoolSystem, CircuitGroupCircuit, CircuitGroup, ChemController, Circuit, Feature, Valve, ICircuit, Heater, LightGroup, LightGroupCircuit, ControllerType, Filter, Schedule } from '../Equipment';
 import { BoardProcessError, EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdError, ServiceParameterError } from '../Errors';
 import { delayMgr } from '../Lockouts';
 import { webApp } from "../../web/Server";
@@ -198,7 +199,9 @@ export class NixieBoard extends SystemBoard {
         ]);
         this.valueMaps.scheduleTimeTypes.merge([
             [1, { name: 'sunrise', desc: 'Sunrise' }],
-            [2, { name: 'sunset', desc: 'Sunset' }]
+            [2, { name: 'sunset', desc: 'Sunset' }],
+            // Fixed start/end times rewritten each day to cover sunrise to sunset in whole multiples of N hours.
+            [3, { name: 'sunWindow', desc: 'Sun Window' }]
         ]);
 
         this.valueMaps.lightThemes = new byteValueMap([
@@ -562,7 +565,7 @@ export class NixieBoard extends SystemBoard {
     public bodies: NixieBodyCommands = new NixieBodyCommands(this);
     public filters: NixieFilterCommands = new NixieFilterCommands(this);
     public pumps: NixiePumpCommands = new NixiePumpCommands(this);
-    //public schedules: NixieScheduleCommands = new NixieScheduleCommands(this);
+    public schedules: NixieScheduleCommands = new NixieScheduleCommands(this);
     public heaters: NixieHeaterCommands = new NixieHeaterCommands(this);
     public valves: NixieValveCommands = new NixieValveCommands(this);
     public chemControllers: NixieChemControllerCommands = new NixieChemControllerCommands(this);
@@ -582,6 +585,88 @@ export class NixieBoard extends SystemBoard {
 }
 export class NixieBodyCommands extends BodyCommands {
 
+}
+export class NixieScheduleCommands extends ScheduleCommands {
+    // Warn-once bookkeeping for missing sun times only; nothing here is persisted state.
+    private _sunWindow: SunWindowTracker = new SunWindowTracker();
+    private get sunWindowType(): number { return sys.board.valueMaps.scheduleTimeTypes.getValue('sunWindow'); }
+    private getSunTimes(): { sunrise: Date, sunset: Date } {
+        let h = state.heliotrope;
+        if (!h.isValid) return { sunrise: undefined, sunset: undefined };
+        return { sunrise: h.sunrise, sunset: h.sunset };
+    }
+    private static fmtTime(min: number): string { return `${Math.floor(min / 60)}:${(min % 60).toString().padStart(2, '0')}`; }
+    public async setScheduleAsync(data: any, send: boolean = true): Promise<Schedule> {
+        let swType = this.sunWindowType;
+        let id = typeof data.id === 'undefined' ? -1 : parseInt(data.id, 10);
+        let existing = id > 0 ? sys.schedules.find(elem => elem.id === id) : undefined;
+        let startTimeType = typeof data.startTimeType !== 'undefined' ? sys.board.valueMaps.scheduleTimeTypes.encode(data.startTimeType, -1) : (existing ? existing.startTimeType : 0);
+        let endTimeType = typeof data.endTimeType !== 'undefined' ? sys.board.valueMaps.scheduleTimeTypes.encode(data.endTimeType, -1) : (existing ? existing.endTimeType : 0);
+        if (startTimeType !== swType) {
+            if (endTimeType === swType) {
+                // The sun window is chosen by the start time type and spans both ends.
+                if (typeof data.endTimeType !== 'undefined') return Promise.reject(new InvalidEquipmentDataError(`A sun window must be set as the start time type`, 'Schedule', data.endTimeType));
+                data = extend(true, {}, data, { endTimeType: 0 });
+            }
+            return super.setScheduleAsync(data, send);
+        }
+        let hours = typeof data.sunWindowHours !== 'undefined' ? Number(data.sunWindowHours) : (existing ? existing.sunWindowHours : 3);
+        if (!Number.isInteger(hours) || hours < 1 || hours > SUN_WINDOW_MAX_HOURS) return Promise.reject(new InvalidEquipmentDataError(`Invalid sun window hour multiple: ${data.sunWindowHours}.  It must be a whole number from 1 to ${SUN_WINDOW_MAX_HOURS}`, 'Schedule', data.sunWindowHours));
+        let placement = typeof data.sunWindowPlacement !== 'undefined' ? sys.board.valueMaps.sunWindowPlacements.encode(data.sunWindowPlacement, -1) : (existing ? existing.sunWindowPlacement : 0);
+        if (!sys.board.valueMaps.sunWindowPlacements.valExists(placement)) return Promise.reject(new InvalidEquipmentDataError(`Invalid sun window placement: ${data.sunWindowPlacement}`, 'Schedule', data.sunWindowPlacement));
+        let sd: any = extend(true, {}, data, { startTimeType: swType, endTimeType: swType, startTimeOffset: 0, endTimeOffset: 0 });
+        let sun = this.getSunTimes();
+        let w = calcSunWindow(sun.sunrise, sun.sunset, hours, sys.board.valueMaps.sunWindowPlacements.getName(placement));
+        if (typeof w !== 'undefined') {
+            sd.startTime = w.startTime;
+            sd.endTime = w.endTime;
+        }
+        else logger.warn(`Sun window schedule ${id > 0 ? id : '(new)'}: sunrise/sunset are not known (check the location); keeping the given times until they are`);
+        let sched = await super.setScheduleAsync(sd, send);
+        sched.sunWindowHours = hours;
+        sched.sunWindowPlacement = placement;
+        // Emit again so clients see the sun window settings on a new schedule too.
+        let ssched = state.schedules.getItemById(sched.id);
+        ssched.hasChanged = true;
+        ssched.emitEquipmentChange();
+        return sched;
+    }
+    public async syncScheduleStates() {
+        this.updateSunWindows();
+        return super.syncScheduleStates();
+    }
+    /**
+     * Rewrites the fixed times of every sunWindow schedule from today's sunrise and sunset.  This
+     * runs on each status pass and writes only when a time changes, so it picks up midnight,
+     * startup, the heliotrope becoming available and location changes without its own timer.
+     */
+    public updateSunWindows() {
+        try {
+            let swType = this.sunWindowType;
+            let items: ISunWindowSchedule[] = [];
+            for (let i = 0; i < sys.schedules.length; i++) {
+                let sched = sys.schedules.getItemByIndex(i);
+                if (sched.startTimeType !== swType || sched.isActive === false) continue;
+                items.push({ id: sched.id, startTime: sched.startTime, endTime: sched.endTime, hourMultiple: sched.sunWindowHours, placement: sys.board.valueMaps.sunWindowPlacements.getName(sched.sunWindowPlacement) });
+            }
+            if (items.length === 0) return;
+            let sun = this.getSunTimes();
+            let changes = this._sunWindow.refresh(items, sun.sunrise, sun.sunset, (msg) => logger.warn(msg));
+            for (let i = 0; i < changes.length; i++) {
+                let c = changes[i];
+                let sched = sys.schedules.getItemById(c.id);
+                let ssched = state.schedules.getItemById(c.id, true);
+                logger.info(`Sun window schedule ${c.id}: ${NixieScheduleCommands.fmtTime(c.startTime)}-${NixieScheduleCommands.fmtTime(c.endTime)} (${c.lengthMinutes / 60} h), was ${NixieScheduleCommands.fmtTime(sched.startTime)}-${NixieScheduleCommands.fmtTime(sched.endTime)}`);
+                sched.startTime = ssched.startTime = c.startTime;
+                sched.endTime = ssched.endTime = c.endTime;
+                ssched.scheduleTime.calculated = false;
+                let cstate = state.circuits.getInterfaceById(sched.circuit);
+                let circ = sys.circuits.getInterfaceById(sched.circuit);
+                if (typeof cstate !== 'undefined' && typeof circ !== 'undefined' && cstate.isOn) sys.board.circuits.setEndTime(circ, cstate, cstate.isOn, true);
+                ssched.emitEquipmentChange();
+            }
+        } catch (err) { logger.error(`Error updating sun window schedules: ${err.message}`); }
+    }
 }
 export class NixieFilterCommands extends FilterCommands {
     public async setFilterStateAsync(filter: Filter, fstate: FilterState, isOn: boolean) {

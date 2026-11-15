@@ -408,6 +408,12 @@ export class byteValueMaps {
     public scheduleTimeTypes: byteValueMap = new byteValueMap([
         [0, { name: 'manual', desc: 'Manual' }]
     ]);
+    // Placement of a sunWindow schedule.  Boards that add the sunWindow time type use this list.
+    public sunWindowPlacements: byteValueMap = new byteValueMap([
+        [0, { name: 'solarNoon', desc: 'Centered on Solar Noon' }],
+        [1, { name: 'sunrise', desc: 'Start at Sunrise' }],
+        [2, { name: 'sunset', desc: 'End at Sunset' }]
+    ]);
     public scheduleDisplayTypes: byteValueMap = new byteValueMap([
         [0, { name: 'always', desc: 'Always' }],
         [1, { name: 'active', desc: 'When Active' }],

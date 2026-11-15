@@ -396,6 +396,7 @@ export class ConfigRoute {
                     maxSchedules: sys.equipment.maxSchedules,
                     tempUnits: sys.board.valueMaps.tempUnits.transform(state.temps.units),
                     scheduleTimeTypes: sys.board.valueMaps.scheduleTimeTypes.toArray(),
+                    sunWindowPlacements: sys.board.valueMaps.sunWindowPlacements.toArray(),
                     scheduleTypes: sys.board.valueMaps.scheduleTypes.toArray(),
                     scheduleDays: sys.board.valueMaps.scheduleDays.toArray(),
                     heatSources: sys.board.valueMaps.heatSources.toArray(),
