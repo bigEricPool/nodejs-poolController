@@ -51,13 +51,14 @@ import {
     ScoringSettings, scoreSummary, spanCoverage
 } from './AutoSwgBenchModel';
 import {
-    CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, polygonArea
+    CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, pathVsTests, polygonArea,
+    tfpSwgFc, WaterTemp
 } from './AutoSwgBenchCya';
 import {
     buildCalendar, DEFAULT_SIM_SETTINGS, fitModelPlant, liveProjector, modelProjector, outcome, plainProjector, Projector, SimData, SimOutcome, SimRhythm, SimSettings,
     simulate, summarizeOutcomes, testsFor
 } from './AutoSwgBenchSim';
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedStabilizerAdditions, archivedSwgEvents, saltAdditionPpm } from './PoolMathArchive';
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedStabilizerAdditions, archivedSwgEvents, readPoolMathArchive, saltAdditionPpm } from './PoolMathArchive';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
 import { projectionLog } from './AutoSwgProjection';
 import { chlorinatorLog } from './ChlorinatorLog';
@@ -68,6 +69,7 @@ import { saltHistory } from './AutoSwgSaltHistory';
 
 const KEEP_MS = 548 * DAY_MS;          // 18 months
 const SCORE_DAYS = 60;                 // how far back onReadings looks for tests not scored yet
+const LONG_DAYS = 400;                 // the CYA path starts at the oldest CYA test this far back (see longRows)
 const PAUSE_MS = 40;
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
@@ -139,6 +141,21 @@ export function normalizeVariant(raw: any): BenchVariant | undefined {
         if (raw.rainWash === true) v.rainWash = true;
     }
     return v;
+}
+
+// PoolMath's water temperatures in F (units 1 is C).
+function poolMathWaterTemps(): WaterTemp[] {
+    const out: WaterTemp[] = [];
+    try {
+        for (const e of readPoolMathArchive().entries) {
+            if (e.type !== 'testlog' || typeof e.waterTemp !== 'number') continue;
+            const t = new Date(e.ts).getTime();
+            const f = e.waterTempUnits === 1 ? e.waterTemp * 9 / 5 + 32 : e.waterTemp;
+            if (isFinite(t) && isFinite(f) && f > 32 && f < 110) out.push({ t: t, f: f });
+        }
+    }
+    catch (err) { logger.warn(`SWG Assist bench: could not read PoolMath's water temperatures: ${err && err.message}`); }
+    return out.sort((a, b) => a.t - b.t);
 }
 
 // A local date for the advice text (YYYY-MM-DD).
@@ -248,6 +265,25 @@ class AutoSwgBench {
     } {
         const cfg: any = sys.autoSwg;
         const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
+        const sources = this.sourcesFor(from, to, true);
+        const rows = buildHourlyInputs(sources, from, to, this.getSettings().geometry);
+        const readings = archivedFcReadings().map(r => ({ t: r.ts.getTime(), fc: r.value })).filter(r => r.t >= from && r.t <= to);
+        const c = this.cyaInputs(gallons);
+        const cya = c.cya, cyaAdds = c.cyaAdds, saltAdds = c.saltAdds, cyaPathAt = c.pathAt;
+        const settings = this.getSettings();
+        // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
+        const starts = inputStarts(rows), sc = settings.scoring;
+        const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
+        return {
+            rows: rows, readings: readings, cya: cya, intervals: intervalsFrom(readings, rows), sources: sources, gallons: gallons,
+            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt,
+            starts: starts, skipFit: skipFit
+        };
+    }
+    // What buildHourlyInputs reads for [from, to]. `withPlace` false leaves out the place, so no sun geometry is worked out (the long rows).
+    private sourcesFor(from: number, to: number, withPlace: boolean): BenchSources {
+        const cfg: any = sys.autoSwg;
+        const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
         const id = typeof cfg.chlorinatorId === 'number' ? cfg.chlorinatorId : firstChlorinatorId();
         const chlor: any = typeof id === 'number' ? sys.chlorinators.find(c => c.id === id) : undefined;
         const days = Math.ceil((Date.now() - from) / DAY_MS) + 2;
@@ -260,8 +296,8 @@ class AutoSwgBench {
         const own: SwgEntry[] = toLocalSwgEntries(readAutoSwgHistory()).map(e => ({ ts: new Date(e.ts).getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }));
         const pm: SwgEntry[] = archivedSwgEvents().map(e => ({ ts: e.ts.getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }));
         const loc: any = sys.general && sys.general.location;
-        const sources: BenchSources = {
-            lat: loc && typeof loc.latitude === 'number' ? loc.latitude : undefined, lon: loc && typeof loc.longitude === 'number' ? loc.longitude : undefined,
+        return {
+            lat: withPlace && loc && typeof loc.latitude === 'number' ? loc.latitude : undefined, lon: withPlace && loc && typeof loc.longitude === 'number' ? loc.longitude : undefined,
             gallons: gallons, cellLbsPerDay: chlor ? chlor.cellLbsPerDay : (cfg.swgLbsPerDay || 0),
             outputHours: outputHours, cycle: cycle, swgEntries: mergeSwgEntries(own, pm),
             chlorine: cfg.creditChlorineAdditions === false ? [] : archivedChlorineAdditions().map(a => ({ ts: a.ts.getTime(), ppm: chlorinePpm(a.percent, a.ml, gallons) })),
@@ -270,27 +306,41 @@ class AutoSwgBench {
             pump: fromSource('pump', pumpSource, from, to),
             salt: saltHistory.daily(days).map(d => ({ t: new Date(d.date + 'T12:00:00').getTime(), ppm: d.median }))
         };
-        const rows = buildHourlyInputs(sources, from, to, this.getSettings().geometry);
-        const readings = archivedFcReadings().map(r => ({ t: r.ts.getTime(), fc: r.value })).filter(r => r.t >= from && r.t <= to);
-        const cya = archivedCyaReadings().map(r => ({ t: r.ts.getTime(), ppm: r.value }));
+    }
+
+    // The long hourly rows the CYA path and the chemistry paths are built on: from the oldest CYA test of the last LONG_DAYS days (at least 60 days back)
+    // to now, whatever window a caller works on, so the check, the summary, the route and a replay all see the same path. Kept for the hour. No sun
+    // geometry is worked out for them: only the rain, salt, water temperature, pump time and cell output are read.
+    private longCache: { hour: number; from: number; rows: BenchHour[] } | undefined;
+    public longRows(now: number = Date.now()): { from: number; rows: BenchHour[] } {
+        const hour = Math.floor(now / HOUR_MS);
+        const cut = now - LONG_DAYS * DAY_MS;
+        const oldest = archivedCyaReadings().map(r => r.ts.getTime()).filter(t => t >= cut).reduce((m, t) => Math.min(m, t), now - 60 * DAY_MS);
+        const from = Math.floor((oldest - DAY_MS) / HOUR_MS) * HOUR_MS;
+        if (this.longCache && this.longCache.hour === hour && this.longCache.from === from) return this.longCache;
+        const to = hour * HOUR_MS;
+        const rows = buildHourlyInputs(this.sourcesFor(from, to, false), from, to, this.getSettings().geometry);
+        this.longCache = { hour: hour, from: from, rows: rows };
+        return this.longCache;
+    }
+
+    // The CYA tests, the stabilizer and salt additions, PoolMath's water temperatures, and the path as known at any moment, on the long rows (one path
+    // builder for every caller). The path at a moment is kept for the life of these inputs.
+    public cyaInputs(gallons: number, now: number = Date.now()): { cya: CyaTest[]; cyaAdds: CyaAddition[]; saltAdds: CyaAddition[]; waterTemps: WaterTemp[]; pathAt: (asOf: number) => CyaPath; rows: BenchHour[] } {
+        const long = this.longRows(now);
+        const cya = archivedCyaReadings().map(r => ({ t: r.ts.getTime(), ppm: r.value })).filter(c => c.t >= long.from);
         const cyaAdds: CyaAddition[] = archivedStabilizerAdditions(gallons || undefined).map(a => ({ t: a.ts.getTime(), ppm: a.ppm })).filter(a => a.ppm > 0);
         const saltAdds: CyaAddition[] = archivedSaltAdditions().map(a => ({ t: a.ts.getTime(), ppm: saltAdditionPpm(a.pounds, gallons) })).filter(a => a.ppm > 0);
+        const waterTemps = poolMathWaterTemps();
         const settings = this.getSettings();
         const defaultK = defaultRainK(polygonArea(settings.geometry.outline), gallons);
         const memo = new Map<number, CyaPath>();
-        const cyaPathAt = (asOf: number): CyaPath => {
+        const pathAt = (asOf: number): CyaPath => {
             let p = memo.get(asOf);
-            if (!p) { p = cyaPath(cya, cyaAdds, rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK }); memo.set(asOf, p); }
+            if (!p) { p = cyaPath(cya, cyaAdds, long.rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK, waterTemps: waterTemps }); memo.set(asOf, p); }
             return p;
         };
-        // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
-        const starts = inputStarts(rows), sc = settings.scoring;
-        const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
-        return {
-            rows: rows, readings: readings, cya: cya, intervals: intervalsFrom(readings, rows), sources: sources, gallons: gallons,
-            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt,
-            starts: starts, skipFit: skipFit
-        };
+        return { cya: cya, cyaAdds: cyaAdds, saltAdds: saltAdds, waterTemps: waterTemps, pathAt: pathAt, rows: long.rows };
     }
     private maxFitDays(): number { return Math.max(30, ...this.getSettings().variants.map(v => Math.max(v.fitDays || 0, v.windowDays || 0) + 2)); }
 
@@ -629,14 +679,23 @@ class AutoSwgBench {
     public cyaReport(days: number, samples: boolean = true): any {
         const now = Date.now();
         const d = Math.max(7, Math.min(400, Math.floor(days) || 120));
-        const inp = this.gatherInputs(now - (d + 60) * DAY_MS, now);
-        const p = inp.cyaPathAt(now);
+        const cfg: any = sys.autoSwg;
+        const inp = this.cyaInputs(cfg.gallons > 0 ? cfg.gallons : 0, now);
+        const p = inp.pathAt(now);
         const from = now - d * DAY_MS;
         const iso = (t: number) => new Date(t).toISOString();
         const recorded = this.readRows<any>(CYA_FILE);
+        const nowVal = round(p.at(now), 1);
+        const storm = (e: any) => Object.assign({}, e, { t1: iso(e.t1), t2: iso(e.t2), m: round(e.m, 2), inches: round(e.inches, 2) });
         return {
-            settings: this.getSettings().cya, source: p.source, rainK: round(p.rainK, 4), defaultK: round(p.defaultK, 4), pairs: p.pairs,
-            now: round(p.at(now), 1), anchor: p.anchor ? { t: iso(p.anchor.t), ppm: p.anchor.ppm } : undefined,
+            settings: this.getSettings().cya, source: p.source, rainK: round(p.rainK, 4), defaultK: round(p.defaultK, 4), lossPerMonth: p.lossNow,
+            now: nowVal, anchor: p.anchor ? { t: iso(p.anchor.t), ppm: p.anchor.ppm } : undefined,
+            // TFP's SWG FC levels at the CYA on the path now (the minimum, the target range and SLAM)
+            tfpFc: tfpSwgFc(nowVal),
+            // how the TFP path did at the tests (a check; it never changes the path)
+            vsTests: pathVsTests(p, from),
+            runoff: p.runoff.map(storm),
+            storms: p.storms.filter(e => e.t2 >= from).map(storm),
             tests: p.notes.filter(n => n.t >= from).map(n => Object.assign({}, n, { t: iso(n.t) })),
             additions: inp.cyaAdds.filter(a => a.t >= from).map(a => ({ t: iso(a.t), ppm: round(a.ppm, 1) })),
             advice: this.lastAdvice || state.autoSwg.benchCyaAdvice,
@@ -669,6 +728,8 @@ class AutoSwgBench {
                 ppmPerHourAtFull: poundsToPpm(inp.sources.cellLbsPerDay / 24, inp.gallons)
             };
             const settings = simSettingsFrom(cfg, req.runWindow);
+            // TFP's minimum FC for an SWG pool at the CYA on the path now: the outcome counts the hours below it (belowTfpMin)
+            if (inp.cya.length) settings.tfpMin = tfpSwgFc(inp.cyaPathAt(end).at(end)).min;
             const cal = buildCalendar(data, settings);
             const s = this.getSettings();
             const projectors: Projector[] = [liveProjector()];

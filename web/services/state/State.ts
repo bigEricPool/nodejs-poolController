@@ -1197,9 +1197,14 @@ async function runAutoSwgAutoCheck() {
     finally {
         armAutoSwgAutoCheck();
         runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
-        // the Model Bench freezes its variants' fits; it only reads and writes its own files
-        autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
+        benchCheck();
     }
+}
+
+// The Model Bench freezes its variants' fits and refreshes its CYA and acid advice: after the automatic check and after Check Now, Refine, Refresh and Apply,
+// and Apply. It only reads and writes its own files, is not waited for, and skips itself while busy.
+function benchCheck() {
+    autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
 }
 
 export class StateRoute {
@@ -2014,6 +2019,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('new');
                 await applyIfAutoApplyEnabled(skipped, 'check-now');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2033,6 +2039,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('refine');
                 await applyIfAutoApplyEnabled(skipped, 'refine');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2051,6 +2058,7 @@ export class StateRoute {
                 if (!sys.autoSwg.automationAvailable) throw new ServiceParameterError('Auto-Apply is not available. Use Check Now and apply the recommendation yourself.', 'autoSwg', 'autoApplyEnabled', false);
                 let skipped = await runAutoSwgRecommendation('auto');
                 await applyIfAutoApplyEnabled(skipped, 'refresh-and-apply');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2064,6 +2072,7 @@ export class StateRoute {
             try {
                 let pctOverride = typeof req.body.poolSetpoint !== 'undefined' ? parseInt(req.body.poolSetpoint, 10) : undefined;
                 let schlor = await applyAutoSwgRecommendation(false, pctOverride);
+                benchCheck();
                 return res.status(200).send({ chlorinator: schlor.get(true), autoSwg: state.autoSwg.get(true) });
             }
             catch (err) { next(err); }
