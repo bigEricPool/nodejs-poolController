@@ -151,6 +151,15 @@
       "build": true
     },
     {
+      "name": "feature/sun-window-schedule",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Sun Window schedule time type (Nixie): each day the schedule's fixed start and end times are rewritten to the smallest multiple of N whole hours (default 3) covering sunrise to sunset, placed centred on solar noon, from sunrise or to sunset. Cut from upstream master, intended for upstream.",
+      "depends": [],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "feature/pws-weather",
       "kind": "feature",
       "status": "active",
