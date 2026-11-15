@@ -1772,6 +1772,11 @@ export class ScheduleState extends EqState {
             let cfgSched = sys.schedules.getItemById(this.id, false);
             sched.schedGroup = cfgSched ? cfgSched.schedGroup : 0;
         }
+        if (typeof sched.startTimeType !== 'undefined' && sched.startTimeType.name === 'sunWindow') {
+            let cfgSched = sys.schedules.getItemById(this.id, false);
+            sched.sunWindowHours = cfgSched.sunWindowHours;
+            sched.sunWindowPlacement = sys.board.valueMaps.sunWindowPlacements.transform(cfgSched.sunWindowPlacement);
+        }
         return sched;
     }
     public emitEquipmentChange() {

@@ -1375,6 +1375,11 @@ export class Schedule extends EqItem {
     private _saveStartDate() { this.startDate.setHours(0, 0, 0, 0); this.setDataVal('startDate', Timestamp.toISOLocal(this.startDate)); }
     public get flags(): number { return this.data.flags; }
     public set flags(val: number) { this.setDataVal('flags', val); }
+    // Sun window settings.  Only used when the start time type is sunWindow; left unset otherwise.
+    public get sunWindowHours(): number { return typeof this.data.sunWindowHours === 'number' ? this.data.sunWindowHours : 3; }
+    public set sunWindowHours(val: number) { this.setDataVal('sunWindowHours', val); }
+    public get sunWindowPlacement(): number { return typeof this.data.sunWindowPlacement === 'number' ? this.data.sunWindowPlacement : 0; }
+    public set sunWindowPlacement(val: number | any) { this.setDataVal('sunWindowPlacement', sys.board.valueMaps.sunWindowPlacements.encode(val)); }
 }
 // TODO: Get rid of this
 export class EggTimerCollection extends EqItemCollection<EggTimer> {
