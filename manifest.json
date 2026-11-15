@@ -115,6 +115,17 @@
       "build": true
     },
     {
+      "name": "feature/poolmath-swg-log",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "PoolMath SWG log: writes an SWG entry to the owner's PoolMath log when the SWG % changes (off by default; sign-in from an encrypted file on the controller, never in config), with a PoolMath SWG Log panel in dashPanel's chemistry settings. Also: a restart reads PoolMath only when a scheduled top-up was missed; super chlorinate on/off log. Stacked on feature/chlorinator-log.",
+      "depends": [
+        "feature/chlorinator-log"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "archive/2026-11-13/feature/dashboard-enhancements",
       "kind": "archive",
       "status": "archive",
