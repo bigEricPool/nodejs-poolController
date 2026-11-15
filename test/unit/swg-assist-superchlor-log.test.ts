@@ -22,6 +22,11 @@ describe('parseSuperChlorLog', () => {
         ]));
         expect(runs).toEqual([{ startMs: T0, endMs: T0 + 8 * H, poweredHours: 7.5, reason: 'timer', id: 1 }]);
     });
+    it('reads the writer\'s lines as written (controller/ChlorinatorSuperChlorLog.ts on feature/poolmath-swg-log): poweredHours, not hours', () => {
+        const runs = parseSuperChlorLog('{"t":"2026-11-15T14:00:00.000Z","id":50,"on":true}\n'
+            + '{"t":"2026-11-15T22:00:05.000Z","id":50,"on":false,"start":"2026-11-15T14:00:00.000Z","reason":"timer","hours":8,"poweredHours":7.95}\n');
+        expect(runs).toEqual([{ startMs: Date.UTC(2026, 10, 15, 14), endMs: Date.UTC(2026, 10, 15, 22, 0, 5), poweredHours: 7.95, reason: 'timer', id: 50 }]);
+    });
     it('an on with no off is a run in progress; a stray off and a repeated on are ignored', () => {
         const runs = parseSuperChlorLog(lines([
             { t: iso(T0 - 2 * H), id: 1, on: false },
