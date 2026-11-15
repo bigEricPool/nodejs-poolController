@@ -10,6 +10,7 @@ import { webApp, InterfaceServerResponse } from "../../../web/Server";
 import { Outbound, Protocol, Response } from '../../comms/messages/Messages';
 import { conn } from '../../comms/Comms';
 import { ncp } from '../Nixie';
+import { chlorinatorCommsExpected } from '../../ChlorinatorLogService';
 import { setTimeout } from 'timers/promises';
 
 export class NixieChlorinatorCollection extends NixieEquipmentCollection<NixieChlorinator> {
@@ -225,7 +226,7 @@ export class NixieChlorinator extends NixieEquipment {
                     }
                 } catch (err) {
                     // We only display an error here if the body is on.  The chlorinator should be powered down when it is not.
-                    if (this.isBodyOn()) logger.error(`Chlorinator ${this.chlor.name} comms failure: ${err.message}`);
+                    if (this.isBodyOn() && chlorinatorCommsExpected(this.chlor)) logger.error(`Chlorinator ${this.chlor.name} comms failure: ${err.message}`);
                 }
                 finally { this.suspendPolling = false; }
             }
@@ -264,7 +265,9 @@ export class NixieChlorinator extends NixieEquipment {
                 cstate.emitEquipmentChange();
             }
             catch (err) {
-                logger.error(`Communication error with Chlorinator ${this.chlor.name} : ${err.message}`);
+                // Not an error while the cell's power relays say it has no power (see chlorinatorCommsExpected).
+                if (chlorinatorCommsExpected(this.chlor)) logger.error(`Communication error with Chlorinator ${this.chlor.name} : ${err.message}`);
+                else logger.debug(`Communication error with Chlorinator ${this.chlor.name} (no power by its relays): ${err.message}`);
                 // This flag is cleared in ChlorinatorStateMessage
                 this.chlor.superChlor = cstate.superChlor = false;
                 this.setSuperChlor(cstate);
@@ -362,7 +365,8 @@ export class NixieChlorinator extends NixieEquipment {
                     await out.sendAsync();
                 }
                 catch (err) {
-                    logger.error(`Communication error with Chlorinator ${this.chlor.name} : ${err.message}`);
+                    if (chlorinatorCommsExpected(this.chlor)) logger.error(`Communication error with Chlorinator ${this.chlor.name} : ${err.message}`);
+                    else logger.debug(`Communication error with Chlorinator ${this.chlor.name} (no power by its relays): ${err.message}`);
                 }
             }
         }

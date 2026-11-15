@@ -34,6 +34,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //       the maintenance % at most, so a burn that has changed faster than the averaging window follows is corrected within a few tests instead of a few weeks.
 // The projection is open loop between tests, so the range should be wider than the projection's usual error (about 3 ppm).
 
+// The hold at 0% above the range ends when the projection falls this far under the top of the range (the release level), and never lasts past a reading this many
+// days old (a projection that far from a test is mostly an average, and the SWG is not held at 0% on it).
+export const BAND_RELEASE_PPM = 0.5;
+export const BAND_STALE_DAYS = 3;
+
 export interface BandInput {
     projectedFc: number;        // the projected FC now (ppm)
     avgPerDay: number;          // the average burn (ppm per day)
@@ -78,10 +83,10 @@ export function bandDecision(i: BandInput): BandDecision {
     const lo = i.low, hi = i.high;
     const mid = (lo + hi) / 2, half = (hi - lo) / 2;
     const guard = Math.min(i.guardCap, i.guardPerDay * i.elapsedDays);
-    const stale = i.elapsedDays >= 3;
+    const stale = i.elapsedDays >= BAND_STALE_DAYS;
     let coasting = i.coasting;
     if (i.projectedFc > hi) coasting = true;
-    else if (i.projectedFc <= hi - 0.5) coasting = false;
+    else if (i.projectedFc <= hi - BAND_RELEASE_PPM) coasting = false;
     let pct: number;
     let mode: BandMode;
     let note: string;

@@ -34,18 +34,109 @@ const SAMPLE_MS = 10 * 60 * 1000;
 const POWER_CHECK_MS = 15 * 1000;
 let powerTimer: NodeJS.Timeout | undefined;
 
-// Whether a chlorinator has power. The default is that its body is on; another module can say otherwise for its wiring (for example a
-// relay that feeds the cell). The source returns undefined when it cannot tell, and the default is used.
+// Whether a chlorinator has power. The chlorinator's own settings decide first:
+//   powerRelays           the relays its power is wired through (a dead-man, for example the cell's own relay and the pump's low speed relay):
+//                         it has power only while every one is on. Their state is what njsPC already knows: a relay of a pump from that pump's
+//                         relay bits, any other from the circuit bound to it (the relay manager is never asked).
+//   powerConfirmByComms   the chlorinator answering on RS-485 is proof of power: one that answered in the last COMM_FRESH_SEC has power. With
+//                         relays, the relays time each change and the link confirms it; when they disagree the answer wins (a cell without
+//                         power cannot answer) and a warning says the relay setting or the wiring does not match, and relays on with no answer
+//                         for COMM_SILENT_SEC are logged as unconfirmed (it may be the link). Without relays the link decides on its own.
+// With neither setting: the default is that its body is on, and another module can say otherwise for its wiring (setChlorinatorPowerSource;
+// the source returns undefined when it cannot tell, and the default is used).
 export type ChlorinatorPowerSource = (chlor: Chlorinator) => boolean | undefined;
 let powerSource: ChlorinatorPowerSource | undefined;
 export function setChlorinatorPowerSource(fn: ChlorinatorPowerSource | undefined) { powerSource = fn; }
-export function chlorinatorHasPower(chlor: Chlorinator): boolean | undefined {
-    if (powerSource) {
-        try { const v = powerSource(chlor); if (typeof v === 'boolean') return v; }
-        catch (err) { logger.warn(`Chlorinator power log: the power source failed for chlorinator ${chlor.id}: ${err.message}`); }
+export const COMM_FRESH_SEC = 30;     // Nixie asks the chlorinator every 3 seconds
+export const COMM_SILENT_SEC = 60;
+export type PowerBy = 'relays' | 'comms' | 'source' | 'body';
+export interface PowerDecision { on: boolean | undefined; by: PowerBy; confirmed?: boolean; mismatch?: 'answering' | 'silent'; }
+// The rule above, given what is known: each relay's state (undefined: not known), the seconds since the chlorinator last answered
+// (undefined: never), how long the relays have all been on (seconds), and the old answer.
+export function decidePower(relays: (boolean | undefined)[], commAgeSec: number | undefined, confirmByComms: boolean, relaysOnForSec: number, fallback: () => { on: boolean | undefined; by: PowerBy }): PowerDecision {
+    const answering = typeof commAgeSec === 'number' && commAgeSec <= COMM_FRESH_SEC;
+    if (relays.length > 0 && relays.every(r => typeof r === 'boolean')) {
+        const on = relays.every(r => r === true);
+        if (!confirmByComms) return { on: on, by: 'relays' };
+        if (!on && answering) return { on: true, by: 'comms', confirmed: false, mismatch: 'answering' };
+        if (on && !answering && relaysOnForSec > COMM_SILENT_SEC) return { on: true, by: 'relays', confirmed: false, mismatch: 'silent' };
+        return { on: on, by: 'relays', confirmed: on ? answering : true };
     }
-    try { return sys.board.bodies.isBodyOn(typeof chlor.body !== 'undefined' ? chlor.body : 0); }
-    catch (err) { return undefined; }
+    if (confirmByComms && typeof commAgeSec === 'number') return { on: answering, by: 'comms', confirmed: true };
+    return fallback();
+}
+function relayMatches(o: any, r: { connectionId: string; deviceBinding: string }): boolean { return !!o && o.connectionId === r.connectionId && o.deviceBinding === r.deviceBinding; }
+// A relay's state from njsPC's own record: a pump's relay from the pump's relay bits, any other from the circuit bound to it; undefined when
+// nothing in njsPC is bound to it.
+export function relayIsOn(r: { connectionId: string; deviceBinding: string }): boolean | undefined {
+    for (const p of sys.pumps.get()) {
+        const relays: any[] = (sys.pumps.getItemById(p.id).relays as any).get() || [];
+        for (let i = 0; i < relays.length; i++) {
+            if (!relayMatches(relays[i], r)) continue;
+            const bits = state.pumps.getItemById(p.id).relay || 0;
+            return ((bits >> ((relays[i].id || i + 1) - 1)) & 1) === 1;
+        }
+    }
+    const c = sys.circuits.get().find((x: any) => relayMatches(x, r));
+    return c ? state.circuits.getItemById(c.id).isOn === true : undefined;
+}
+const relaysOnSince = new Map<number, number>();
+const lastMismatch = new Map<number, string>();
+export function chlorinatorPower(chlor: Chlorinator, now: number = Date.now()): PowerDecision {
+    const relays = chlor.powerRelays.map(r => { try { return relayIsOn(r); } catch (err) { return undefined; } });
+    const allOn = relays.length > 0 && relays.every(r => r === true);
+    if (!allOn) relaysOnSince.delete(chlor.id);
+    else if (!relaysOnSince.has(chlor.id)) relaysOnSince.set(chlor.id, now);
+    let commAgeSec: number | undefined;
+    try {
+        const s = state.chlorinators.getItemById(chlor.id, false);
+        if (s && typeof s.lastComm === 'number' && s.lastComm > 0) commAgeSec = Math.max(0, (now - s.lastComm) / 1000);
+    } catch (err) { /* not known */ }
+    const d = decidePower(relays, commAgeSec, chlor.powerConfirmByComms, allOn ? (now - relaysOnSince.get(chlor.id)) / 1000 : 0, () => {
+        if (powerSource) {
+            try { const v = powerSource(chlor); if (typeof v === 'boolean') return { on: v, by: 'source' }; }
+            catch (err) { logger.warn(`Chlorinator power log: the power source failed for chlorinator ${chlor.id}: ${err.message}`); }
+        }
+        try { return { on: sys.board.bodies.isBodyOn(typeof chlor.body !== 'undefined' ? chlor.body : 0), by: 'body' }; }
+        catch (err) { return { on: undefined, by: 'body' }; }
+    });
+    const m = d.mismatch || '';
+    if (m !== (lastMismatch.get(chlor.id) || '')) {
+        lastMismatch.set(chlor.id, m);
+        if (m === 'answering') logger.warn(`Chlorinator ${chlor.id}: answering on RS-485 while its power relays are off, so it is logged as powered; check its power relay setting and wiring.`);
+        else if (m === 'silent') logger.warn(`Chlorinator ${chlor.id}: its power relays are on but it has not answered on RS-485 for over ${COMM_SILENT_SEC} s; still logged as powered (it may be the link).`);
+        else logger.info(`Chlorinator ${chlor.id}: its power relays and RS-485 agree again.`);
+    }
+    return d;
+}
+export function chlorinatorHasPower(chlor: Chlorinator): boolean | undefined { return chlorinatorPower(chlor).on; }
+// Whether a chlorinator should be answering on RS-485, for a controller that polls it (Nixie) to decide how loudly to log a missed answer.
+// Only its power relays can say no: while one of them is off, or for POWER_UP_GRACE_SEC after they all came on (the cell starts up), it cannot
+// answer, so missed answers are expected and not errors. With no relays set, or a relay njsPC does not know, it should answer (as before).
+// One info line is logged when this changes.
+export const POWER_UP_GRACE_SEC = 30;
+const commsQuiet = new Map<number, boolean>();
+export function chlorinatorCommsExpected(chlor: Chlorinator, now: number = Date.now()): boolean {
+    let quiet = false;
+    try {
+        const list = chlor.powerRelays || [];
+        if (list.length > 0) {
+            const relays = list.map(r => { try { return relayIsOn(r); } catch (err) { return undefined; } });
+            if (relays.every(r => typeof r === 'boolean')) {
+                if (!relays.every(r => r === true)) { relaysOnSince.delete(chlor.id); quiet = true; }
+                else {
+                    if (!relaysOnSince.has(chlor.id)) relaysOnSince.set(chlor.id, now);
+                    quiet = now - relaysOnSince.get(chlor.id) < POWER_UP_GRACE_SEC * 1000;
+                }
+            }
+        }
+    } catch (err) { quiet = false; }
+    if (quiet !== (commsQuiet.get(chlor.id) || false)) {
+        commsQuiet.set(chlor.id, quiet);
+        if (quiet) logger.info(`Chlorinator ${chlor.id}: its power relays say it has no power, so missed RS-485 answers are logged at debug until it has power again.`);
+        else logger.info(`Chlorinator ${chlor.id}: its power relays have been on for ${POWER_UP_GRACE_SEC} s, so missed RS-485 answers are logged as errors again.`);
+    }
+    return !quiet;
 }
 // Writes each chlorinator's power state when it changed.
 export function checkChlorinatorPower(now: number = Date.now()) {
@@ -54,7 +145,7 @@ export function checkChlorinatorPower(now: number = Date.now()) {
             const on = chlorinatorHasPower(chlor);
             if (typeof on !== 'boolean') continue;
             const e = chlorinatorPowerLog.record(chlor.id, on, now);
-            if (e) logger.verbose(`Chlorinator ${chlor.id}: power ${on ? 'on' : 'off'}.`);
+            if (e) logger.info(`Chlorinator ${chlor.id}: power ${on ? 'on' : 'off'}.`);
         }
         catch (err) { logger.warn(`Chlorinator power log: could not check chlorinator ${chlor.id}: ${err.message}`); }
     }
@@ -184,8 +275,9 @@ export function poolGallons(): number {
 }
 
 // Checks the cell settings of a chlorinator save: the rating (lb/day, 0 or empty for the default), the install date (YYYY-MM-DD, or
-// empty), the cycle length (hours, 0 to 24) and the two cycle switches. Throws on a bad value.
-export function checkCellSettings(obj: any): { lbs?: number; date?: string; cycleHours?: number; cycleRestartsOnPower?: boolean; burstFirst?: boolean } {
+// empty), the cycle length (hours, 0 to 24), the two cycle switches, the power relays (a list of { connectionId, deviceBinding }, at most
+// four, empty to clear) and powerConfirmByComms. Throws on a bad value.
+export function checkCellSettings(obj: any): { lbs?: number; date?: string; cycleHours?: number; cycleRestartsOnPower?: boolean; burstFirst?: boolean; powerRelays?: { connectionId: string; deviceBinding: string }[]; powerConfirmByComms?: boolean } {
     let lbs: number | undefined;
     if (typeof obj.cellLbsPerDay !== 'undefined' && obj.cellLbsPerDay !== null && obj.cellLbsPerDay !== '') {
         lbs = Number(obj.cellLbsPerDay);
@@ -209,13 +301,20 @@ export function checkCellSettings(obj: any): { lbs?: number; date?: string; cycl
         if (v === false || v === 'false' || v === 0 || v === '0') return false;
         throw new ServiceParameterError(`${name} must be true or false.`, 'setCellSettings', name, v);
     };
-    return { lbs, date, cycleHours, cycleRestartsOnPower: flag('cycleRestartsOnPower'), burstFirst: flag('burstFirst') };
+    let powerRelays: { connectionId: string; deviceBinding: string }[] | undefined;
+    if (typeof obj.powerRelays !== 'undefined') {
+        const list = obj.powerRelays === null || obj.powerRelays === '' ? [] : obj.powerRelays;
+        if (!Array.isArray(list) || list.length > 4 || !list.every((r: any) => r && typeof r.connectionId === 'string' && r.connectionId && typeof r.deviceBinding === 'string' && r.deviceBinding))
+            throw new ServiceParameterError('The power relays must be a list of at most four { connectionId, deviceBinding }.', 'setCellSettings', 'powerRelays', obj.powerRelays);
+        powerRelays = list.map((r: any) => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding }));
+    }
+    return { lbs, date, cycleHours, cycleRestartsOnPower: flag('cycleRestartsOnPower'), burstFirst: flag('burstFirst'), powerRelays, powerConfirmByComms: flag('powerConfirmByComms') };
 }
 
 // Applies the cell settings from a chlorinator save (PUT /config/chlorinator) and recounts the usage when the install date, the rating
 // or a cycle setting changed.
 export function setCellSettings(id: number, obj: any) {
-    const keys = ['cellLbsPerDay', 'cellInstalledDate', 'cycleHours', 'cycleRestartsOnPower', 'burstFirst'];
+    const keys = ['cellLbsPerDay', 'cellInstalledDate', 'cycleHours', 'cycleRestartsOnPower', 'burstFirst', 'powerRelays', 'powerConfirmByComms'];
     if (!obj || !keys.some(k => typeof obj[k] !== 'undefined')) return;
     const chlor = sys.chlorinators.find(c => c.id === id);
     if (!chlor) return;
@@ -226,6 +325,9 @@ export function setCellSettings(id: number, obj: any) {
     if (typeof v.cycleHours !== 'undefined') chlor.cycleHours = v.cycleHours;
     if (typeof v.cycleRestartsOnPower !== 'undefined') chlor.cycleRestartsOnPower = v.cycleRestartsOnPower;
     if (typeof v.burstFirst !== 'undefined') chlor.burstFirst = v.burstFirst;
+    // the power settings change what is logged from now on, not the hours already counted
+    if (typeof v.powerRelays !== 'undefined') chlor.powerRelays = v.powerRelays;
+    if (typeof v.powerConfirmByComms !== 'undefined') chlor.powerConfirmByComms = v.powerConfirmByComms;
     const after = JSON.stringify([chlor.cellLbsPerDay, chlor.cellInstalledDate, chlor.cycleHours, chlor.cycleRestartsOnPower, chlor.burstFirst]);
     if (chlor.cellInstalledDate && after !== before) recountCellUsage(id);
 }
@@ -245,7 +347,9 @@ export function cellUsageInfo(id: number) {
         cycleHours: chlor.cycleHours, cycleRestartsOnPower: chlor.cycleRestartsOnPower, burstFirst: chlor.burstFirst,
         // with a cycle length, the hours from the first power event on are counted by cycles; the hours before by their mean output
         cycleSince: chlor.cycleHours > 0 && first ? first.t : '',
-        powered: last ? last.on : undefined
+        powered: last ? last.on : undefined,
+        powerRelays: chlor.powerRelays, powerConfirmByComms: chlor.powerConfirmByComms,
+        power: (() => { try { const d = chlorinatorPower(chlor); return { on: d.on, by: d.by, confirmed: d.confirmed, mismatch: d.mismatch }; } catch (err) { return undefined; } })()
     };
 }
 
