@@ -43,6 +43,7 @@ import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
 import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
+import { SUPER_CHLOR_APPLY_REFUSED, SUPER_CHLOR_HELD, SUPER_CHLOR_HOLD_NOTE, superChlorHoldUpdate, superChlorOn } from "../../../controller/AutoSwgSuperChlorHold";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
@@ -210,6 +211,47 @@ const AUTO_SWG_STEP_RETRY_MS = 5 * 60 * 1000;
 const AUTO_SWG_TIMER_MAX_MS = 2 * 24 * 60 * 60 * 1000;
 let autoSwgStepTimer: NodeJS.Timeout | undefined;
 
+// Super chlorinate on the chlorinator SWG Assist controls (see AutoSwgSuperChlorHold.ts).
+function autoSwgSuperChlorOn(): boolean {
+    try {
+        const id = sys.autoSwg.chlorinatorId;
+        if (typeof id !== 'number' || id < 0) return false;
+        const chlor = sys.chlorinators.toArray().find(c => c.id === id);
+        if (!chlor) return false;
+        return superChlorOn(state.chlorinators.getItemById(id, false), chlor.body);
+    }
+    catch (err) { return false; }
+}
+// Holds an automatic change while super chlorinate is on: recorded in the history as held, and remembered so a check is made up when the run ends.
+function holdForSuperChlor(what: string, pct: number, trigger?: AutoSwgApplyTrigger) {
+    const now = new Date().toISOString();
+    logger.info(`SWG Assist: ${what} of ${pct}% held: super chlorinate is on. A check is made up when it ends.`);
+    try {
+        appendAutoSwgHistory({ source: 'held', held: SUPER_CHLOR_HELD, trigger: trigger, algorithm: AUTO_SWG_ALGORITHM_VERSION, appliedAt: now, recommendedPct: pct, previousPct: state.autoSwg.currentPct });
+    }
+    catch (err) { logger.error(`SWG Assist: could not write the held change to the history: ${err.message}`); }
+    state.autoSwg.superChlorHeldAt = now;
+    state.autoSwg.superChlorHold = true;
+    state.autoSwg.emitEquipmentChange();
+}
+// Looks at the hold again (every 10 minutes with the dashboard alerts, at start, and with each calculation). When a run that held a change has ended, one
+// automatic check is made up shortly after (as for a check missed while njsPC was not running), and a step that came due during the run is taken.
+function updateAutoSwgSuperChlorHold() {
+    try {
+        const u = superChlorHoldUpdate(autoSwgSuperChlorOn(), state.autoSwg.superChlorHeldAt);
+        let changed = false;
+        if (state.autoSwg.superChlorHold !== u.hold) { state.autoSwg.superChlorHold = u.hold; changed = true; }
+        if (u.clearHeldAt) { state.autoSwg.superChlorHeldAt = undefined; changed = true; }
+        if (changed) state.autoSwg.emitEquipmentChange();
+        if (u.makeUp) {
+            logger.info('SWG Assist: super chlorinate ended after holding a change; making up the automatic check shortly.');
+            armAutoSwgAutoCheck(0, AUTO_SWG_AUTO_CHECK_MIN_DELAY_MS);
+            armAutoSwgStep();
+        }
+    }
+    catch (err) { logger.warn(`SWG Assist: could not update the super chlorinate hold: ${err.message}`); }
+}
+
 function clearAutoSwgStep() {
     if (autoSwgStepTimer) clearTimeout(autoSwgStepTimer);
     autoSwgStepTimer = undefined;
@@ -239,6 +281,8 @@ async function runAutoSwgStep() {
     if (Date.now() < at) { armAutoSwgStep(); return; }
     let cfg = sys.autoSwg;
     if (cfg.chlorinatorId < 0) { clearAutoSwgStep(); return; }
+    // Held while super chlorinate is on; the step stays due and is taken when the run ends (updateAutoSwgSuperChlorHold).
+    if (autoSwgSuperChlorOn()) { holdForSuperChlor('the step', pct, 'step'); return; }
     let previous = state.autoSwg.currentPct;
     let direction = pct > previous ? 'up' : 'down';
     autoSwgApplyInFlight = { pct: pct, at: Date.now() };
@@ -533,6 +577,9 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         periodDayEquivalents: result.periodDayEquivalents,
         troughAddPpm: result.troughAddPpm,
     };
+    // Check Now still calculates and shows while super chlorinate is on; nothing is applied until it ends.
+    if (autoSwgSuperChlorOn()) result.rationale.unshift(`NOTE: ${SUPER_CHLOR_HOLD_NOTE}`);
+    updateAutoSwgSuperChlorHold();
     state.autoSwg.rationale = result.rationale;
     state.autoSwg.error = undefined;
     state.autoSwg.pending = true;
@@ -567,6 +614,13 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
     if (!state.autoSwg.pending) throw new ServiceParameterError('There is no pending SWG Assist recommendation to apply. Run /state/autoSwg/recommend first.', 'autoSwg', 'pending', state.autoSwg.pending);
     if (sys.autoSwg.chlorinatorId < 0) throw new ServiceParameterError('SWG Assist is not configured with a target chlorinatorId.', 'autoSwg', 'chlorinatorId', sys.autoSwg.chlorinatorId);
     let pct = typeof pctOverride !== 'undefined' ? pctOverride : state.autoSwg.recommendedPct;
+    // Nothing is applied while super chlorinate is on: an automatic apply (the automatic check, Auto-Apply, Away) is held and made up after the run; one you
+    // ask for is refused with the reason.
+    if (autoSwgSuperChlorOn()) {
+        if (!isAutoApply) throw new ServiceParameterError(SUPER_CHLOR_APPLY_REFUSED, 'autoSwg', 'superChlor', true);
+        holdForSuperChlor(trigger === 'automatic-check' ? 'the automatic check' : 'Auto-Apply', pct, trigger);
+        return state.chlorinators.getItemById(sys.autoSwg.chlorinatorId, false);
+    }
     let previousAppliedPct = state.autoSwg.lastAppliedPct;
     let previousTargetDate = state.autoSwg.lastAppliedTargetDate;
     autoSwgApplyInFlight = { pct: pct, at: Date.now() };
@@ -1054,6 +1108,7 @@ function dismissAutoSwgOutages(alertId?: string): number {
     return marked;
 }
 function watchAutoSwg() {
+    updateAutoSwgSuperChlorHold();
     try {
         let cfg = sys.autoSwg;
         if (state.autoSwg.awayTargetFc !== cfg.awayTargetFc) state.autoSwg.awayTargetFc = cfg.awayTargetFc;
