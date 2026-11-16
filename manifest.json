@@ -115,6 +115,17 @@
       "build": true
     },
     {
+      "name": "feature/chlorinator-powerlog-stalls",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Chlorinator power log records njsPC stalls: a 1 s tick in ChlorinatorLogService measures how late it runs; past the cell power relays' latch (5 s pump relay, 10 s circuit relay) it logs an off and an on line marked cause stall. Exports noteChlorinatorRelayGap() as a hook (not called yet). Stacked on feature/chlorinator-log.",
+      "depends": [
+        "feature/chlorinator-log"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "feature/poolmath-swg-log",
       "kind": "feature",
       "status": "active",
