@@ -54,7 +54,7 @@ import { noteShareRequest } from './PoolMathArchive';
 import type { BandDecision } from './SwgAssistBand';
 import { readSuperChlorRuns } from './AutoSwgSuperChlor';
 import type { SuperChlorRun } from './AutoSwgSuperChlor';
-import { cycleGenerationPpm, readPowerEvents } from './AutoSwgCycleCount';
+import { cycleGenerationPpm, readFaultHours, readPowerEvents } from './AutoSwgCycleCount';
 import type { PowerEvent } from './ChlorinatorUsage';
 
 // How old the newest FC reading can be before the result says its projection is mostly
@@ -237,6 +237,10 @@ export interface AutoSwgParams {
     chlorCycle?: { id?: number; cycleHours: number; restartsOnPower: boolean; burstFirst: boolean };
     // The chlorinator's power events. Read from data/chlorinatorPowerLog.jsonl when not given; tests pass their own. Never recorded in the history's inputs.
     powerEvents?: PowerEvent[];
+    // The starts (ms) of the clock hours in which the cell reported a fault (CELL_FAULT, see AutoSwgCycleCount.ts): their conduction is not credited. Read
+    // from data/chlorinatorOutputLog.jsonl when not given and powerEvents is not given either (tests that pass their power events pass these too, or none).
+    // Never recorded in the history's inputs.
+    faultHours?: number[];
     // Called with the burn intervals (between consecutive FC readings) as calculated, for reports and tests. Never recorded in the history's inputs.
     onIntervals?: (rows: { t1: Date; t2: Date; gen: number; added: number; rise: number; days: number; perDay: number; suspect: boolean }[]) => void;
     // A recent fall in the chlorinator's own salt reading (see AutoSwgSaltHistory.recentDrop). Only noted in the result (saltNote); the
@@ -1173,7 +1177,11 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     const cycleSettings = cycleOn ? { cycleHours: cyc.cycleHours, restartsOnPower: cyc.restartsOnPower !== false, burstFirst: cyc.burstFirst !== false } : undefined;
     const normalSwgEvents = scRuns.length ? swgEvents.filter(ev => !scRuns.some(r => isRunEntry(ev, r))) : swgEvents;
     const normalPctAt = (ms: number): number => { const ev = swgEventAt(normalSwgEvents, new Date(ms)); return ev ? ev.pct : 0; };
-    const cycleGen = (a: number, b: number): number => b > a ? cycleGenerationPpm(powerEvents, a, b, cycleSettings, normalPctAt, ratedPpmPer24h) : 0;
+    // Clock hours in which the cell reported a fault (CELL_FAULT: low flow, very low salt, high current, low voltage, low water temperature) count nothing, as
+    // in the cell usage and the Model Bench. An hour's line is written when it ends, so a past calculation sees only the hours that had ended by then.
+    const faultHours: number[] = cycleOn ? (params.faultHours || (params.powerEvents ? [] : readFaultHours(typeof cyc.id === 'number' && cyc.id >= 0 ? cyc.id : undefined)))
+        .filter(h => isFinite(h) && h + 3600000 <= scEndMs).slice().sort((x, y) => x - y) : [];
+    const cycleGen = (a: number, b: number): number => b > a ? cycleGenerationPpm(powerEvents, a, b, cycleSettings, normalPctAt, ratedPpmPer24h, faultHours) : 0;
     // What the SWG made over [a, b]: for a burn interval (spread evenly over the day before the power log, as before; an interval that reaches into the log
     // counts its part before the log by the run window, the same basis as the cycles) ...
     const genInterval = (a: Date, b: Date): number => {
@@ -1337,6 +1345,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         const windowPpm = swgGeneratedSinceLastReading(normalSwgEvents, from, rightNow, swgStart, params.timezone);
         cycleCount = { since: from.toISOString(), cyclePpm: Math.round(cyclePpm * 100) / 100, windowPpm: Math.round(windowPpm * 100) / 100 };
         rationale.push(`Generation since ${formatLocalDateTime(from, params.timezone)} counted from the power log (${cyc.cycleHours}-h cycles, current ${cycleSettings.burstFirst ? 'first' : 'last'}): ${cyclePpm.toFixed(2)} ppm vs ${windowPpm.toFixed(2)} ppm by the run window.`);
+        const faulted = faultHours.filter(h => h + 3600000 > from.getTime() && h < rightNow.getTime()).length;
+        if (faulted) rationale.push(`${faulted} hour${faulted === 1 ? '' : 's'} in which the cell reported a fault (not generating) ${faulted === 1 ? 'is' : 'are'} not credited.`);
     }
     if (daylight) rationale.push(`Daylight weighting: day length ${daylight.dayHours.toFixed(1)}h (${params.sunriseTime}-${params.sunsetTime} ${params.timezone}); ${(daylight.share * 100).toFixed(0)}% of a day's FC consumption counted as daytime (${daylight.auto ? `the night burn is taken as ${daylight.ratio} of the day rate` : 'configured'}). Whole 24h blocks count as one day; only the partial block is weighted.`);
     if (swgMerge.localUsed > 0) {
@@ -1818,6 +1828,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     delete inputsUsed.saltDrop;
     delete inputsUsed.superChlorRuns;
     delete inputsUsed.powerEvents;
+    delete inputsUsed.faultHours;
     delete inputsUsed.onIntervals;
     delete inputsUsed.storm;
 
@@ -1880,7 +1891,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
             additions.map(a => [a.ts.getTime(), a.percent, Math.round(a.ml)]),
             swgEvents.map(e => [e.ts.getTime(), e.ppmPerDay, e.hrs, e.pct]),
             scRuns.map(r => [r.s, r.inProgress ? 0 : r.e]),
-            cycleCount ? [powerEvents.length, powerEvents[powerEvents.length - 1].t, cycleSettings.cycleHours, cycleSettings.restartsOnPower, cycleSettings.burstFirst] : 0,
+            cycleCount ? [powerEvents.length, powerEvents[powerEvents.length - 1].t, cycleSettings.cycleHours, cycleSettings.restartsOnPower, cycleSettings.burstFirst].concat(faultHours.length ? [faultHours.length, faultHours[faultHours.length - 1]] : []) : 0,
         ])),
         mostRecentFc: { value: lastFc.value, ts: lastFc.ts.toISOString() },
         mostRecentCya: cyaEvents.length ? { value: cyaEvents[cyaEvents.length - 1].value, ts: cyaEvents[cyaEvents.length - 1].ts.toISOString() } : undefined,
