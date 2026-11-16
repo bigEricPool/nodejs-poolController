@@ -30,7 +30,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import { logger } from '../logger/Logger';
 import { sys } from './Equipment';
-import { autoSwgBench } from './AutoSwgBench';
+// the bench is loaded when the source is first asked, so the pure helpers below can be tested on their own
+const bench = (): any => require('./AutoSwgBench').autoSwgBench;
 import { pathSamples } from './AutoSwgBenchCya';
 
 type Style = 'line' | 'band' | 'steps' | 'dots' | 'markers';
@@ -67,7 +68,7 @@ export function advicePointsOf(runs: any[], from: number, to: number): BenchHist
 export const benchHistorySource = {
     id: 'swgBench', name: 'SWG Assist Model Bench',
     kinds(): BenchHistoryKind[] {
-        if (!sys.autoSwg.shareCode || !autoSwgBench.getSettings().enabled) return [];
+        if (!sys.autoSwg.shareCode || !bench().getSettings().enabled) return [];
         return [
             { kind: 'phProjection', name: 'Projected pH', unit: '', group: GROUP, style: 'line', future: true, view: 'pH' },
             { kind: 'phBand', name: 'Acid Recommended to Needed pH', unit: '', group: GROUP, style: 'band', view: 'pH' },
@@ -82,18 +83,18 @@ export const benchHistorySource = {
         const out: { [kind: string]: BenchHistoryPoint[] } = {};
         if (!sys.autoSwg.shareCode) return out;
         const want = (k: string) => kinds.indexOf(k) !== -1;
-        const runs = want('phProjection') || want('csiProjection') || want('taPath') || want('acidAdvice') ? autoSwgBench.chemRuns(from, to) : [];
+        const runs = want('phProjection') || want('csiProjection') || want('taPath') || want('acidAdvice') ? bench().chemRuns(from, to) : [];
         if (want('phProjection')) out.phProjection = runPointsOf(runs, 1, from, to);
         if (want('csiProjection')) out.csiProjection = runPointsOf(runs, 2, from, to);
         if (want('taPath')) out.taPath = runPointsOf(runs, 3, from, to);
         if (want('acidAdvice')) out.acidAdvice = advicePointsOf(runs, from, to);
-        const s = autoSwgBench.getSettings().chem;
+        const s = bench().getSettings().chem;
         if (want('phBand')) out.phBand = [{ t: from, lo: s.phRecommended, hi: s.phNeeded }, { t: to, lo: s.phRecommended, hi: s.phNeeded }];
         if (want('csiBand')) out.csiBand = [{ t: from, lo: TFP_SWG_CSI.lo, hi: TFP_SWG_CSI.hi }, { t: to, lo: TFP_SWG_CSI.lo, hi: TFP_SWG_CSI.hi }];
         if (want('cyaPath')) {
             const now = Date.now();
             const cfg: any = sys.autoSwg;
-            const p = autoSwgBench.cyaInputs(cfg.gallons > 0 ? cfg.gallons : 0, now).pathAt(now);
+            const p = bench().cyaInputs(cfg.gallons > 0 ? cfg.gallons : 0, now).pathAt(now);
             const step = to - from > 60 * DAY_MS ? 24 : 6;
             out.cyaPath = pathSamples(p, from, Math.min(to, now + 7 * DAY_MS), step).map(x => ({ t: x[0], v: x[1] }));
         }
