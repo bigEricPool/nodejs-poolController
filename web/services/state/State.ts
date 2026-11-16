@@ -43,13 +43,13 @@ import { projectionLog, updateHourlyProjection, updateProjectionPoints } from ".
 import type { SaltAddition } from "../../../controller/AutoSwgSaltHistory";
 import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, poolMathArchiveSummary, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
-import { refreshPoolMathArchiveFromPage } from "../../../controller/AutoSwgArchivePage";
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
 import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
-import { onPoolMathUpdated, poolMathSyncStatus } from "../../../controller/PoolMathSync";
+import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
+import { registerBenchHistorySource } from "../../../controller/AutoSwgBenchHistorySource";
 import { ChlorinatorStateMessage } from "../../../controller/comms/messages/status/ChlorinatorStateMessage";
 import { weatherHistory } from "../../../controller/WeatherHistory";
 
@@ -311,6 +311,11 @@ async function runAutoSwgStep() {
     state.autoSwg.lastAppliedTargetInfo = undefined;
     state.autoSwg.lastAppliedStaleFcNote = undefined;
     state.autoSwg.lastAppliedFcAnomalyNote = undefined;
+    state.autoSwg.lastAppliedBandMode = undefined;
+    state.autoSwg.lastAppliedProjectedFc = undefined;
+    state.autoSwg.lastAppliedAvgConsumption = undefined;
+    state.autoSwg.lastAppliedBandReachAt = undefined;
+    state.autoSwg.lastAppliedBandStaleAt = undefined;
     state.autoSwg.lastAppliedRatingNote = undefined;
     try {
         let win = resolveAutoSwgRunWindow(cfg);
@@ -373,8 +378,8 @@ function windowKeyTime(t: string): string {
 // calculation uses, whether typed in or taken from the selected SWG schedule, to the nearest 10
 // minutes: editing the schedule counts, the daily drift of a sunrise or sunset based window does not.
 // What the calculation says about Away protection: while it is on, the vacation target and what it goes back to; for three days after it ended, what ending it did.
-function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string } {
-    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText };
+function autoSwgAwayParams(cfg: typeof sys.autoSwg): { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string; maintMultiplier?: number } {
+    if (cfg.awayActive) return { active: true, normalTargetFc: cfg.normalTargetFc, normalTargetText: cfg.normalTargetText, maintMultiplier: cfg.awayMaintMultiplier };
     const endedAt = cfg.awayEndedAt ? new Date(cfg.awayEndedAt).getTime() : NaN;
     if (cfg.awayEndedNote && !isNaN(endedAt) && Date.now() - endedAt < 3 * 86400000) return { active: false, endedNote: cfg.awayEndedNote };
     return { active: false };
@@ -391,7 +396,7 @@ function autoSwgSettingsKey(): string {
     catch (err) { /* the typed-in window is the fallback */ }
     return [
         cfg.controlMode, cfg.fcLow, cfg.fcHigh, cfg.bandBiasPerDay, cfg.bandBoostPeriods, cfg.bandPeakCap, cfg.bandIntegral, cfg.bandScaledBias, cfg.effectiveTargetFc, cfg.targetPeriodsAbove, cfg.targetPeriodsBelow, cfg.newTargetDateThresholdPpm,
-        cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus,
+        cfg.windowDays, cfg.gallons, cfg.swgLbsPerDay, cfg.timezone, cfg.daytimeLossSharePct, cfg.creditChlorineAdditions, cfg.fcAnomalyTolerancePpm, cfg.projectionWeight, cfg.projectionTaperStartDays, cfg.projectionTaperEndDays, cfg.overshootPpmPerDay, cfg.protectOvernightLow, cfg.nightBurnRatio, cfg.burnTempAdjust, cfg.stormResponseEnabled, cfg.stormMaxExtraPct, cfg.awayStatus, cfg.awayMaintMultiplier,
         cfg.shareCode, cfg.poolName, cfg.scheduleId, windowKeyTime(start), windowKeyTime(stop)
     ].join('|');
 }
@@ -517,7 +522,17 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
     // "match demand" is kept as maintenancePct for context only (it's also
     // still spelled out in the rationale text below).
     state.autoSwg.recommendedPct = result.recommendedPctForTarget;
-    state.autoSwg.maintenancePct = result.recommendedPct;
+    // With the Trip Maintenance Multiplier, the flat % (maintenance x multiplier) is what Away protection holds and what a storm or outage extra steps back to.
+    state.autoSwg.maintenancePct = result.awayFlat ? result.awayFlat.basePct : result.recommendedPct;
+    // For choosing the Trip Maintenance Multiplier (shown in the Vacation group whether or not Away protection is on).
+    if (result.awayBasis) {
+        state.autoSwg.awayBurnPpmPerDay = result.awayBasis.burnPpmPerDay;
+        state.autoSwg.awayMaintenancePct = result.awayBasis.maintenancePct;
+        state.autoSwg.awayBasisAt = result.awayBasis.asOf;
+        state.autoSwg.awaySuggestedMultiplier = result.awayBasis.suggestedMultiplier;
+        state.autoSwg.awayPeakBurnPpmPerDay = result.awayBasis.peakBurnPpmPerDay;
+        state.autoSwg.awayPeakBurnAt = result.awayBasis.peakAt;
+    }
     state.autoSwg.avgConsumptionPpmPerDay = result.avgConsumptionPpmPerDay;
     state.autoSwg.avgConsumptionSummary = result.avgConsumptionSummary;
     state.autoSwg.avgWindowStart = result.avgWindowStart;
@@ -553,6 +568,8 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         projectedFcBeforeStorm: result.projectedFcBeforeStorm,
         bandMode: result.bandMode,
         bandCoasting: result.bandCoasting,
+        bandReachAt: result.bandReachAt,
+        bandStaleAt: result.bandStaleAt,
         targetMarginPpm: result.targetMarginPpm,
         burnTempNote: result.burnTempNote,
         runHoursInPeriod: result.runHoursInPeriod,
@@ -614,6 +631,13 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
     // state.autoSwg.pending, which only that function sets) there's no date to record, and
     // none is invented -- so no refine is offered and no step is scheduled off it.
     state.autoSwg.bandCoasting = sys.autoSwg.bandActive && !!(state.autoSwg.details && state.autoSwg.details.bandCoasting);
+    // What range control did in THIS calculation, kept with the applied % for the status line under "SWG Assist applied ..." (a later Check Now does not change it).
+    const appliedBand = sys.autoSwg.bandActive && state.autoSwg.details && state.autoSwg.details.bandMode ? state.autoSwg.details : undefined;
+    state.autoSwg.lastAppliedBandMode = appliedBand ? appliedBand.bandMode : undefined;
+    state.autoSwg.lastAppliedProjectedFc = appliedBand ? state.autoSwg.projectedCurrentFc : undefined;
+    state.autoSwg.lastAppliedAvgConsumption = appliedBand ? state.autoSwg.avgConsumptionPpmPerDay : undefined;
+    state.autoSwg.lastAppliedBandReachAt = appliedBand ? appliedBand.bandReachAt : undefined;
+    state.autoSwg.lastAppliedBandStaleAt = appliedBand ? appliedBand.bandStaleAt : undefined;
     state.autoSwg.lastAppliedTargetFc = typeof state.autoSwg.pendingTargetFc === 'number' ? state.autoSwg.pendingTargetFc : sys.autoSwg.effectiveTargetFc;
     state.autoSwg.lastAppliedTargetDate = state.autoSwg.pendingTargetDate;
     state.autoSwg.lastAppliedPeriodsKey = state.autoSwg.pendingPeriodsKey;
@@ -794,20 +818,13 @@ function autoSwgResponse(skipped?: string) {
     return skipped ? Object.assign({}, data, { skipped: skipped }) : data;
 }
 
-// Called with what each read of the PoolMath share page found: that page is the freshest data,
-// so it overwrites the archived readings for the period it covers (PoolMath entries can be edited
-// or deleted). A no-op until the archive has been pulled for this share code.
+// Called with what each read of the PoolMath share page found. The page is no longer written into the archive: the logging layer's own refresh
+// (PoolMathSync.ts, every 45 minutes by PoolMath log id) keeps the archive exact, including edits and deletions, and the page's rounded display values
+// must not replace its exact ones. A calculation still uses the page for its newest entries (they win over the archive's for the period the page
+// covers), and a read of the page asks for a refresh now, so the archive catches up too; the read is coalesced and rate-limited there, and not waited for.
 function refreshAutoSwgArchiveFromPage(page: PageReadings) {
-    let cfg = sys.autoSwg;
-    let r = refreshPoolMathArchiveFromPage(cfg.shareCode, cfg.poolName || undefined, page);
-    if (r && (r.updated || r.added || r.removed)) {
-        logger.info(`SWG Assist: PoolMath history archive refreshed from the share page: ${r.updated} updated, ${r.added} added, ${r.removed} removed.`);
-        if (r.added) autoSwgBench.onReadings(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
-        let sum = poolMathArchiveSummary();
-        state.autoSwg.archiveCount = sum.count;
-        state.autoSwg.archiveOldest = sum.oldest;
-        state.autoSwg.emitEquipmentChange();
-    }
+    if (!page.coverageStart || !sys.poolMath.shareCode) return;
+    requestPoolMathRefresh().catch(err => logger.warn(`SWG Assist: could not ask for a PoolMath refresh: ${err.message}`));
 }
 
 // The PoolMath archive as the reports use it, alongside what the share page lists (empty until the archive has
@@ -1165,6 +1182,8 @@ function showAutoSwgArchiveStatus() {
     a.emitEquipmentChange();
 }
 export function registerAutoSwgPoolMath() {
+    // the Model Bench's water balance in the History panel, where this build has one
+    registerBenchHistorySource();
     // The SWG is dead-manned to the Pool circuit: it only has power with its own relay (the schedule SWG Assist follows) AND the Pool on. The pool's logging
     // records each change of that as a power event (from which the cell's 3-hour cycles are counted); other chlorinators keep the default (body on).
     setChlorinatorPowerSource(chlor => {
@@ -1188,7 +1207,8 @@ export function registerAutoSwgPoolMath() {
     showAutoSwgArchiveStatus();
 }
 
-// The SWG % Away protection may apply: the recommendation (the glide to the target you set, plus what a storm or outage adds, which the calculation
+// The SWG % Away protection may apply. With the Trip Maintenance Multiplier on, the maintenancePct is the flat % (see runAutoSwgRecommendation), so this is that
+// plus any storm or outage extra. Otherwise: the recommendation (the glide to the target you set, plus what a storm or outage adds, which the calculation
 // limits to stormMaxExtraPct points), but never below the maintenance %. Away protection can only add chlorine.
 function awayBoundedPct(): number | undefined {
     let maintenance = state.autoSwg.maintenancePct, recommended = state.autoSwg.recommendedPct;
@@ -1221,9 +1241,14 @@ async function runAutoSwgAutoCheck() {
     finally {
         armAutoSwgAutoCheck();
         runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
-        // the Model Bench freezes its variants' fits; it only reads and writes its own files
-        autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
+        benchCheck();
     }
+}
+
+// The Model Bench freezes its variants' fits and refreshes its CYA and acid advice: after the automatic check and after Check Now, Refine, Refresh and Apply,
+// and Apply. It only reads and writes its own files, is not waited for, and skips itself while busy.
+function benchCheck() {
+    autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
 }
 
 export class StateRoute {
@@ -1254,6 +1279,11 @@ export class StateRoute {
             state.autoSwg.lastAppliedTargetInfo = undefined;
             state.autoSwg.lastAppliedStaleFcNote = undefined;
             state.autoSwg.lastAppliedFcAnomalyNote = undefined;
+            state.autoSwg.lastAppliedBandMode = undefined;
+            state.autoSwg.lastAppliedProjectedFc = undefined;
+            state.autoSwg.lastAppliedAvgConsumption = undefined;
+            state.autoSwg.lastAppliedBandReachAt = undefined;
+            state.autoSwg.lastAppliedBandStaleAt = undefined;
             state.autoSwg.lastAppliedRatingNote = undefined;
             // A human just acted directly on the chlorinator -- nothing unreviewed left to warn about.
             state.autoSwg.lastAutoApplyLargeChange = false;
@@ -1858,6 +1888,29 @@ export class StateRoute {
         app.get('/state/poolMath', (req, res, next) => {
             try { return res.status(200).send(poolMathSyncStatus()); } catch (err) { next(err); }
         });
+        // Every kind of data in the PoolMath archive: [{ kind, name, unit, group, count, first, last, selected }], selected = shown as history.
+        app.get('/state/poolMath/history/kinds', (req, res, next) => {
+            try { return res.status(200).send(poolMathHistoryKinds()); } catch (err) { next(err); }
+        });
+        // PoolMath history: ?kinds=fc,ph,chem:14 (default: the kinds shown as history) &days=N (default: all archived) ->
+        // { from, to, series: { <kind>: [{ t, v?, text? }] } }, times in ms, oldest first; kinds with no data are left out.
+        app.get('/state/poolMath/history', (req, res, next) => {
+            try {
+                const kinds = typeof req.query.kinds === 'string' && req.query.kinds.trim() ? req.query.kinds.split(',').map(k => k.trim()).filter(k => k) : undefined;
+                let days: number | undefined;
+                if (typeof req.query.days !== 'undefined') {
+                    days = parseFloat(req.query.days as string);
+                    if (!Number.isFinite(days) || days <= 0) return res.status(400).send({ error: 'days must be a positive number.' });
+                }
+                return res.status(200).send(poolMathHistory(kinds, days));
+            } catch (err) { next(err); }
+        });
+        // Read PoolMath now: { full: true } pulls the whole history again, otherwise the newest entries. Answers when the read is done;
+        // a read within a few minutes of the last one (a day, for a full pull) answers with that one's result and fresh: false.
+        app.put('/state/poolMath/refresh', async (req, res, next) => {
+            try { return res.status(200).send(await requestPoolMathRefresh({ full: !!(req.body && req.body.full === true) })); }
+            catch (err) { next(err); }
+        });
         // this ../setChlor should really be EOL for PUT /state/chlorinator above
         app.put('/state/chlorinator/setChlor', async (req, res, next) => {
             try {
@@ -1998,6 +2051,10 @@ export class StateRoute {
         app.get('/state/autoSwg/bench/cya', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.cyaReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
         });
+        // The bench's water balance: pH and CSI projections, the fits and scores, the acid advice and the dose checks (advisory only).
+        app.get('/state/autoSwg/bench/chem', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.chemReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
+        });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {
@@ -2061,6 +2118,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('new');
                 await applyIfAutoApplyEnabled(skipped, 'check-now');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2080,6 +2138,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('refine');
                 await applyIfAutoApplyEnabled(skipped, 'refine');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2098,6 +2157,7 @@ export class StateRoute {
                 if (!sys.autoSwg.automationAvailable) throw new ServiceParameterError('Auto-Apply is not available. Use Check Now and apply the recommendation yourself.', 'autoSwg', 'autoApplyEnabled', false);
                 let skipped = await runAutoSwgRecommendation('auto');
                 await applyIfAutoApplyEnabled(skipped, 'refresh-and-apply');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2111,6 +2171,7 @@ export class StateRoute {
             try {
                 let pctOverride = typeof req.body.poolSetpoint !== 'undefined' ? parseInt(req.body.poolSetpoint, 10) : undefined;
                 let schlor = await applyAutoSwgRecommendation(false, pctOverride);
+                benchCheck();
                 return res.status(200).send({ chlorinator: schlor.get(true), autoSwg: state.autoSwg.get(true) });
             }
             catch (err) { next(err); }
@@ -2251,4 +2312,5 @@ export class StateRoute {
             res.status(200).send(state.getState(req.params.section));
         });
     }
-}
+}
+

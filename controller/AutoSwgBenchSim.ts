@@ -238,6 +238,7 @@ export interface SimSettings {
     runWindow: 'sun' | 'sunOffset';         // the SWG relay schedule: sunrise to sunset, or 2 h after sunrise to 2 h before sunset
     cycle: CycleSettings;
     testNoise: number;                      // test error (ppm, one standard deviation) before rounding to 0.5
+    tfpMin?: number;                        // TFP's minimum FC for an SWG pool at the CYA (tfpSwgFc in AutoSwgBenchCya.ts); belowTfpMin counts the hours under it
 }
 export const DEFAULT_SIM_SETTINGS: SimSettings = {
     low: 7, high: 10, windowDays: 14, projectionWeight: 0.65, trim: 0.2, biasPerDay: 0.05, guardPerDay: 0.3, guardCap: 2,
@@ -527,7 +528,7 @@ export function simulate(data: SimData, cal: SimCalendar, s: SimSettings, projec
 // ---------------------------------------------------------------- the outcome table
 
 export interface SimOutcome {
-    in710: number; below7: number; below6: number; above10: number; above105: number;
+    in710: number; below7: number; below6: number; belowTfpMin: number; above10: number; above105: number;
     low: number; high: number; swing: number; drift: number;
     changesPerWeek: number; changeSize: number; meanChangePerCheck: number; typicalPct: number;
 }
@@ -548,6 +549,7 @@ export function outcome(run: SimRun, s: SimSettings, a: number = 0, b?: number):
     for (let k = 1; k < ds.length; k++) { const c = Math.abs(ds[k] - ds[k - 1]); step += c; if (c > 0) { changes++; size += c; } }
     return {
         in710: pctIn(x => x >= s.low && x <= s.high), below7: pctIn(x => x < s.low), below6: pctIn(x => x < s.low - 1),
+        belowTfpMin: typeof s.tfpMin === 'number' ? pctIn(x => x < s.tfpMin) : 0,
         above10: pctIn(x => x > s.high), above105: pctIn(x => x > s.high + 0.5),
         low: Math.min(...F), high: Math.max(...F),
         swing: blocks.length ? blocks.reduce((p, x) => p + Math.max(...x) - Math.min(...x), 0) / blocks.length : Math.max(...F) - Math.min(...F),

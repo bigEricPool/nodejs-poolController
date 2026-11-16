@@ -3,13 +3,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fx = vi.hoisted(() => ({
-    pumpBits: 0, swgCircuitOn: false, bodyOn: true, lastComm: 0,
+    pumpBits: 0, swgCircuitOn: false, bodyOn: true, lastComm: 0, infos: [] as string[],
     chlor: { id: 1, body: 0, powerRelays: [] as { connectionId: string; deviceBinding: string }[], powerConfirmByComms: false } as any,
 }));
 const REM = 'rem-1';
 const LOW = { connectionId: REM, deviceBinding: 'i2c:1:1:1' }, SWG = { connectionId: REM, deviceBinding: 'i2c:1:2:4' };
 
-vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: () => {}, verbose: () => {}, debug: () => {}, silly: () => {} } }));
+vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: (m: string) => { fx.infos.push(m); }, verbose: () => {}, debug: () => {}, silly: () => {} } }));
 vi.mock('../../controller/Equipment', () => ({ sys: {
     pumps: {
         get: () => [{ id: 50 }],
@@ -26,12 +26,12 @@ vi.mock('../../controller/State', () => ({ state: {
 } }));
 vi.mock('../../controller/Errors', () => ({ ServiceParameterError: class extends Error { } }));
 
-import { checkCellSettings, chlorinatorPower, decidePower, relayIsOn, setChlorinatorPowerSource } from '../../controller/ChlorinatorLogService';
+import { checkCellSettings, chlorinatorCommsExpected, chlorinatorPower, decidePower, relayIsOn, setChlorinatorPowerSource } from '../../controller/ChlorinatorLogService';
 
 const T = Date.parse('2026-11-13T15:00:00.000Z');
 const old = () => ({ on: true as boolean | undefined, by: 'body' as const });
 beforeEach(() => {
-    fx.pumpBits = 0; fx.swgCircuitOn = false; fx.bodyOn = true; fx.lastComm = 0;
+    fx.pumpBits = 0; fx.swgCircuitOn = false; fx.bodyOn = true; fx.lastComm = 0; fx.infos = []; fx.chlor.id = 1;
     fx.chlor.powerRelays = []; fx.chlor.powerConfirmByComms = false;
     setChlorinatorPowerSource(undefined);
 });
@@ -105,5 +105,31 @@ describe('the settings check', () => {
         expect(checkCellSettings({ powerRelays: null }).powerRelays).toEqual([]);
         expect(() => checkCellSettings({ powerRelays: [{ connectionId: REM }] })).toThrow();
         expect(() => checkCellSettings({ powerRelays: [LOW, LOW, LOW, LOW, LOW] })).toThrow();
+    });
+});
+
+describe('chlorinatorCommsExpected', () => {
+    it('expects answers when no relays are set, or a relay is not known', () => {
+        fx.chlor.id = 11;
+        expect(chlorinatorCommsExpected(fx.chlor, T)).toBe(true);
+        fx.chlor.powerRelays = [LOW, { connectionId: REM, deviceBinding: 'i2c:9:9:9' }];
+        expect(chlorinatorCommsExpected(fx.chlor, T)).toBe(true);
+        expect(fx.infos).toEqual([]);
+    });
+    it('does not expect answers while a relay is off or for 30 s after they all come on, and logs each change once', () => {
+        fx.chlor.id = 12;
+        fx.chlor.powerRelays = [LOW, SWG];
+        fx.pumpBits = 1;   // pump on low, SWG relay off
+        expect(chlorinatorCommsExpected(fx.chlor, T)).toBe(false);
+        expect(chlorinatorCommsExpected(fx.chlor, T + 10000)).toBe(false);
+        expect(fx.infos).toHaveLength(1);
+        fx.swgCircuitOn = true;
+        expect(chlorinatorCommsExpected(fx.chlor, T + 20000)).toBe(false);
+        expect(chlorinatorCommsExpected(fx.chlor, T + 49000)).toBe(false);
+        expect(chlorinatorCommsExpected(fx.chlor, T + 50000)).toBe(true);
+        expect(fx.infos).toHaveLength(2);
+        fx.pumpBits = 0;   // the pump stops, so the dead-man drops the cell
+        expect(chlorinatorCommsExpected(fx.chlor, T + 60000)).toBe(false);
+        expect(fx.infos).toHaveLength(3);
     });
 });

@@ -1892,6 +1892,10 @@ export class PoolMathSettings extends EqItem {
     public set gallons(val: number) { this.setDataVal('gallons', val > 0 ? val : 0); }
     public get swgLbsPerDay(): number { return this.data.swgLbsPerDay > 0 ? this.data.swgLbsPerDay : 0; }
     public set swgLbsPerDay(val: number) { this.setDataVal('swgLbsPerDay', val > 0 ? val : 0); }
+    // The kinds of PoolMath data shown as history (kind ids, see PoolMathArchive.historyKindsOf); undefined means the defaults
+    // (PoolMathSync.DEFAULT_HISTORY_KINDS). Only what is shown: everything PoolMath sends is archived whatever this says.
+    public get historyKinds(): string[] | undefined { return Array.isArray(this.data.historyKinds) ? this.data.historyKinds.filter(k => typeof k === 'string') : undefined; }
+    public set historyKinds(val: string[] | undefined) { this.setDataVal('historyKinds', Array.isArray(val) ? val.slice() : undefined); }
 }
 export class ValveCollection extends EqItemCollection<Valve> {
     constructor(data: any, name?: string) { super(data, name || "valves"); }
@@ -2586,6 +2590,10 @@ export class AutoSwg extends EqItem {
         // The Target FC used while Away protection is on (the vacation target). The normal Target FC is untouched and applies again when Away protection ends.
         if (typeof this.data.awayTargetFc !== 'number') this.data.awayTargetFc = (typeof this.data.targetFc === 'number' ? this.data.targetFc : 9) + 2;
         if (typeof this.data.awayEndedAt === 'undefined') this.data.awayEndedAt = '';
+        // Trip Maintenance Multiplier: while Away protection is on, the SWG runs at the maintenance % (the burn over the averaging window, as of the newest FC
+        // reading, so it stays put while no one tests) times this, held flat, with the storm and outage extra on top; there is no glide to the vacation target.
+        // 0 = the earlier Away behavior (the glide to the Vacation Target FC). 1 to 3.
+        if (typeof this.data.awayMaintMultiplier !== 'number') this.data.awayMaintMultiplier = 2;
         // Automation also needs a Tune that was run and accepted (applied, or accepted as "your settings look good"). A Tune that was
         // applied before this existed counts.
         if (typeof this.data.tuneAcceptedAt === 'undefined' && typeof this.data.lastTuneAppliedAt !== 'undefined') this.data.tuneAcceptedAt = this.data.lastTuneAppliedAt;
@@ -2858,6 +2866,9 @@ export class AutoSwg extends EqItem {
     // The vacation target: the Target FC the plan uses while Away protection is on. Target FC itself is not changed by it.
     public get awayTargetFc(): number { return typeof this.data.awayTargetFc === 'number' ? this.data.awayTargetFc : this.data.targetFc + 2; }
     public set awayTargetFc(val: number) { this.setDataVal('awayTargetFc', val); }
+    // 0 (off: the glide to the vacation target) or 1 to 3; see the default above.
+    public get awayMaintMultiplier(): number { const m = this.data.awayMaintMultiplier; return typeof m === 'number' && isFinite(m) ? (m <= 0 ? 0 : Math.max(1, Math.min(3, m))) : 2; }
+    public set awayMaintMultiplier(val: number) { const m = typeof val === 'number' ? val : parseFloat(val as any); if (isFinite(m)) this.setDataVal('awayMaintMultiplier', m <= 0 ? 0 : Math.round(Math.max(1, Math.min(3, m)) * 100) / 100); }
     // The target the calculation uses now: the vacation target while Away protection is on, otherwise the Target FC.
     public get effectiveTargetFc(): number { return this.awayActive ? this.awayTargetFc : this.normalTargetFc; }
     // Records that Away protection ended and what that did (including a Target FC put back), shown in the next calculations for a few days and in the status line.

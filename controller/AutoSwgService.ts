@@ -49,13 +49,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import * as https from 'https';
 import { logger } from '../logger/Logger';
-import { bandDecision } from './SwgAssistBand';
+import { BAND_RELEASE_PPM, BAND_STALE_DAYS, bandDecision } from './SwgAssistBand';
 import { noteShareRequest } from './PoolMathArchive';
 import type { BandDecision } from './SwgAssistBand';
 
 // How old the newest FC reading can be before the result says its projection is mostly
 // extrapolation.
 const STALE_FC_DAYS = 3;
+// The suggested Trip Maintenance Multiplier (AutoSwgResult.awayBasis): how far back to look for the highest running average, and the margin on top of it. 30 days, no margin (user, 2026-11-14): 60 days reached the summer burn (1.80 ppm/day against 0.54) and suggested the cap of 3.
+const AWAY_SUGGEST_LOOKBACK_DAYS = 30;
+const AWAY_SUGGEST_MARGIN = 0;
 
 // Default for params.fcAnomalyTolerancePpm: an FC rise that the SWG output and logged additions fall
 // short of explaining by more than this many ppm (a test varies by about a ppm) marks the interval
@@ -67,17 +70,38 @@ const ANOMALY_TOLERANCE_PPM = 2;
 // can be before the calculation warns.
 const SWG_RATING_TOLERANCE = 0.15;
 
-// The range shown for what the next FC test is likely to read (AutoSwgResult.projectedFcRange). Its spread is how far the
-// projection has missed the FC readings that followed it over the last FC_RANGE_LOOKBACK_DAYS (the same weighting applied to each
-// interval between two readings, which needs no replay), so it includes the variation of the test itself and of real day-to-day consumption -- on the pool this was
-// built on, that variation is most of the miss, and the miss barely grows with the gap between tests. A small term grows the spread
-// with the age of the last reading. FC_RANGE_Z gives about 90% on that pool's history (the Projection Accuracy report shows how often
-// the range held on yours). With fewer than FC_RANGE_MIN_INTERVALS intervals to measure it from, FC_RANGE_DEFAULT_SD is used.
+// The range shown for what the next FC test is likely to read (AutoSwgResult.projectedFcRange). Its half-width is the 90th
+// percentile of how far the projection missed the FC readings that followed it over the last FC_RANGE_LOOKBACK_DAYS, each interval
+// projected walk-forward (with the average and weighting a calculation would have used then, see computeRecommendation), so it
+// includes the variation of the test itself and of real day-to-day consumption. A small term grows it with the age of the last
+// reading. The percentile is taken from the misses themselves rather than from z times their standard deviation: the misses have
+// heavy tails (a few 3 ppm misses among many under 1), so 1.97 standard deviations held about 93-100% of the time on the pool this
+// was built on, not the 90% the card states. FC_RANGE_Z still scales the default spread and the growth term. With fewer than
+// FC_RANGE_MIN_INTERVALS intervals to measure it from, FC_RANGE_DEFAULT_SD is used.
 const FC_RANGE_LOOKBACK_DAYS = 90;
 const FC_RANGE_MIN_INTERVALS = 6;
 const FC_RANGE_DEFAULT_SD = 1.8;
 const FC_RANGE_GROWTH_PPM_PER_DAY = 0.1;
 const FC_RANGE_Z = 1.97;
+const FC_RANGE_QUANTILE = 0.9;
+
+// The half-width of the range for the next test from the walk-forward misses (projected minus measured) and the age of the last reading
+// in days. baseHalfWidth is the 90th percentile of |miss| (interpolated between the nearest ranks), or FC_RANGE_Z x FC_RANGE_DEFAULT_SD
+// when there are too few misses; the growth term is added in quadrature. sd is the root mean square miss combined with the growth, for
+// reference.
+export function fcRangeHalfWidth(misses: number[], elapsedDays: number): { halfWidth: number; baseHalfWidth: number; sd: number; basis: 'history' | 'default' } {
+    const growth = FC_RANGE_GROWTH_PPM_PER_DAY * Math.max(0, elapsedDays);
+    const history = misses.length >= FC_RANGE_MIN_INTERVALS;
+    let base: number, baseSd: number;
+    if (history) {
+        const abs = misses.map(m => Math.abs(m)).sort((a, b) => a - b);
+        const k = (abs.length - 1) * FC_RANGE_QUANTILE, lo = Math.floor(k), hi = Math.ceil(k);
+        base = abs[lo] + (abs[hi] - abs[lo]) * (k - lo);
+        baseSd = Math.sqrt(misses.reduce((a, m) => a + m * m, 0) / misses.length);
+    }
+    else { base = FC_RANGE_Z * FC_RANGE_DEFAULT_SD; baseSd = FC_RANGE_DEFAULT_SD; }
+    return { halfWidth: Math.sqrt(base * base + Math.pow(FC_RANGE_Z * growth, 2)), baseHalfWidth: base, sd: Math.sqrt(baseSd * baseSd + growth * growth), basis: history ? 'history' : 'default' };
+}
 
 // The most the target is ever raised by (see AutoSwgParams.overshootPpmPerDay and AutoSwgResult.targetMarginPpm).
 const OVERSHOOT_MARGIN_CAP_PPM = 1;
@@ -116,6 +140,22 @@ export function projectionWeight(base: number, days: number, start: number, end:
     return b * (end - days) / (end - start);
 }
 
+// When the projected FC reaches `level` ppm with no more chlorine made from `now` on (the SWG held at 0%): the first hour from now at which the projection, worked out as a
+// calculation does (the last reading plus the weighted modelled change, with the same day-equivalents and taper), is at or under it. Undefined when it does not within
+// `maxDays` (default 30), for example when the taper has stopped crediting any consumption.
+export function coastReachTime(o: { now: Date; lastFcTs: Date; lastFcValue: number; generated: number; added: number; avgPerDay: number; baseWeight: number; taperStart: number; taperEnd: number;
+    level: number; dayEq: (a: Date, b: Date) => number; maxDays?: number }): Date | undefined {
+    const maxHours = Math.round((typeof o.maxDays === 'number' ? o.maxDays : 30) * 24);
+    for (let h = 0; h <= maxHours; h++) {
+        const t = new Date(o.now.getTime() + h * 3600000);
+        const elapsed = (t.getTime() - o.lastFcTs.getTime()) / 86400000;
+        const w = projectionWeight(o.baseWeight, elapsed, o.taperStart, o.taperEnd);
+        const proj = o.lastFcValue + w * (o.generated - o.avgPerDay * o.dayEq(o.lastFcTs, t)) + o.added;
+        if (proj <= o.level) return t;
+    }
+    return undefined;
+}
+
 export interface AutoSwgParams {
     shareCode: string;
     poolName?: string;
@@ -133,7 +173,9 @@ export interface AutoSwgParams {
     targetPeriodsBelow: number;
     // Away protection, for the explanation: while it is on, the Target FC is the vacation target (and goes back to originalTargetFc when it ends); for a few days
     // after it ended, what ending it did.
-    away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string };
+    // maintMultiplier (1 to 3; 0 or unset = off): while Away protection is on, the % is the maintenance % as of the newest FC reading times this, held flat, plus
+    // the storm and outage extra (within storm.maxExtraPct); the glide to the vacation target is not used. See awayFlat in the result.
+    away?: { active: boolean; normalTargetFc?: number; normalTargetText?: string; endedNote?: string; maintMultiplier?: number };
     // Range control (see SwgAssistBand.ts): when set, the % keeps FC between `low` and `high` instead of steering to `targetFc`, which is then only the middle of the range.
     // Not used while Away protection is on. `coasting` is the state the last applied decision left (FC above the range, SWG held at 0%).
     band?: { low: number; high: number; trim?: number; biasPerDay?: number; guardPerDay?: number; guardCap?: number; boostPeriods?: number; coasting?: boolean; peakCap?: boolean; integral?: number; scaledBias?: boolean };
@@ -214,11 +256,19 @@ export interface AutoSwgResult {
     projectedCurrentFc: number;
     bandMode?: 'coast' | 'boost' | 'hold';   // range control only: what it did (held the maintenance %, boosted toward the middle, or held the SWG at 0% above the range)
     bandCoasting?: boolean;                  // range control only: the coasting state to keep for the next decision
+    bandReachAt?: string;                    // range control, held at 0% above the range: ISO time the projection reaches the release level (the top less BAND_RELEASE_PPM) with no more chlorine made; absent when it does not within 30 days
+    // Away protection with the Trip Maintenance Multiplier: the maintenance % as of the newest FC reading (and the burn behind it), the multiplier, the flat %
+    // (maintenance x multiplier, rounded) and the storm or outage extra on top of it. recommendedPctForTarget is basePct + extraPct (at most 100).
+    awayFlat?: { maintenancePct: number; burnPpmPerDay: number; multiplier: number; basePct: number; extraPct: number; asOf: string };
+    // On every check: the burn and maintenance % (one decimal) as of the newest FC reading (asOf), and the suggested Trip Maintenance Multiplier with the
+    // highest running average over the last AWAY_SUGGEST_LOOKBACK_DAYS days (peakBurnPpmPerDay, at the reading peakAt) it came from.
+    awayBasis?: { burnPpmPerDay: number; maintenancePct: number; asOf: string; peakBurnPpmPerDay: number; peakAt: string; suggestedMultiplier: number };
+    bandStaleAt?: string;                    // the same: ISO time the last reading is BAND_STALE_DAYS old, when the hold ends whatever the projection says
     fcModelChange: number;           // the modelled FC change since the last reading, before weighting (generated minus consumed)
     fcAdded: number;                 // liquid chlorine added since the last reading (ppm)
     projectionWeight: number;       // the weight applied to the modelled change
     // Where the next FC test is likely to read (about 90%): the projection plus or minus how far it has recently missed. See FC_RANGE_Z.
-    projectedFcRange: { low: number; high: number; sd: number; basis: 'history' | 'default'; intervals: number };
+    projectedFcRange: { low: number; high: number; sd: number; halfWidth?: number; basis: 'history' | 'default'; intervals: number };   // halfWidth: the projection to low/high (before low is held at 0); sd: root mean square miss with the growth, for reference
     targetMarginPpm: number;         // how far above the target the % for the target was aimed (0 = at the target itself); see AutoSwgParams.overshootPpmPerDay
     burnTempNote?: string;           // set when the water temperature adjustment was asked for: what it did or why it did nothing
     saltNote?: string;               // set when the chlorinator's salt reading fell noticeably (dilution by rain or a water change); informational, nothing is adjusted unless stormApplied
@@ -411,10 +461,9 @@ interface ParsedCards {
     tempEvents: FcEvent[];      // water temperature logged with a test (value is the temperature, in the units it was logged in)
 }
 
-// What a read of the share page found, for refreshing the history archive (see
-// AutoSwgArchivePage.refreshPoolMathArchiveFromPage): the test readings it lists and the
-// time its oldest entry of any kind goes back to -- everything newer is what the page vouches
-// for, so edits and deletions made in PoolMath within that span show up here.
+// What a read of the share page found: the test readings it lists and the time its oldest entry of any kind goes back to -- everything newer is
+// what the page vouches for, so edits and deletions made in PoolMath within that span show up in a calculation. (It is no longer written into the
+// history archive: the logging layer's own refresh, PoolMathSync.ts, keeps that exact.)
 export interface PageReadings {
     coverageStart?: Date;
     fc: { ts: Date; value: number }[];
@@ -1087,39 +1136,48 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     }
 
     const rightNow = params.asOf ? new Date(params.asOf) : new Date();
-    let windowStart = new Date(rightNow.getTime() - params.windowDays * 86400000);
-    // Require at least MIN_FC_READINGS_IN_WINDOW readings so the average spans
-    // more than a single interval. If the configured window (which ends at
-    // calculation time) holds fewer, reach back to the Nth-most-recent reading.
-    const readingsInWindow = fcEvents.filter(e => e.ts.getTime() >= windowStart.getTime() && e.ts.getTime() <= rightNow.getTime()).length;
-    const windowExtended = readingsInWindow < MIN_FC_READINGS_IN_WINDOW && fcEvents.length >= MIN_FC_READINGS_IN_WINDOW;
-    if (windowExtended) windowStart = fcEvents[fcEvents.length - MIN_FC_READINGS_IN_WINDOW].ts;
-    const windowDaysUsed = windowExtended ? (rightNow.getTime() - windowStart.getTime()) / 86400000 : params.windowDays;
-    let weightedTotal = 0;
-    let coveredDays = 0;
-    const suspects: typeof intervals = [];
-    let uncoveredLeftOut = 0;
-    const overlapOf = (iv: { t1: Date; t2: Date }): number => {
-        const clipStart = new Date(Math.max(iv.t1.getTime(), windowStart.getTime()));
-        const clipEnd = new Date(Math.min(iv.t2.getTime(), rightNow.getTime()));
-        return clipEnd.getTime() > clipStart.getTime() ? dayEquivalents(clipStart, clipEnd) : 0;
+    // The running average as it stood at `end`, from the readings logged by then (intervals that end after it are not known yet). The live
+    // calculation uses it at rightNow; the range for the next test (below) uses it at each past reading, which is what a calculation run then
+    // would have used -- the same walk-forward the Projection Accuracy report does with a full calculation per reading.
+    const averageAsOf = (end: Date) => {
+        const endMs = end.getTime();
+        let start = new Date(endMs - params.windowDays * 86400000);
+        // Require at least MIN_FC_READINGS_IN_WINDOW readings so the average spans
+        // more than a single interval. If the configured window (which ends at
+        // calculation time) holds fewer, reach back to the Nth-most-recent reading.
+        const known = fcEvents.filter(e => e.ts.getTime() <= endMs);
+        const inWindow = known.filter(e => e.ts.getTime() >= start.getTime()).length;
+        const extended = inWindow < MIN_FC_READINGS_IN_WINDOW && known.length >= MIN_FC_READINGS_IN_WINDOW;
+        if (extended) start = known[known.length - MIN_FC_READINGS_IN_WINDOW].ts;
+        const overlap = (iv: { t1: Date; t2: Date }): number => {
+            const clipStart = new Date(Math.max(iv.t1.getTime(), start.getTime()));
+            const clipEnd = new Date(Math.min(iv.t2.getTime(), endMs));
+            return clipEnd.getTime() > clipStart.getTime() ? dayEquivalents(clipStart, clipEnd) : 0;
+        };
+        let total = 0, covered = 0, uncovered = 0;
+        const flagged: typeof intervals = [];
+        for (const iv of intervals) {
+            if (iv.t2.getTime() > endMs || iv.t2.getTime() <= start.getTime()) continue;
+            const overlapDays = overlap(iv);
+            if (overlapDays <= 0) continue;
+            if (iv.uncovered) { uncovered++; continue; } // no SWG record behind it
+            if (iv.suspect) { flagged.push(iv); continue; } // left out of the average -- see fcAnomalyNote
+            total += iv.perDay * overlapDays;
+            covered += overlapDays;
+        }
+        // The flagged intervals only protect the average from a bad number. If they are ALL the window
+        // holds there is nothing else to average, and assuming no consumption at all would be worse, so
+        // keep them (and say so in the note).
+        let kept = false;
+        if (covered === 0 && flagged.length) {
+            kept = true;
+            for (const iv of flagged) { const o = overlap(iv); total += iv.perDay * o; covered += o; }
+        }
+        return { windowStart: start, windowExtended: extended, overlapOf: overlap, weightedTotal: total, coveredDays: covered, suspects: flagged, uncoveredLeftOut: uncovered, anomalyKept: kept };
     };
-    for (const iv of intervals) {
-        const overlapDays = overlapOf(iv);
-        if (overlapDays <= 0) continue;
-        if (iv.uncovered) { uncoveredLeftOut++; continue; } // no SWG record behind it
-        if (iv.suspect) { suspects.push(iv); continue; } // left out of the average -- see fcAnomalyNote
-        weightedTotal += iv.perDay * overlapDays;
-        coveredDays += overlapDays;
-    }
-    // The flagged intervals only protect the average from a bad number. If they are ALL the window
-    // holds there is nothing else to average, and assuming no consumption at all would be worse, so
-    // keep them (and say so in the note).
-    let anomalyKept = false;
-    if (coveredDays === 0 && suspects.length) {
-        anomalyKept = true;
-        for (const iv of suspects) { const o = overlapOf(iv); weightedTotal += iv.perDay * o; coveredDays += o; }
-    }
+    const liveAverage = averageAsOf(rightNow);
+    const { windowStart, windowExtended, overlapOf, weightedTotal, coveredDays, suspects, uncoveredLeftOut, anomalyKept } = liveAverage;
+    const windowDaysUsed = windowExtended ? (rightNow.getTime() - windowStart.getTime()) / 86400000 : params.windowDays;
     const firstSwgLabel = formatLocalDateTime(new Date(firstSwgMs), params.timezone);
     if (coveredDays === 0 && uncoveredLeftOut > 0) {
         // Everything in the window predates the SWG record: there is nothing to base a burn rate on, and
@@ -1300,27 +1358,35 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         }
     }
 
-    // Where the next FC test is likely to read: the projection plus or minus how far the same weighting has recently missed the readings
-    // that followed it (for each interval between two readings in the last FC_RANGE_LOOKBACK_DAYS, the projection from the first to the
-    // second, which needs no replay), grown a little with the age of the last reading. Intervals left out of the average (before the SWG
-    // record, or flagged as suspect) are left out here too.
+    // Where the next FC test is likely to read: the projection plus or minus how far it has recently missed the readings that followed it,
+    // grown a little with the age of the last reading. This is for display only (range control decides from the projection and the band,
+    // not from this range). Each interval between two readings in the last FC_RANGE_LOOKBACK_DAYS is projected as a calculation run a minute
+    // before its second reading would have projected it: from its first reading, with the running average as it stood then (averageAsOf),
+    // the weighting for that gap and the SWG output credited the same way as the live projection. That is the walk-forward the Projection
+    // Accuracy report scores. Scoring old intervals with today's average instead made every interval from a time when the burn was
+    // different look like a large miss (2 ppm/day in the summer against 0.5 in November gave +/-5 where the projection missed by about
+    // +/-2). Not replayed: the optional water temperature adjustment, the storm and outage corrections (a past calculation does not apply
+    // them either). Intervals left out of the average (before the SWG record, or flagged as suspect) are left out here too.
     const rangeTaperStart = typeof params.projectionTaperStartDays === 'number' ? params.projectionTaperStartDays : 3;
     const rangeTaperEnd = typeof params.projectionTaperEndDays === 'number' ? params.projectionTaperEndDays : 0;
-    let rangeSumSq = 0, rangeCount = 0;
+    const rangeMisses: number[] = [];
     for (const iv of intervals) {
         const gap = (iv.t2.getTime() - iv.t1.getTime()) / 86400000;
         if (iv.t1.getTime() < lastFc.ts.getTime() - FC_RANGE_LOOKBACK_DAYS * 86400000 || iv.uncovered || iv.suspect || gap < 0.1 || gap > 14) continue;
-        const miss = projectionWeight(baseWeight, gap, rangeTaperStart, rangeTaperEnd) * (iv.gen - avgPerDay * iv.days) + iv.added - iv.rise;
-        rangeSumSq += miss * miss;
-        rangeCount++;
+        const asOfThen = new Date(iv.t2.getTime() - 60000);
+        const then = averageAsOf(asOfThen);
+        if (!(then.coveredDays > 0)) continue;   // a calculation then would have had nothing to average (the report skips it too)
+        const elapsedThen = (asOfThen.getTime() - iv.t1.getTime()) / 86400000;
+        const generatedThen = swgGeneratedSinceLastReading(swgEvents, iv.t1, asOfThen, swgStart, params.timezone);
+        const projectedRise = projectionWeight(baseWeight, elapsedThen, rangeTaperStart, rangeTaperEnd) * (generatedThen - (then.weightedTotal / then.coveredDays) * dayEquivalents(iv.t1, asOfThen)) + addedBetween(iv.t1, asOfThen);
+        rangeMisses.push(projectedRise - iv.rise);
     }
-    const rangeBaseSd = rangeCount >= FC_RANGE_MIN_INTERVALS ? Math.sqrt(rangeSumSq / rangeCount) : FC_RANGE_DEFAULT_SD;
-    const rangeSd = Math.sqrt(rangeBaseSd * rangeBaseSd + Math.pow(FC_RANGE_GROWTH_PPM_PER_DAY * elapsedDays, 2));
+    const rangeSpread = fcRangeHalfWidth(rangeMisses, elapsedDays);
     const projectedFcRange = {
-        low: Math.max(0, projectedCurrentFc - FC_RANGE_Z * rangeSd), high: projectedCurrentFc + FC_RANGE_Z * rangeSd, sd: rangeSd,
-        basis: (rangeCount >= FC_RANGE_MIN_INTERVALS ? 'history' : 'default') as 'history' | 'default', intervals: rangeCount
+        low: Math.max(0, projectedCurrentFc - rangeSpread.halfWidth), high: projectedCurrentFc + rangeSpread.halfWidth, sd: rangeSpread.sd, halfWidth: rangeSpread.halfWidth,
+        basis: rangeSpread.basis, intervals: rangeMisses.length
     };
-    rationale.push(`Where the next FC test is likely to read (about 90%): ${projectedFcRange.low.toFixed(1)} to ${projectedFcRange.high.toFixed(1)} ppm, the projection plus or minus ${(FC_RANGE_Z * rangeSd).toFixed(1)} ppm. ${projectedFcRange.basis === 'history' ? `That is how far the projection has missed the tests that followed it over the last ${FC_RANGE_LOOKBACK_DAYS} days (${rangeCount} intervals), part of it the test itself and part real day-to-day differences in consumption (sun, rain, temperature).` : `There are too few intervals in the last ${FC_RANGE_LOOKBACK_DAYS} days to measure that, so a typical value was used.`}`);
+    rationale.push(`Where the next FC test is likely to read (about 90%): ${projectedFcRange.low.toFixed(1)} to ${projectedFcRange.high.toFixed(1)} ppm, the projection plus or minus ${rangeSpread.halfWidth.toFixed(1)} ppm. ${projectedFcRange.basis === 'history' ? `9 in 10 of the tests over the last ${FC_RANGE_LOOKBACK_DAYS} days (${rangeMisses.length} intervals) read within ${rangeSpread.baseHalfWidth.toFixed(1)} ppm of what the projection said a minute before them, each projected with the average and weighting in use then${rangeSpread.halfWidth > rangeSpread.baseHalfWidth + 0.05 ? `; it is widened a little because the last reading is ${elapsedDays.toFixed(1)} days old` : ''}. Part of the miss is the test itself and part real day-to-day differences in consumption (sun, rain, temperature).` : `There are too few intervals in the last ${FC_RANGE_LOOKBACK_DAYS} days to measure that, so a typical value was used.`}`);
 
     const rationaleMark = rationale.length;   // range control replaces what the point target says from here on (see below)
     // What to aim at. If there's an in-flight target and the projected FC is still within
@@ -1516,6 +1582,77 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         catch (err) { logger.warn(`SWG Assist: range control failed, using the target instead: ${err && err.message}`); }
     }
 
+    // Away protection with the Trip Maintenance Multiplier: no glide to the vacation target. The % is the maintenance % times the multiplier, held flat for the
+    // trip, with the storm and outage extra on top. The maintenance % is taken from the average as it stood at the newest FC reading, not at this moment: with
+    // no one testing, the window would otherwise slide past the readings and the % drift while away (Away protection ends on the next reading anyway). The
+    // water temperature adjustment, when on, is carried over in proportion. The extra makes up what the storm or outage took off the projection over
+    // targetPeriodsBelow run periods, within storm.maxExtraPct points, and the step back to the flat % at that deadline ends it.
+    // The burn and maintenance % as of the newest FC reading, and a suggested Trip Maintenance Multiplier, on every check (so they can be shown before Away
+    // protection is turned on). The suggestion is the highest running average at any reading over the last AWAY_SUGGEST_LOOKBACK_DAYS days over the burn at the
+    // newest reading, plus AWAY_SUGGEST_MARGIN, rounded up to the next 0.5 and held to 1 to 3. Only on a live check: the reports that re-run the calculation at
+    // past times (asOf: Projection Accuracy, Tune, the what-if sweep) don't use it, and the scan would slow them by about a fifth.
+    let awayBasis: AutoSwgResult['awayBasis'];
+    let burnAtReading = avgPerDay, maintAtReadingRaw = 0;
+    if (maxDailyPpmAtFull > 0) {
+        const atReading = averageAsOf(lastFc.ts);
+        const liveRaw = coveredDays > 0 ? weightedTotal / coveredDays : 0;
+        const readingRaw = atReading.coveredDays > 0 ? atReading.weightedTotal / atReading.coveredDays : liveRaw;
+        burnAtReading = liveRaw > 0 ? avgPerDay * (readingRaw / liveRaw) : readingRaw;
+        maintAtReadingRaw = Math.max(0, Math.min(100, (burnAtReading / maxDailyPpmAtFull) * 100));
+    }
+    if (maxDailyPpmAtFull > 0 && typeof asOfMs === 'undefined') {
+        const atReading = averageAsOf(lastFc.ts);
+        const readingRaw = atReading.coveredDays > 0 ? atReading.weightedTotal / atReading.coveredDays : (coveredDays > 0 ? weightedTotal / coveredDays : 0);
+        let peak = readingRaw, peakAt = lastFc.ts;
+        for (const e of fcEvents) {
+            if (e.ts.getTime() > lastFc.ts.getTime() || e.ts.getTime() < lastFc.ts.getTime() - AWAY_SUGGEST_LOOKBACK_DAYS * 86400000) continue;
+            const then = averageAsOf(e.ts);
+            if (!(then.coveredDays > 0)) continue;
+            const v = then.weightedTotal / then.coveredDays;
+            if (v > peak) { peak = v; peakAt = e.ts; }
+        }
+        const suggested = readingRaw > 0 ? Math.max(1, Math.min(3, Math.ceil((peak / readingRaw) * (1 + AWAY_SUGGEST_MARGIN) * 2 - 1e-9) / 2)) : 3;
+        awayBasis = {
+            burnPpmPerDay: Math.round(burnAtReading * 100) / 100, maintenancePct: Math.round(maintAtReadingRaw * 10) / 10, asOf: lastFc.ts.toISOString(),
+            peakBurnPpmPerDay: Math.round(peak * 100) / 100, peakAt: peakAt.toISOString(), suggestedMultiplier: suggested
+        };
+    }
+
+    // Away protection with the Trip Maintenance Multiplier: no glide to the vacation target. The % is the maintenance % times the multiplier, held flat for the
+    // trip, with the storm and outage extra on top. The maintenance % is taken from the average as it stood at the newest FC reading (above), not at this moment:
+    // with no one testing, the window would otherwise slide past the readings and the % drift while away (Away protection ends on the next reading anyway). The
+    // water temperature adjustment, when on, is carried over in proportion. The maintenance % is multiplied before rounding: rounding it first turned the small
+    // rise as a sunrise-to-sunset run window shortens (the same chlorine needs a slightly higher %) into a step of a whole point times the multiplier.
+    // The extra makes up what the storm or outage took off the projection over targetPeriodsBelow run periods, within storm.maxExtraPct points, and the step
+    // back to the flat % at that deadline ends it.
+    let awayFlat: AutoSwgResult['awayFlat'];
+    const awayMult = params.away && params.away.active && typeof params.away.maintMultiplier === 'number' && params.away.maintMultiplier >= 1 ? params.away.maintMultiplier : 0;
+    if (awayMult > 0 && swgHours > 0 && maxDailyPpmAtFull > 0) {
+        const burn = burnAtReading;
+        const maintShown = Math.round(maintAtReadingRaw * 10) / 10;
+        const basePct = Math.max(0, Math.min(100, Math.round(maintAtReadingRaw * awayMult)));
+        const flatPeriods = Math.max(0.5, typeof params.targetPeriodsBelow === 'number' && params.targetPeriodsBelow > 0 ? params.targetPeriodsBelow : 1);
+        let extraPct = 0;
+        if (stormApplied && stormLossPpm > 0 && params.storm) extraPct = Math.max(0, Math.min(params.storm.maxExtraPct, (stormLossPpm / (maxDailyPpmAtFull * flatPeriods)) * 100));
+        const flatDeadline = deadlineAfterRunHours(rightNow, flatPeriods * swgHours, swgStart, swgStop, params.timezone);
+        rationale.splice(rationaleMark);
+        rationale.push(`Away protection is on with the Trip Maintenance Multiplier: the SWG runs at the maintenance ${maintShown}% (a burn of ${burn.toFixed(2)} ppm/day, as of the last FC reading at ${formatLocalDateTime(lastFc.ts, params.timezone)}) x ${awayMult} = ${basePct}%, held flat until a new FC reading ends Away protection. The vacation target is not used.`);
+        if (extraPct >= 0.05) rationale.push(`The storm or outage response adds ${extraPct.toFixed(1)} points for the ${stormLossPpm.toFixed(2)} ppm it took off the projection (made up over ${flatPeriods} run period${flatPeriods === 1 ? '' : 's'}, at most ${params.storm.maxExtraPct} points), until ${formatLocalDateTime(flatDeadline, params.timezone)}: ${Math.min(100, basePct + extraPct).toFixed(1)}%.`);
+        awayFlat = { maintenancePct: maintShown, burnPpmPerDay: Math.round(burn * 100) / 100, multiplier: awayMult, basePct: basePct, extraPct: Math.round(extraPct * 10) / 10, asOf: lastFc.ts.toISOString() };
+        targetDate = flatDeadline;
+        targetDays = (flatDeadline.getTime() - rightNow.getTime()) / 86400000;
+        refreshed = false;
+        targetWarning = undefined;
+        targetInfo = undefined;
+        targetDateExtended = false;
+        longerDeadlineNote = undefined;
+        troughAddPpm = 0;
+        targetMarginPpm = 0;
+        periodDayEquivalents = dayEquivalents(rightNow, flatDeadline);
+        runHoursInPeriod = runWindowHoursBetween(rightNow, flatDeadline, swgStart, swgStop, params.timezone);
+        recommendedPctForTarget = Math.min(100, basePct + extraPct);
+    }
+
     // With the last reading STALE_FC_DAYS or more old, never hold the SWG below the maintenance % (what matches the average consumption).
     // The projection is mostly an average by now, and its taper (projectionTaperStartDays to projectionTaperEndDays) stops crediting any
     // consumption at all, so a glide to a target above the current FC would keep the SWG at 0% -- and push the target date out at every
@@ -1530,7 +1667,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
 
     // However far the storm response lowered the projected FC, it adds at most maxExtraPct points to the % the plan would have used without it. The
     // glide to a target you set, and the maintenance floor, are not limited by it.
-    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0 && !bandResult) {
+    if (stormApplied && params.storm && stormLossPpm > 0 && producibleAtFull > 0 && !bandResult && !awayFlat) {
         const neededWithoutStorm = (targetFc + targetMarginPpm + troughAddPpm - (projectedCurrentFc + stormLossPpm)) + (avgPerDay * periodDayEquivalents);
         let withoutStorm = Math.max(0, Math.min(100, (neededWithoutStorm / producibleAtFull) * 100));
         if (staleFcNote && withoutStorm < recommendedPct) withoutStorm = recommendedPct;
@@ -1553,6 +1690,17 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     delete inputsUsed.saltDrop;
     delete inputsUsed.storm;
 
+    // Range control holding the SWG at 0% above the range: when the projection falls to the release level, and when the reading is old enough that the hold ends anyway.
+    let bandReachAt: Date | undefined, bandStaleAt: Date | undefined;
+    if (bandResult && bandResult.mode === 'coast' && params.band) {
+        bandStaleAt = new Date(lastFc.ts.getTime() + BAND_STALE_DAYS * 86400000);
+        bandReachAt = coastReachTime({
+            now: rightNow, lastFcTs: lastFc.ts, lastFcValue: lastFc.value, generated: swgGeneratedSinceReading, added: addedSinceReading, avgPerDay: avgPerDay, baseWeight: baseWeight,
+            taperStart: typeof params.projectionTaperStartDays === 'number' ? params.projectionTaperStartDays : 3, taperEnd: typeof params.projectionTaperEndDays === 'number' ? params.projectionTaperEndDays : 0,
+            level: params.band.high - BAND_RELEASE_PPM, dayEq: dayEquivalents
+        });
+    }
+
     return {
         currentPct: latestSwg.pct,
         recommendedPct: roundDutyCyclePct(recommendedPct),
@@ -1566,7 +1714,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         fcModelChange: modelChange,
         fcAdded: addedSinceReading,
         projectionWeight: effectiveWeight,
-        projectedFcRange: { low: Math.round(projectedFcRange.low * 100) / 100, high: Math.round(projectedFcRange.high * 100) / 100, sd: Math.round(projectedFcRange.sd * 100) / 100, basis: projectedFcRange.basis, intervals: projectedFcRange.intervals },
+        projectedFcRange: { low: Math.round(projectedFcRange.low * 100) / 100, high: Math.round(projectedFcRange.high * 100) / 100, sd: Math.round(projectedFcRange.sd * 100) / 100, halfWidth: Math.round(projectedFcRange.halfWidth * 100) / 100, basis: projectedFcRange.basis, intervals: projectedFcRange.intervals },
         targetMarginPpm: Math.round(targetMarginPpm * 100) / 100,
         burnTempNote: burnTempNote,
         saltNote: saltNote,
@@ -1578,6 +1726,10 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         projectedFcBeforeStorm: Math.round((projectedCurrentFc + stormLossPpm) * 100) / 100,
         bandMode: bandResult ? bandResult.mode : undefined,
         bandCoasting: bandResult ? bandResult.coasting : undefined,
+        bandReachAt: bandReachAt ? bandReachAt.toISOString() : undefined,
+        bandStaleAt: bandStaleAt ? bandStaleAt.toISOString() : undefined,
+        awayFlat: awayFlat,
+        awayBasis: awayBasis,
         targetFcUsed: targetFc,
         targetDateUsed: targetDate.toISOString(),
         targetDaysUsed: targetDays,

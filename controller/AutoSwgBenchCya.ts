@@ -19,35 +19,51 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // SWG Assist Model Bench, the CYA between tests and the CYA test advice. Pure functions only (AutoSwgBench.ts runs them), so they can be unit tested.
 //
 // The CYA path, hour by hour, from only what was known at a moment (asOf):
-//   1. It starts at a CYA test.
-//   2. Dilution since then, from a source that is a setting:
-//        rain   the gauge's rain: each inch replaces a share k of the water (k from the pool's area and gallons, then re-estimated, see 4)
+//   1. It starts at a CYA test. Every test is an anchor: the path always stands on the newest test, none is ever left out.
+//   2. CYA is lost at TFP's rate, not a fitted one. TFP ("Free Chlorine and Cyanuric Acid Relationship", Pool School): "You may see a 5 to 10 PPM CYA
+//      loss per month", more with hot water (85-90 F). The loss per month runs from lossLow at tLow (2.5 ppm at 75 F) up to lossHigh at tHigh (7.5 ppm,
+//      the middle of TFP's 5-10, at 85 F), straight between, by the hour's water temperature (the water temperature history, else the last PoolMath
+//      water temperature, else 80 F). Test pairs never feed back into the rate.
+//   3. Dilution, from a source that is a setting:
+//        rain   each inch of rain on the pool replaces a share k of the water, k from the pool's area and gallons (physical, not fitted). A storm of
+//               1.5 in or more can bring in runoff: when the salt after it (days 3-7, net of salt added) fell more than one meter step (100 ppm) beyond
+//               what k explains, that storm's inches count up to runoffMax (2) times. Nothing else changes k.
 //        salt   the chlorinator's salt reading, with the salt added since taken off: the share of the water still there
 //        both   salt anchors the level at each change of the reading, rain between those changes
 //        none   no dilution
-//   3. Stabilizer additions are steps at their logged times, of the size their amount gives.
-//   4. Each new test is the level from its time on. The stretch since the test before is redrawn to land on it: when stabilizer was added in it, the
-//      additions are scaled (the logged amount is corrected by the test); otherwise the dilution's shape is kept and scaled, the correction growing from
-//      nothing at the earlier test to all of it at the new one. The rain k is re-estimated from every pair of tests with no addition between them,
-//      pulled toward the default while there are few pairs and kept within RAIN_K_MIN..RAIN_K_MAX.
-//   5. A test that rises more than jumpPpm above the path with no addition logged, or falls far more than dilution allows, is doubtful: the path
-//      keeps going without it, the advice asks for a confirming test, and it is taken only once the next test agrees with it.
+//   4. Stabilizer dissolves slowly: each logged addition enters straight over rampDays (5) days from its time.
+//   5. Each new test is the level from its time on. The stretch since the test before is redrawn to land on it: when stabilizer was added in it, the
+//      additions are scaled (the logged amount is corrected by the test); what is left is a correction growing from nothing at the earlier test to all of it
+//      at the new one.
+//   6. A test more than unexplainedPpm (20, twice the test's +-10) above the path with no stabilizer logged in the quietDays (14) before it, or that far
+//      below it, is flagged 'unexplained'. The path still stands on it; the advice asks for a confirming test. The expectation comes only from the TFP
+//      path above, so it can't reinforce itself.
 // Past asOf the path goes on with the rain the rows hold (the weather that happened, as a nowcast uses it); additions after asOf are not known.
 
 import { BenchHour, BenchVariant, CyaTest, DAY_MS, Fit, gapDays, HOUR_MS, Interval, consumption, sunFeature } from './AutoSwgBenchModel';
 
 export interface CyaAddition { t: number; ppm: number; }
+export interface WaterTemp { t: number; f: number; }      // a water temperature in F (PoolMath's tests)
 export type CyaDilutionSource = 'none' | 'rain' | 'salt' | 'both';
 export interface CyaSettings {
     source: CyaDilutionSource;
     rainK?: number;          // the share of the water one inch of rain replaces; not set: from the pool's area and gallons (defaultRainK)
-    autoK: boolean;          // re-estimate k from the tests (4 above)
-    jumpPpm: number;         // a rise this far above the path with nothing added is doubtful (10)
-    priorPairs: number;      // how many one-inch test pairs the default k counts for when it is re-estimated (4)
+    runoffMax: number;       // the most a storm's inches can count for when the salt shows runoff (2)
+    lossLow: number;         // ppm a month lost at tLow and below (2.5)
+    lossHigh: number;        // ppm a month lost at tHigh and above (7.5)
+    tLow: number;            // F (75)
+    tHigh: number;           // F (85)
+    rampDays: number;        // days a stabilizer addition takes to enter (5, 3-7)
+    unexplainedPpm: number;  // a test this far from the path is flagged (20)
+    quietDays: number;       // with no stabilizer logged this many days before it (14)
 }
-export const DEFAULT_CYA_SETTINGS: CyaSettings = { source: 'rain', autoK: true, jumpPpm: 10, priorPairs: 4 };
+export const DEFAULT_CYA_SETTINGS: CyaSettings = {
+    source: 'rain', runoffMax: 2, lossLow: 2.5, lossHigh: 7.5, tLow: 75, tHigh: 85, rampDays: 5, unexplainedPpm: 20, quietDays: 14
+};
 export const RAIN_K_MIN = 0, RAIN_K_MAX = 0.05, RAIN_K_FALLBACK = 0.015;
+export const DEFAULT_WATER_F = 80;
 const GAL_PER_FT3 = 7.48052;
+const RUNOFF_MIN_INCHES = 1.5, SALT_STEP_PPM = 100, EVENT_GAP_HOURS = 12;
 
 export function normalizeCyaSettings(raw: any): CyaSettings {
     const s: CyaSettings = Object.assign({}, DEFAULT_CYA_SETTINGS);
@@ -55,12 +71,41 @@ export function normalizeCyaSettings(raw: any): CyaSettings {
     if (['none', 'rain', 'salt', 'both'].indexOf(raw.source) >= 0) s.source = raw.source;
     const k = Number(raw.rainK);
     if (raw.rainK !== undefined && raw.rainK !== null && raw.rainK !== '' && isFinite(k)) s.rainK = Math.max(RAIN_K_MIN, Math.min(RAIN_K_MAX, k));
-    if (typeof raw.autoK === 'boolean') s.autoK = raw.autoK;
-    const j = Number(raw.jumpPpm);
-    if (isFinite(j) && j >= 3 && j <= 50) s.jumpPpm = j;
-    const p = Number(raw.priorPairs);
-    if (isFinite(p) && p >= 0 && p <= 50) s.priorPairs = p;
+    const num = (key: keyof CyaSettings, lo: number, hi: number) => {
+        const x = Number(raw[key]);
+        if (raw[key] !== undefined && raw[key] !== null && raw[key] !== '' && isFinite(x)) (s as any)[key] = Math.max(lo, Math.min(hi, x));
+    };
+    num('runoffMax', 1, 3); num('lossLow', 0, 20); num('lossHigh', 0, 30); num('tLow', 40, 100); num('tHigh', 40, 110);
+    num('rampDays', 3, 7); num('unexplainedPpm', 5, 60); num('quietDays', 0, 60);
+    if (s.tHigh <= s.tLow) s.tHigh = s.tLow + 1;
     return s;
+}
+
+// TFP's CYA loss in ppm a month at a water temperature (F), see 2 at the top.
+export function tfpCyaLossPerMonth(tempF: number | undefined, s: CyaSettings = DEFAULT_CYA_SETTINGS): number {
+    const t = typeof tempF === 'number' && isFinite(tempF) ? tempF : DEFAULT_WATER_F;
+    if (t <= s.tLow) return s.lossLow;
+    if (t >= s.tHigh) return s.lossHigh;
+    return s.lossLow + (s.lossHigh - s.lossLow) * (t - s.tLow) / (s.tHigh - s.tLow);
+}
+
+// TFP's "Salt Water Chlorine" FC/CYA chart (Pool School): the minimum, target range and SLAM FC by CYA, straight between rows, held beyond the ends.
+// For an SWG pool this is the table to judge FC by (not the 7.5%-of-CYA liquid-chlorine rule).
+export const TFP_SWG_FC: { cya: number; min: number; lo: number; hi: number; slam: number }[] = [
+    { cya: 20, min: 2, lo: 3, hi: 5, slam: 10 }, { cya: 30, min: 2, lo: 3, hi: 6, slam: 12 }, { cya: 40, min: 2, lo: 3, hi: 7, slam: 16 },
+    { cya: 50, min: 2, lo: 3, hi: 8, slam: 20 }, { cya: 60, min: 3, lo: 4, hi: 9, slam: 24 }, { cya: 70, min: 3, lo: 5, hi: 10, slam: 28 },
+    { cya: 80, min: 4, lo: 6, hi: 11, slam: 31 }, { cya: 90, min: 4, lo: 6, hi: 12, slam: 35 }, { cya: 100, min: 5, lo: 7, hi: 13, slam: 39 }
+];
+export function tfpSwgFc(cya: number): { cya: number; min: number; lo: number; hi: number; slam: number } {
+    const T = TFP_SWG_FC;
+    const c = isFinite(cya) ? cya : 70;
+    if (c <= T[0].cya) return Object.assign({}, T[0], { cya: c });
+    if (c >= T[T.length - 1].cya) return Object.assign({}, T[T.length - 1], { cya: c });
+    let i = 0;
+    while (i + 1 < T.length && T[i + 1].cya < c) i++;
+    const a = T[i], b = T[i + 1], w = (c - a.cya) / (b.cya - a.cya);
+    const mix = (x: number, y: number) => Math.round((x + (y - x) * w) * 10) / 10;
+    return { cya: c, min: mix(a.min, b.min), lo: mix(a.lo, b.lo), hi: mix(a.hi, b.hi), slam: mix(a.slam, b.slam) };
 }
 
 // The area of a polygon (shoelace).
@@ -77,21 +122,28 @@ export function defaultRainK(areaFt2: number, gallons: number): number {
 
 // ---------------------------------------------------------------- dilution
 
+// A storm and what the salt said about it: `m` is how many times its inches count (1 unless the salt showed runoff).
+export interface RainEvent { t1: number; t2: number; inches: number; m: number; saltBefore?: number; saltAfter?: number; added?: number; implied?: number; expected?: number; }
+
 // The rows' rain and salt, indexed for the dilution between any two moments.
 export class Dilution {
     private ts: number[] = [];
     private cumRain: number[] = [];
+    private cumEff: number[] = [];          // the rain with each storm's runoff multiplier (see setRunoff)
     private salt: (number | undefined)[] = [];
     private saltSince: number[] = [];      // the time the salt reading last changed, at each row
     private adds: CyaAddition[];
+    private rows: BenchHour[];
     constructor(rows: BenchHour[], saltAdds: CyaAddition[] = []) {
         let c = 0, prev: number | undefined, since = -Infinity;
+        this.rows = rows;
         for (const r of rows) {
             if (typeof r.rain === 'number' && r.rain > 0) c += r.rain;
             this.ts.push(r.t); this.cumRain.push(c); this.salt.push(r.salt);
             if (typeof r.salt === 'number' && r.salt !== prev) { since = r.t; prev = r.salt; }
             this.saltSince.push(since);
         }
+        this.cumEff = this.cumRain.slice();
         this.adds = saltAdds.slice().sort((a, b) => a.t - b.t);
     }
     private index(t: number): number {
@@ -104,18 +156,64 @@ export class Dilution {
         const a = this.index(t1), b = this.index(t2);
         return Math.max(0, (b >= 0 ? this.cumRain[b] : 0) - (a >= 0 ? this.cumRain[a] : 0));
     }
+    // the same with each storm's runoff multiplier
+    public effectiveRain(t1: number, t2: number): number {
+        const a = this.index(t1), b = this.index(t2);
+        return Math.max(0, (b >= 0 ? this.cumEff[b] : 0) - (a >= 0 ? this.cumEff[a] : 0));
+    }
     public saltAt(t: number): number | undefined { const i = this.index(t); return i >= 0 ? this.salt[i] : undefined; }
     private saltChangedAt(t: number): number { const i = this.index(t); return i >= 0 ? this.saltSince[i] : -Infinity; }
-    private saltAdded(t1: number, t2: number): number { let s = 0; for (const a of this.adds) if (a.t > t1 && a.t <= t2) s += a.ppm; return s; }
+    public saltAdded(t1: number, t2: number): number { let s = 0; for (const a of this.adds) if (a.t > t1 && a.t <= t2) s += a.ppm; return s; }
     private saltFactor(t1: number, t2: number): number | undefined {
         const s1 = this.saltAt(t1), s2 = this.saltAt(t2);
         if (!(s1 > 0) || !(s2 > 0)) return undefined;
         return Math.max(0.5, Math.min(1.05, (s2 - this.saltAdded(t1, t2)) / s1));
     }
+    // The median salt reading of the hours that end in (t1, t2].
+    public saltMedian(t1: number, t2: number): number | undefined {
+        const a = this.index(t1) + 1, b = this.index(t2);
+        const v: number[] = [];
+        for (let i = Math.max(0, a); i <= b; i++) if (typeof this.salt[i] === 'number' && this.salt[i] > 0) v.push(this.salt[i]);
+        if (!v.length) return undefined;
+        v.sort((x, y) => x - y);
+        return v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2;
+    }
+    // The storms (rain hours less than EVENT_GAP_HOURS apart) and, for those of RUNOFF_MIN_INCHES or more whose days 3-7 after are known by asOf, the
+    // runoff the salt shows (see 3 at the top). The multipliers then apply to effectiveRain and factor.
+    public setRunoff(k: number, asOf: number, runoffMax: number): RainEvent[] {
+        const events: RainEvent[] = [];
+        let cur: RainEvent | undefined;
+        for (const r of this.rows) {
+            if (!(typeof r.rain === 'number' && r.rain > 0)) continue;
+            if (cur && r.t - cur.t2 <= EVENT_GAP_HOURS * HOUR_MS) { cur.t2 = r.t; cur.inches += r.rain; }
+            else { cur = { t1: r.t - HOUR_MS, t2: r.t, inches: r.rain, m: 1 }; events.push(cur); }
+        }
+        for (const e of events) {
+            if (e.inches < RUNOFF_MIN_INCHES || e.t2 + 7 * DAY_MS > asOf || !(k > 0)) continue;
+            const before = this.saltMedian(e.t1 - 3 * DAY_MS, e.t1), after = this.saltMedian(e.t2 + 3 * DAY_MS, e.t2 + 7 * DAY_MS);
+            if (!(before > 0) || !(after > 0)) continue;
+            const added = this.saltAdded(e.t1 - 3 * DAY_MS, e.t2 + 7 * DAY_MS);
+            const implied = 1 - (after - added) / before, expected = 1 - Math.exp(-k * e.inches);
+            e.saltBefore = before; e.saltAfter = after; e.added = Math.round(added); e.implied = Math.round(implied * 10000) / 10000; e.expected = Math.round(expected * 10000) / 10000;
+            if ((implied - expected) * before > SALT_STEP_PPM && expected > 0) e.m = Math.max(1, Math.min(runoffMax, implied / expected));
+        }
+        // the effective rain: each storm's hours times its m
+        let c = 0, ei = 0;
+        for (let i = 0; i < this.rows.length; i++) {
+            const r = this.rows[i];
+            if (typeof r.rain === 'number' && r.rain > 0) {
+                while (ei < events.length && events[ei].t2 < r.t) ei++;
+                const m = ei < events.length && events[ei].t1 < r.t && r.t <= events[ei].t2 ? events[ei].m : 1;
+                c += r.rain * m;
+            }
+            this.cumEff[i] = c;
+        }
+        return events;
+    }
     // The share of the water at t1 still in the pool at t2.
     public factor(t1: number, t2: number, source: CyaDilutionSource, k: number): number {
         if (!(t2 > t1) || source === 'none') return 1;
-        const rain = (a: number, b: number) => b > a ? Math.exp(-k * this.rain(a, b)) : 1;
+        const rain = (a: number, b: number) => b > a ? Math.exp(-k * this.effectiveRain(a, b)) : 1;
         if (source === 'rain') return rain(t1, t2);
         if (source === 'salt') { const f = this.saltFactor(t1, t2); return typeof f === 'number' ? f : rain(t1, t2); }
         // both: the salt up to its last change before t2, rain after it
@@ -128,137 +226,143 @@ export class Dilution {
 
 // ---------------------------------------------------------------- the path
 
-export type CyaTestStatus = 'first' | 'accepted' | 'doubtful' | 'confirmed';
+export type CyaTestStatus = 'first' | 'accepted' | 'unexplained';
 export interface CyaTestNote { t: number; ppm: number; projected?: number; status: CyaTestStatus; addition: boolean; reason?: string; }
 export interface CyaPath {
     at: (t: number) => number;
-    rainK: number;              // the k used (re-estimated when autoK)
-    defaultK: number;
-    pairs: number;              // the test pairs with rain the re-estimate used
-    notes: CyaTestNote[];       // every known test, oldest first, with what the path expected there
+    rainK: number;              // the k used (the settings' or the pool's)
+    defaultK: number;           // the pool's, from its area and gallons
+    notes: CyaTestNote[];       // every known test, oldest first, with what the TFP path expected there
     anchor?: CyaTest;           // the newest test the path stands on
     source: CyaDilutionSource;
+    runoff: RainEvent[];        // the storms whose salt showed runoff (m > 1)
+    storms: RainEvent[];        // every storm of RUNOFF_MIN_INCHES or more the salt could judge
+    lossNow: number;            // ppm a month at the newest water temperature
 }
-interface Segment { t0: number; c0: number; t1: number; adds: CyaAddition[]; scale: number; ratio: number; }
 
 const MIN_CYA = 10;
 const MAX_ADD_SCALE = 3;
 
-// The CYA path as known at asOf (see the top of the file). `defaultK` is the rain k when the settings do not set one.
-export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchHour[], settings: CyaSettings, asOf: number, opts: { saltAdds?: CyaAddition[]; defaultK?: number } = {}): CyaPath {
+// The CYA path as known at asOf (see the top of the file). `defaultK` is the rain k when the settings do not set one; `waterTemps` are PoolMath's water
+// temperatures, for hours the rows have none.
+export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchHour[], settings: CyaSettings, asOf: number,
+    opts: { saltAdds?: CyaAddition[]; defaultK?: number; waterTemps?: WaterTemp[] } = {}): CyaPath {
+    const s = settings;
     const known: CyaTest[] = [];
     for (const c of tests.filter(x => x.t <= asOf && x.ppm > 0).sort((a, b) => a.t - b.t)) {
         if (known.length && known[known.length - 1].t === c.t) known[known.length - 1] = c; else known.push(c);
     }
     const adds = additions.filter(a => a.t <= asOf && a.ppm > 0).sort((a, b) => a.t - b.t);
     const dil = new Dilution(rows, (opts.saltAdds || []).filter(a => a.t <= asOf));
-    const k0 = typeof settings.rainK === 'number' ? settings.rainK : (typeof opts.defaultK === 'number' ? opts.defaultK : RAIN_K_FALLBACK);
-    let walk = walkTests(known, adds, dil, settings, k0);
-    let k = k0, pairs = 0;
-    // re-estimated from the tests, pulled toward k0 (the settings' k when one is given, else the pool's)
-    if (settings.autoK && (settings.source === 'rain' || settings.source === 'both')) {
-        const e = estimateRainK(walk.notes, adds, dil, k0, settings.priorPairs);
-        k = e.k; pairs = e.pairs;
-        if (Math.abs(k - k0) > 1e-9) walk = walkTests(known, adds, dil, settings, k);
+    const kGeo = typeof opts.defaultK === 'number' ? opts.defaultK : RAIN_K_FALLBACK;
+    const k = typeof s.rainK === 'number' ? s.rainK : kGeo;
+    const events = s.source === 'rain' || s.source === 'both' ? dil.setRunoff(k, asOf, s.runoffMax) : [];
+    // per row: the hour's dilution factor, its loss in ppm, and the stabilizer entering in it (index of the addition, ppm)
+    const n = rows.length;
+    const fac = new Float64Array(n), loss = new Float64Array(n);
+    const temps = (opts.waterTemps || []).filter(w => isFinite(w.f)).sort((a, b) => a.t - b.t);
+    let wi = -1, lastTemp: number | undefined;
+    for (let i = 0; i < n; i++) {
+        const r = rows[i];
+        fac[i] = dil.factor(r.t - HOUR_MS, r.t, s.source, k);
+        while (wi + 1 < temps.length && temps[wi + 1].t <= r.t) wi++;
+        const t = typeof r.temp === 'number' && isFinite(r.temp) ? r.temp : (wi >= 0 ? temps[wi].f : undefined);
+        if (typeof t === 'number') lastTemp = t;
+        loss[i] = tfpCyaLossPerMonth(t, s) / (30 * 24);
     }
-    const segs = walk.segs, first = known[0];
-    const valueIn = (s: Segment, t: number): number => {
-        let v = s.c0 * dil.factor(s.t0, t, settings.source, k);
-        for (const a of s.adds) if (a.t <= t) v += s.scale * a.ppm * dil.factor(a.t, t, settings.source, k);
-        if (s.ratio !== 1 && isFinite(s.t1)) v *= Math.pow(s.ratio, Math.max(0, Math.min(1, (t - s.t0) / (s.t1 - s.t0))));
-        return v;
+    const rampMs = s.rampDays * DAY_MS;
+    // the ppm of addition `a` entering in the hour that ends at t
+    const enter = (a: CyaAddition, t: number) => {
+        const lo = Math.max(t - HOUR_MS, a.t), hi = Math.min(t, a.t + rampMs);
+        return hi > lo ? a.ppm * (hi - lo) / rampMs : 0;
     };
+    const rowIndex = (t: number): number => {       // the last row at or before t
+        let lo = 0, hi = n;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (rows[m].t <= t) lo = m + 1; else hi = m; }
+        return lo - 1;
+    };
+    const vals = new Float64Array(n).fill(NaN);
+    const notes: CyaTestNote[] = [];
+    // One stretch from test a to the time b (Infinity: the open stretch). Additions logged in it are scaled to land on bPpm; earlier ones still entering
+    // count as logged. Returns what the TFP path expected at b before the correction.
+    const stretch = (a: CyaTest, bT: number, bPpm?: number): number => {
+        const i0 = rowIndex(a.t) + 1, i1 = isFinite(bT) ? rowIndex(bT) : n - 1;
+        const mine = adds.filter(x => x.t > a.t && x.t <= bT);
+        const carry = adds.filter(x => x.t <= a.t && x.t + rampMs > a.t);
+        const base = new Float64Array(Math.max(0, i1 - i0 + 1)), add = new Float64Array(base.length);
+        let b0 = a.ppm, a0 = 0;
+        for (let i = i0; i <= i1; i++) {
+            const t = rows[i].t;
+            b0 = b0 * fac[i] - loss[i];
+            a0 = a0 * fac[i];
+            for (const x of carry) b0 += enter(x, t);
+            for (const x of mine) a0 += enter(x, t);
+            base[i - i0] = b0; add[i - i0] = a0;
+        }
+        const R0 = base.length ? base[base.length - 1] + add[add.length - 1] : a.ppm;
+        let scale = 1, ratio = 1;
+        if (typeof bPpm === 'number' && base.length) {
+            const A = add[add.length - 1], B = base[base.length - 1];
+            if (mine.length && A > 0) scale = Math.max(0, Math.min(MAX_ADD_SCALE, 1 + (bPpm - R0) / A));
+            const R2 = B + scale * A;
+            if (R2 > 0 && Math.abs(R2 - bPpm) > 1e-9) ratio = bPpm / R2;
+        }
+        for (let i = i0; i <= i1; i++) {
+            const j = i - i0;
+            let v = base[j] + scale * add[j];
+            if (ratio !== 1) v *= Math.pow(ratio, Math.max(0, Math.min(1, (rows[i].t - a.t) / (bT - a.t))));
+            vals[i] = v;
+        }
+        return R0;
+    };
+    for (let j = 0; j < known.length; j++) {
+        const T = known[j];
+        if (j === 0) { notes.push({ t: T.t, ppm: T.ppm, status: 'first', addition: false }); continue; }
+        const a = known[j - 1];
+        const R0 = stretch(a, T.t, T.ppm);
+        const inStretch = adds.some(x => x.t > a.t && x.t <= T.t);
+        const recent = inStretch || adds.some(x => x.t > T.t - s.quietDays * DAY_MS && x.t <= T.t);
+        const diff = T.ppm - R0;
+        const note: CyaTestNote = { t: T.t, ppm: T.ppm, projected: round1(R0), status: 'accepted', addition: inStretch };
+        if (!recent && diff > s.unexplainedPpm) {
+            note.status = 'unexplained';
+            note.reason = `${Math.round(diff)} ppm above the ${Math.round(R0)} the TFP path expected, with no stabilizer logged in the ${s.quietDays} days before`;
+        }
+        else if (diff < -s.unexplainedPpm) {
+            note.status = 'unexplained';
+            note.reason = `${Math.round(-diff)} ppm below the ${Math.round(R0)} the TFP path expected, more than the CYA loss and dilution explain`;
+        }
+        notes.push(note);
+    }
+    const last = known[known.length - 1];
+    if (last) stretch(last, Infinity);
+    const first = known[0];
+    const lossAfter = tfpCyaLossPerMonth(lastTemp, s) / (30 * 24);
     const at = (t: number): number => {
         if (!first) return 70;
-        if (t <= first.t || !segs.length) return Math.max(MIN_CYA, first.ppm);
-        let lo = 0, hi = segs.length;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (segs[m].t0 < t) lo = m + 1; else hi = m; }
-        return Math.max(MIN_CYA, valueIn(segs[Math.max(0, lo - 1)], t));
-    };
-    return { at: at, rainK: k, defaultK: k0, pairs: pairs, notes: walk.notes, anchor: walk.anchor, source: settings.source };
-}
-
-function walkTests(known: CyaTest[], adds: CyaAddition[], dil: Dilution, s: CyaSettings, k: number): { segs: Segment[]; notes: CyaTestNote[]; anchor?: CyaTest } {
-    const segs: Segment[] = [], notes: CyaTestNote[] = [];
-    if (!known.length) return { segs, notes };
-    const between = (a: number, b: number) => adds.filter(x => x.t > a && x.t <= b);
-    const raw = (from: CyaTest, list: CyaAddition[], t: number, scale: number = 1) => {
-        let v = from.ppm * dil.factor(from.t, t, s.source, k);
-        for (const a of list) if (a.t <= t) v += scale * a.ppm * dil.factor(a.t, t, s.source, k);
-        return v;
-    };
-    // closes the stretch from `a` to `b` so that it lands on b
-    const close = (a: CyaTest, b: CyaTest) => {
-        const list = between(a.t, b.t);
-        const R = raw(a, list, b.t);
-        let scale = 1, ratio = 1;
-        const addEnd = list.reduce((x, y) => x + y.ppm * dil.factor(y.t, b.t, s.source, k), 0);
-        if (list.length && addEnd > 0) {
-            scale = Math.max(0, Math.min(MAX_ADD_SCALE, 1 + (b.ppm - R) / addEnd));
-            const R2 = raw(a, list, b.t, scale);
-            if (R2 > 0 && Math.abs(R2 - b.ppm) > 1e-6) ratio = b.ppm / R2;
+        if (t <= first.t) return Math.max(MIN_CYA, first.ppm);
+        if (!n) {   // no rows: held at the newest test, less the loss at 80 F
+            let c = first;
+            for (const x of known) { if (x.t <= t) c = x; else break; }
+            return Math.max(MIN_CYA, c.ppm - tfpCyaLossPerMonth(undefined, s) * (t - c.t) / (30 * DAY_MS));
         }
-        else if (R > 0) ratio = b.ppm / R;
-        segs.push({ t0: a.t, c0: a.ppm, t1: b.t, adds: list, scale: scale, ratio: ratio });
+        const i = rowIndex(t);
+        if (i < 0 || !isFinite(vals[i])) {
+            // before the first row after the test it stands on: the test itself
+            let c = first;
+            for (const x of known) { if (x.t <= t) c = x; else break; }
+            return Math.max(MIN_CYA, c.ppm);
+        }
+        if (i === n - 1 && t > rows[n - 1].t) return Math.max(MIN_CYA, vals[i] - lossAfter * (t - rows[n - 1].t) / HOUR_MS);
+        return Math.max(MIN_CYA, vals[i]);
     };
-    let anchor = known[0];
-    notes.push({ t: anchor.t, ppm: anchor.ppm, status: 'first', addition: false });
-    let pending: { test: CyaTest; note: CyaTestNote } | undefined;
-    for (let j = 1; j < known.length; j++) {
-        const T = known[j];
-        if (pending) {
-            const P = raw(pending.test, between(pending.test.t, T.t), T.t);
-            if (Math.abs(T.ppm - P) <= s.jumpPpm) {
-                close(anchor, pending.test);
-                pending.note.status = 'confirmed';
-                anchor = pending.test; pending = undefined;
-                close(anchor, T);
-                notes.push({ t: T.t, ppm: T.ppm, projected: round1(P), status: 'accepted', addition: between(anchor.t, T.t).length > 0 });
-                anchor = T;
-                continue;
-            }
-            pending = undefined;
-        }
-        const list = between(anchor.t, T.t);
-        const R = raw(anchor, list, T.t);
-        const diff = T.ppm - R;
-        const hasAdd = list.length > 0;
-        const rise = !hasAdd && diff > s.jumpPpm;
-        const fall = diff < -Math.max(1.5 * s.jumpPpm, 0.2 * R);
-        if (rise || fall) {
-            const note: CyaTestNote = {
-                t: T.t, ppm: T.ppm, projected: round1(R), status: 'doubtful', addition: hasAdd,
-                reason: rise ? `${Math.round(diff)} ppm above the expected ${Math.round(R)} with no stabilizer logged` : `${Math.round(-diff)} ppm below the expected ${Math.round(R)}, more than dilution explains`
-            };
-            notes.push(note);
-            pending = { test: T, note: note };
-            continue;
-        }
-        close(anchor, T);
-        notes.push({ t: T.t, ppm: T.ppm, projected: round1(R), status: 'accepted', addition: hasAdd });
-        anchor = T;
-    }
-    // the open stretch after the newest test the path stands on
-    segs.push({ t0: anchor.t, c0: anchor.ppm, t1: Infinity, adds: adds.filter(x => x.t > anchor.t), scale: 1, ratio: 1 });
-    return { segs, notes, anchor };
+    const judged = events.filter(e => typeof e.implied === 'number');
+    return {
+        at: at, rainK: k, defaultK: kGeo, notes: notes, anchor: last, source: s.source,
+        runoff: judged.filter(e => e.m > 1), storms: judged, lossNow: Math.round(tfpCyaLossPerMonth(lastTemp, s) * 100) / 100
+    };
 }
 function round1(x: number): number { return Math.round(x * 10) / 10; }
-
-// The rain k from the pairs of consecutive tests the path stands on with no stabilizer added between them: ln(c1/c2) = k x inches of rain, solved by
-// least squares pulled toward k0 as if it were `priorPairs` pairs of one inch each, and kept within the bounds.
-export function estimateRainK(notes: CyaTestNote[], adds: CyaAddition[], dil: Dilution, k0: number, priorPairs: number): { k: number; pairs: number } {
-    const used = notes.filter(n => n.status !== 'doubtful');
-    let sxy = 0, sxx = 0, pairs = 0;
-    for (let i = 0; i + 1 < used.length; i++) {
-        const a = used[i], b = used[i + 1];
-        if (adds.some(x => x.t > a.t && x.t <= b.t)) continue;
-        const x = dil.rain(a.t, b.t);
-        if (!(x > 0.05) || !(a.ppm > 0) || !(b.ppm > 0)) continue;
-        sxy += x * Math.log(a.ppm / b.ppm); sxx += x * x; pairs++;
-    }
-    const k = (sxy + priorPairs * k0) / (sxx + priorPairs);
-    return { k: isFinite(k) ? Math.max(RAIN_K_MIN, Math.min(RAIN_K_MAX, k)) : k0, pairs: pairs };
-}
 
 // The path every `stepHours` hours over [from, to], for a chart.
 export function pathSamples(p: CyaPath, from: number, to: number, stepHours: number = 6): [number, number][] {
@@ -268,15 +372,30 @@ export function pathSamples(p: CyaPath, from: number, to: number, stepHours: num
     return out;
 }
 
+// How the TFP path did at the tests (a check only, it never changes the path): each test after the first against what the path expected there.
+export function pathVsTests(p: CyaPath, from: number = -Infinity): { n: number; meanMiss?: number; meanAbsMiss?: number; unexplained: number } {
+    const used = p.notes.filter(x => x.t >= from && typeof x.projected === 'number' && !x.addition);
+    if (!used.length) return { n: 0, unexplained: 0 };
+    const miss = used.map(x => x.ppm - x.projected);
+    return {
+        n: used.length, meanMiss: round1(miss.reduce((a, b) => a + b, 0) / miss.length), meanAbsMiss: round1(miss.reduce((a, b) => a + Math.abs(b), 0) / miss.length),
+        unexplained: p.notes.filter(x => x.t >= from && x.status === 'unexplained').length
+    };
+}
+
 // ---------------------------------------------------------------- model drift (advice rule 3)
 
-export interface DriftCheck { t: number; off?: boolean; implied?: number; path?: number; n: number; }
+// The rule's guards: enough intervals, sun that varied enough between them to tell the sun from the steady demand, a sun coefficient known well enough,
+// and an implied CYA that is a CYA at all. Otherwise the check does not judge (off undefined, `why` says which guard).
+export const DRIFT_GUARDS = { minIntervals: 6, minSunCv: 0.25, maxSeShare: 0.3, impliedMin: 20, impliedMax: 150, offShare: 0.2 };
+export interface DriftCheck { t: number; off?: boolean; implied?: number; path?: number; n: number; cv?: number; seShare?: number; why?: string; }
 // The burn fitted on the FC intervals of the last `days` days with CYA left free as a scale: the sun coefficient u of that fit against the main fit's a
 // says what CYA the burn implies (CYA on the path x a / u). It is off when that is at least 20% from the path and u is more than two standard errors
-// from a. Fewer than four intervals, or a sun coefficient that is not positive, cannot judge (off undefined).
+// from a, once the guards above hold.
 export function modelDrift(v: BenchVariant, fit: Fit, intervals: Interval[], rows: BenchHour[], cya: (t: number) => number, asOf: number, days: number = 14): DriftCheck {
+    const G = DRIFT_GUARDS;
     const out: DriftCheck = { t: asOf, n: 0 };
-    if (!fit || fit.fallback || !(fit.a > 0)) return out;
+    if (!fit || fit.fallback || !(fit.a > 0)) { out.why = 'no model fit'; return out; }
     const X: number[][] = [], y: number[] = [];
     for (const iv of intervals) {
         if (iv.t2 > asOf || iv.t1 < asOf - days * DAY_MS || iv.t2 - iv.t1 <= 0.3 * DAY_MS) continue;
@@ -285,19 +404,28 @@ export function modelDrift(v: BenchVariant, fit: Fit, intervals: Interval[], row
         X.push([s, gapDays(iv)]); y.push(consumption(iv));
     }
     out.n = X.length;
-    if (X.length < 4) return out;
+    if (X.length < G.minIntervals) { out.why = `${X.length} intervals, ${G.minIntervals} needed`; return out; }
+    // the sun term per day of each interval: its coefficient of variation
+    const perDay = X.map(x => x[1] > 0 ? x[0] / x[1] : 0);
+    const mean = perDay.reduce((a, b) => a + b, 0) / perDay.length;
+    const sd = Math.sqrt(perDay.reduce((a, b) => a + (b - mean) * (b - mean), 0) / Math.max(1, perDay.length - 1));
+    out.cv = mean > 0 ? Math.round(sd / mean * 1000) / 1000 : 0;
     let a11 = 0, a12 = 0, a22 = 0, v1 = 0, v2 = 0;
     for (let k = 0; k < X.length; k++) { a11 += X[k][0] * X[k][0]; a12 += X[k][0] * X[k][1]; a22 += X[k][1] * X[k][1]; v1 += X[k][0] * y[k]; v2 += X[k][1] * y[k]; }
     const det = a11 * a22 - a12 * a12;
-    if (!(Math.abs(det) > 1e-12)) return out;
-    const u = (a22 * v1 - a12 * v2) / det, b = (a11 * v2 - a12 * v1) / det;
+    if (!(Math.abs(det) > 1e-12)) { out.why = 'the sun and the days cannot be told apart'; return out; }
+    const u = (a22 * v1 - a12 * v2) / det;
     let sse = 0;
-    for (let k = 0; k < X.length; k++) { const r = y[k] - u * X[k][0] - b * X[k][1]; sse += r * r; }
+    for (let k = 0; k < X.length; k++) { const r = y[k] - u * X[k][0] - ((a11 * v2 - a12 * v1) / det) * X[k][1]; sse += r * r; }
     const se = Math.sqrt(Math.max(0, sse / Math.max(1, X.length - 2)) * a22 / det);
     out.path = round1(cya(asOf));
-    if (!(u > 0)) return out;
+    if (!(u > 0)) { out.why = 'the sun coefficient is not positive'; return out; }
     out.implied = round1(out.path * fit.a / u);
-    out.off = Math.abs(out.implied / out.path - 1) >= 0.2 && Math.abs(u - fit.a) > 2 * se;
+    out.seShare = Math.round(se / u * 1000) / 1000;
+    if (out.cv < G.minSunCv) { out.why = `the sun varied too little (CV ${out.cv}, ${G.minSunCv} needed)`; return out; }
+    if (out.seShare > G.maxSeShare) { out.why = `the sun coefficient is too uncertain (SE ${Math.round(out.seShare * 100)}% of it)`; return out; }
+    if (out.implied < G.impliedMin || out.implied > G.impliedMax) { out.why = `the implied CYA ${out.implied} is outside ${G.impliedMin}-${G.impliedMax}`; return out; }
+    out.off = Math.abs(out.implied / out.path - 1) >= G.offShare && Math.abs(u - fit.a) > 2 * se;
     return out;
 }
 
@@ -307,16 +435,16 @@ export const CYA_ADVICE = { ageDays: 28, dropPpm: 10, dropShare: 0.15, missPpm: 
 export interface CyaAdviceRule { rule: number; reason: string; since: number; }
 export interface CyaAdvice { due: boolean; rule?: number; reason?: string; since?: string; rules: { rule: number; reason: string; since: string }[]; }
 export interface CyaMiss { t: number; miss: number; sunShare?: number; }
-// The order a note is shown in when several rules hold: a doubtful test first, then a fresh addition, the model, the misses, the path, the age.
+// The order a note is shown in when several rules hold: an unexplained test first, then a fresh addition, the model, the misses, the path, the age.
 const PRIORITY = [6, 5, 3, 4, 2, 1];
 
 // Whether a CYA test is worth doing now, and why (advisory only). Every rule is judged after the newest CYA test, so a newer test clears it:
 //   1 age: the newest test is ageDays old
 //   2 projected drift: the path has fallen dropPpm or dropShare below the test it stands on
-//   3 model drift: the model drift was off at the last two checks
+//   3 model drift: the model drift was off at the last two checks (see DRIFT_GUARDS for when it judges at all)
 //   4 misses: the last three FC projections missed the same way by more than missPpm on days the sun was missSunShare of the burn
 //   5 stabilizer added: addAfterDays after a logged addition (once it has dissolved), until a test
-//   6 unexplained jump: the newest test is doubtful (see cyaPath); a confirming test is asked for
+//   6 unexplained test: the newest test is far from the TFP path (see cyaPath); a confirming test would help. The path stands on the test.
 export function cyaAdvice(now: number, path: CyaPath, additions: CyaAddition[], drift: DriftCheck[], misses: CyaMiss[], fmt: (t: number) => string = t => new Date(t).toISOString()): CyaAdvice {
     const found: CyaAdviceRule[] = [];
     const notes = path.notes.filter(n => n.t <= now);
@@ -324,7 +452,7 @@ export function cyaAdvice(now: number, path: CyaPath, additions: CyaAddition[], 
     const after = newest ? newest.t : -Infinity;
     if (!newest) found.push({ rule: 1, reason: 'No CYA test is logged.', since: now });
     else {
-        if (newest.status === 'doubtful') found.push({ rule: 6, reason: `The CYA test of ${fmt(newest.t)} (${newest.ppm}) is ${newest.reason}; a second test would confirm it. Until then the bench keeps the CYA path without it.`, since: newest.t });
+        if (newest.status === 'unexplained') found.push({ rule: 6, reason: `The CYA test of ${fmt(newest.t)} (${newest.ppm}) is ${newest.reason}; a confirming test would help. The path uses the test.`, since: newest.t });
         const add = additions.filter(a => a.t > after && a.t <= now).sort((a, b) => a.t - b.t)[0];
         if (add && now >= add.t + CYA_ADVICE.addAfterDays * DAY_MS)
             found.push({ rule: 5, reason: `Stabilizer was added ${fmt(add.t)} (about ${Math.round(add.ppm)} ppm); a test now shows what it really added.`, since: add.t + CYA_ADVICE.addAfterDays * DAY_MS });
@@ -343,7 +471,7 @@ export function cyaAdvice(now: number, path: CyaPath, additions: CyaAddition[], 
         if (base.ppm - nowVal >= limit || (base.ppm - nowVal) / base.ppm >= CYA_ADVICE.dropShare) {
             let since = now;
             for (let t = base.t + DAY_MS; t <= now; t += DAY_MS) { const v = path.at(t); if (base.ppm - v >= limit || (base.ppm - v) / base.ppm >= CYA_ADVICE.dropShare) { since = t; break; } }
-            found.push({ rule: 2, reason: `The CYA path has fallen from ${base.ppm} to about ${Math.round(nowVal)} since the test of ${fmt(base.t)} (rain dilution).`, since: since });
+            found.push({ rule: 2, reason: `The CYA path has fallen from ${base.ppm} to about ${Math.round(nowVal)} since the test of ${fmt(base.t)} (TFP's CYA loss and rain dilution).`, since: since });
         }
         if (now - newest.t >= CYA_ADVICE.ageDays * DAY_MS) found.push({ rule: 1, reason: `The last CYA test was ${Math.floor((now - newest.t) / DAY_MS)} days ago (${fmt(newest.t)}).`, since: newest.t + CYA_ADVICE.ageDays * DAY_MS });
     }
