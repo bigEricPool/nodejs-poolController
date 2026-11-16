@@ -74,11 +74,11 @@ export interface SwgLogReading {
     ok: boolean; reason?: string;
     percent?: number; superChlorOn?: boolean; lbsPerDay?: number; gallons?: number;
 }
-export interface SwgLogSettings { enabled: boolean; hours: number; }
+export interface SwgLogSettings { enabled: boolean; hours: number; hoursSource?: 'schedule' | 'set'; hoursNote?: string; }
 type Client = Pick<PoolMathClient, 'request' | 'poolId' | 'ensureSession' | 'credentialsFileFound'> & { userId?: string; lastSignInAt?: number; lastSignInError?: string };
 
 export interface SwgLogStatus {
-    enabled: boolean; hoursPerDay: number;
+    enabled: boolean; hoursPerDay: number; hoursSource?: 'schedule' | 'set'; hoursNote?: string;
     credentialsFile: 'found' | 'missing';
     lastSignIn?: { ok: boolean; at?: string };
     lastError?: string; lastErrorAt?: string;
@@ -152,7 +152,7 @@ export class SwgLogWriter {
             if (!clockLooksSet(now)) { this.note = 'Waiting for the clock to be set.'; return; }
             const r = this.deps.reading();
             if (!r.ok) { this.note = r.reason; this.candidate = undefined; await this.sendDue(now); return; }
-            this.note = set.hours > 0 ? undefined : 'Set the SWG run hours a day; nothing is written until then.';
+            this.note = set.hours > 0 ? undefined : 'Choose the SWG schedule or set the run hours a day; nothing is written until then.';
             const pct = r.percent;
             if (justEnabled) { this.candidate = undefined; this.setBaseline(pct, now, 'the writing was turned on'); }
             else if (now - this.startedAt < STARTUP_GRACE_MS || !this.data.baseline) { this.candidate = undefined; this.setBaseline(pct, now, 'njsPC started'); }
@@ -256,7 +256,7 @@ export class SwgLogWriter {
         let found = false;
         try { found = this.deps.client.credentialsFileFound(); } catch (err) { /* not found */ }
         return {
-            enabled: set.enabled, hoursPerDay: set.hours,
+            enabled: set.enabled, hoursPerDay: set.hours, hoursSource: set.hoursSource, hoursNote: set.hoursNote,
             credentialsFile: found ? 'found' : 'missing',
             lastSignIn,
             lastError: d.lastError, lastErrorAt: iso(d.lastErrorAt),
