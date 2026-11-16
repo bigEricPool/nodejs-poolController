@@ -152,7 +152,7 @@
       "name": "feature/swg-restart-credit",
       "kind": "feature",
       "status": "active",
-      "purpose": "SWG Assist credits the extra cell on-time from njsPC restarts inside the SWG run window (a restart can start the cell's 3-hour cycle early). On feature/swg-assist-poolmath-feed; no settings, no dashPanel part.",
+      "purpose": "SWG Assist counts what the cell made from its 3-hour cycles in the chlorinator power log (current first, a new cycle at each power-on, stall lines count as off/on) in place of % x run window, for the burn, projection, range, Tune and guards; this takes in njsPC restarts. On feature/swg-assist-poolmath-feed; no settings, no dashPanel part.",
       "depends": [
         "feature/swg-assist-poolmath-feed"
       ],
