@@ -278,6 +278,17 @@ function recordAutoSwgChange(record: Parameters<typeof appendAutoSwgHistory>[0])
     catch (err) { logger.warn(`SWG Assist: could not hand the change to the PoolMath SWG log: ${err.message}`); }
 }
 
+// The cycle settings of the chlorinator SWG Assist controls (the one chosen, otherwise the first), for the restart credit (see AutoSwgRestarts.ts).
+function autoSwgChlorCycle(cfg: typeof sys.autoSwg): { id: number; cycleHours: number; restartsOnPower: boolean; burstFirst: boolean } | undefined {
+    try {
+        const chlors = sys.chlorinators.toArray();
+        const chlor = chlors.find(c => c.id === cfg.chlorinatorId) || chlors[0];
+        if (!chlor || !(chlor.cycleHours > 0)) return undefined;
+        return { id: chlor.id, cycleHours: chlor.cycleHours, restartsOnPower: chlor.cycleRestartsOnPower, burstFirst: chlor.burstFirst };
+    }
+    catch (err) { return undefined; }
+}
+
 // Super chlorinate on the chlorinator SWG Assist controls (see AutoSwgSuperChlorHold.ts).
 function autoSwgSuperChlorOn(): boolean {
     try {
@@ -552,6 +563,7 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
         saltDrop: saltDrop,
         storm: storm,
         outages: stormOutages,
+        chlorCycle: autoSwgChlorCycle(cfg),
     }, undefined, toLocalSwgEntries(readAutoSwgHistory()), refreshAutoSwgArchiveFromPage);
     // Away protection ends by itself when an FC reading logged in PoolMath after it was turned on shows up: the test you take when you are back, or any test
     // while you are away. Everything it was holding back (Auto-Apply and the rest) acts again from here, on a fresh reading.
@@ -943,6 +955,7 @@ function autoSwgReportParams(cfg: typeof sys.autoSwg): AutoSwgParams {
         overshootPpmPerDay: cfg.overshootPpmPerDay,
         troughFloor: cfg.protectOvernightLow,
         burnTempAdjust: cfg.burnTempAdjust,
+        chlorCycle: autoSwgChlorCycle(cfg),
     };
 }
 
