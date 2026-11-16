@@ -24,8 +24,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //
 // The power events come from data/chlorinatorPowerLog.jsonl (one line each time a chlorinator's power turns on or off: {t, id, on}; see
 // ChlorinatorPowerLog.ts). The file is read here by path, like the super chlorinate log (AutoSwgSuperChlor.ts): SWG Assist works without the logging
-// layer, and no file means no count. What the log cannot show is not counted: a power drop njsPC never saw (for example a relay whose latch on the REM
-// expired while njsPC was stalled) leaves no lines, so the cycles are placed as if the power had stayed on.
+// layer, and no file means no count. What the log cannot show is not counted: a power drop njsPC never saw leaves no lines, so the cycles are placed as
+// if the power had stayed on. A relay whose latch on the REM expired while njsPC was stalled is seen when the logging writes stall lines (an off/on pair
+// with cause "stall"); those count like any other off/on, which is right: the power did drop and the cell starts a new cycle.
 
 import * as fs from 'fs';
 import * as path from 'path';

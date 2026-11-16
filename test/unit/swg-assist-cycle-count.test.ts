@@ -55,6 +55,13 @@ describe('cycle count: synthetic', () => {
         const text = '{"t":"2026-11-10T07:00:00Z","id":50,"on":true}\n{"t":"2026-11-10T08:00:00Z","id":51,"on":false}\n{"t":"2026-11-10T19:00:00Z","id":50,"on":false}\n{"t":"2026';
         expect(parsePowerLog(text, 50)).toEqual([{ t: at(7), on: true }, { t: at(19), on: false }]);
     });
+    it('a stall pair (cause "stall") reads and counts like any other off/on: the cycle restarts', () => {
+        const text = '{"t":"2026-11-10T07:00:00Z","id":50,"on":true}\n{"t":"2026-11-10T08:00:00Z","id":50,"on":false,"cause":"stall"}\n'
+            + '{"t":"2026-11-10T08:00:02Z","id":50,"on":true,"cause":"stall"}\n{"t":"2026-11-10T19:00:00Z","id":50,"on":false}';
+        const ev = parsePowerLog(text, 50);
+        expect(ev).toEqual([{ t: at(7), on: true }, { t: at(8), on: false }, { t: at(8) + 2000, on: true }, { t: at(19), on: false }]);
+        expect(cycleGenerationPpm(ev, at(0), at(24), CYCLE, () => 11, RATED)).toBeCloseTo(5 * ON_11, 9);
+    });
 });
 
 // Through the calculation, synthetic: 11% all along, power 07:00-19:00 UTC each day (the run window), readings every 2 days.
