@@ -138,6 +138,17 @@
       "build": true
     },
     {
+      "name": "feature/swg-restart-credit",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "SWG Assist credits the extra cell on-time from njsPC restarts inside the SWG run window (a restart can start the cell's 3-hour cycle early). On feature/swg-assist-poolmath-feed; no settings, no dashPanel part.",
+      "depends": [
+        "feature/swg-assist-poolmath-feed"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "archive/2026-11-13/feature/dashboard-enhancements",
       "kind": "archive",
       "status": "archive",
