@@ -47,7 +47,7 @@ import { SUPER_CHLOR_APPLY_REFUSED, SUPER_CHLOR_HELD, SUPER_CHLOR_HOLD_NOTE, sup
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
-import { poolMathSwgLogStatus } from "../../../controller/PoolMathSwgLogService";
+import { poolMathSwgLogStatus, setPoolMathSwgFeeder, submitPoolMathSwgEntry } from "../../../controller/PoolMathSwgLogService";
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
@@ -155,7 +155,7 @@ function logManualSwgChange(previousPct: number, pct: number) {
         let capacity: { ppmPerDayAtFull: number; hours: number };
         try { capacity = computeSwgCapacity({ gallons: cfg.gallons, swgLbsPerDay: cfg.swgLbsPerDay, swgStartTime: win.swgStartTime, swgStopTime: win.swgStopTime }); }
         catch (err) { logger.warn(`SWG Assist: logging a manual SWG % change without a ppm/day figure: ${err.message}`); }
-        appendAutoSwgHistory({
+        recordAutoSwgChange({
             source: 'manual',
             appliedAt: new Date().toISOString(),
             appliedPct: pct,
@@ -211,6 +211,26 @@ const AUTO_SWG_STEP_MIN_DELAY_MS = 60 * 1000;
 const AUTO_SWG_STEP_RETRY_MS = 5 * 60 * 1000;
 const AUTO_SWG_TIMER_MAX_MS = 2 * 24 * 60 * 60 * 1000;
 let autoSwgStepTimer: NodeJS.Timeout | undefined;
+
+// The PoolMath SWG log (PoolMathSwgLogService.ts) takes its SWG changes from SWG Assist while SWG Assist runs the only chlorinator: each PoolMath
+// entry then has exactly the time, %, rate and hours of SWG Assist's own record, and the writer stops watching the % setting. Looked at again on
+// every (re)arm of the automatic check (start and every settings save) and every 10 minutes with the alerts.
+function updateAutoSwgPoolMathFeeder() {
+    try {
+        const chlors = sys.chlorinators.toArray();
+        const feeds = sys.autoSwg.enabled && chlors.length === 1 && chlors[0].id === sys.autoSwg.chlorinatorId;
+        setPoolMathSwgFeeder(feeds ? 'SWG Assist' : undefined);
+    }
+    catch (err) { logger.warn(`SWG Assist: could not register with the PoolMath SWG log: ${err.message}`); }
+}
+// Writes an SWG % change (an apply, a step or a manual change) to the history, and hands it to the PoolMath SWG log when it is one the
+// calculation reads as an SWG entry (the same test as toLocalSwgEntries: a %, a rate and hours).
+function recordAutoSwgChange(record: Parameters<typeof appendAutoSwgHistory>[0]) {
+    appendAutoSwgHistory(record);
+    if (typeof record.appliedPct !== 'number' || typeof record.ppmPerDay !== 'number' || typeof record.hrs !== 'number') return;
+    try { submitPoolMathSwgEntry({ ts: record.appliedAt, percent: record.appliedPct, hours: record.hrs, ppmPerDay: record.ppmPerDay }); }
+    catch (err) { logger.warn(`SWG Assist: could not hand the change to the PoolMath SWG log: ${err.message}`); }
+}
 
 // Super chlorinate on the chlorinator SWG Assist controls (see AutoSwgSuperChlorHold.ts).
 function autoSwgSuperChlorOn(): boolean {
@@ -324,7 +344,7 @@ async function runAutoSwgStep() {
         let capacity: { ppmPerDayAtFull: number; hours: number };
         try { capacity = computeSwgCapacity({ gallons: cfg.gallons, swgLbsPerDay: cfg.swgLbsPerDay, swgStartTime: win.swgStartTime, swgStopTime: win.swgStopTime }); }
         catch (err) { logger.warn(`SWG Assist: logging the step without a ppm/day figure: ${err.message}`); }
-        appendAutoSwgHistory({
+        recordAutoSwgChange({
             source: 'auto',
             trigger: 'step',
             appliedAt: state.autoSwg.lastAppliedAt,
@@ -727,7 +747,7 @@ async function applyAutoSwgRecommendation(isAutoApply: boolean, pctOverride?: nu
         let calcOutputs = Object.assign({}, details);
         delete calcOutputs.inputs; // recorded separately as `inputs`
         let outputs = Object.assign(stateSnapshot, calcOutputs);
-        appendAutoSwgHistory({
+        recordAutoSwgChange({
             source: 'auto',
             trigger: trigger || (isAutoApply ? undefined : 'reviewed'),
             algorithm: AUTO_SWG_ALGORITHM_VERSION,
@@ -774,6 +794,7 @@ function clearAutoSwgAutoCheck() {
 // takes effect immediately rather than needing a restart.
 export function armAutoSwgAutoCheck(minDelayMs: number = 0, firstRunMs?: number) {
     clearAutoSwgAutoCheck();
+    updateAutoSwgPoolMathFeeder();
     let cfg = sys.autoSwg;
     let wasDue = state.autoSwg.nextAutoCheckAt;
     state.autoSwg.nextAutoCheckAt = undefined;
@@ -1110,6 +1131,7 @@ function dismissAutoSwgOutages(alertId?: string): number {
 }
 function watchAutoSwg() {
     updateAutoSwgSuperChlorHold();
+    updateAutoSwgPoolMathFeeder();
     try {
         let cfg = sys.autoSwg;
         if (state.autoSwg.awayTargetFc !== cfg.awayTargetFc) state.autoSwg.awayTargetFc = cfg.awayTargetFc;
