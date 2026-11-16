@@ -1956,6 +1956,10 @@ export class StateRoute {
         app.get('/state/autoSwg/bench/cya', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.cyaReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
         });
+        // The bench's water balance: pH and CSI projections, the fits and scores, the acid advice and the dose checks (advisory only).
+        app.get('/state/autoSwg/bench/chem', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.chemReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
+        });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {

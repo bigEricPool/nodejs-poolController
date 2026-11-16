@@ -4028,6 +4028,10 @@ export class AutoSwgState extends EqState {
     // Advisory only: nothing reads it to change the SWG %. An object accessor: the bench sets the whole object, and only when it changed.
     public get benchCyaAdvice(): any { return this.data.benchCyaAdvice; }
     public set benchCyaAdvice(val: any) { this.setDataVal('benchCyaAdvice', val); }
+    // The Model Bench's acid advice (AutoSwgBenchChem.acidAdvice): { level 'none' | 'recommended' | 'needed', reason, at, ph, csi, doseFlOz, doseTo, ... }.
+    // Advisory only, like benchCyaAdvice: an object accessor the bench sets whole, only when it changed.
+    public get benchAcidAdvice(): any { return this.data.benchAcidAdvice; }
+    public set benchAcidAdvice(val: any) { this.setDataVal('benchAcidAdvice', val); }
     // Background PoolMath history sync (see PoolMathSync.ts): when it last succeeded, how
     // many entries and how far back the archive goes, and the last failure (cleared on success).
     public get archiveSyncedAt(): string { return this.data.archiveSyncedAt; }
