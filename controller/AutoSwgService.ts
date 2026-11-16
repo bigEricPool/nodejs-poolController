@@ -1163,7 +1163,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     // really made, counted by its cycles (see AutoSwgCycleCount.ts), in place of the % over the run window. That takes in the restarts (a fresh on-period
     // each), a power-off part way through an on-period, and power outside the window. The % of a cycle is the SWG entry in effect at its start, without
     // PoolMath's 100% entries for super chlorinate runs (the run is credited separately, above). Hours before the log begins keep the run window. Power drops
-    // njsPC never saw (a REM relay latch expiring while njsPC was stalled) leave no lines and are not counted. A past calculation (asOf) sees only the
+    // njsPC never saw leave no lines and are not counted (stall lines, cause "stall", count like any off/on; see AutoSwgCycleCount.ts). A past calculation (asOf) sees only the
     // events logged by then. Only what was made is counted this way; the % for the future is still worked out from the run window.
     const cyc = params.chlorCycle;
     const cycleOn = !!cyc && cyc.cycleHours > 0 && ratedPpmPer24h > 0;
