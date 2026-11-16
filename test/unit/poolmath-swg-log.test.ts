@@ -164,16 +164,23 @@ describe('super chlorinate', () => {
         w.superChlorEnded({ id: 50, start, end: now, reason: 'timer', hours: 8, poweredHours: 7.6, atStartup: false });
         await run(w, 30000);
         expect(posts.map(p => [p.Percent, p.runTime, p.Amount, p.logTimestamp])).toEqual([
-            [100, 8, swgPpm(1.47, 100, 7.6, 12000), new Date(start).toISOString().replace('.000Z', 'Z')],
+            [100, 7.6, swgPpm(1.47, 100, 7.6, 12000, 2), new Date(start).toISOString().replace('.000Z', 'Z')],
             [30, 9, swgPpm(1.47, 30, 9, 12000), expect.any(String)],
         ]);
         await run(w, 10 * MIN);
         expect(posts.length).toBe(2);   // the % after the run is the starting point: no extra change entry
     });
-    it('writes nothing to PoolMath for a run with under half an hour of power', async () => {
+    it('writes a short run to 0.1 h with the FC it made to 0.01', async () => {
         const w = writer();
         await run(w, STARTUP_GRACE_MS + MIN);
-        w.superChlorEnded({ id: 50, start: now - 10 * MIN, end: now, reason: 'turnedOff', hours: 0.17, poweredHours: 0.17, atStartup: false });
+        w.superChlorEnded({ id: 50, start: now - 4 * MIN, end: now, reason: 'turnedOff', hours: 0.0583, poweredHours: 0.0583, atStartup: false });
+        await run(w, 30000);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[100, 0.1, 0.04], [34, 9, swgPpm(1.47, 34, 9, 12000)]]);
+    });
+    it('writes nothing to PoolMath for a run with under 3 minutes of power', async () => {
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        w.superChlorEnded({ id: 50, start: now - 2 * MIN, end: now, reason: 'turnedOff', hours: 0.03, poweredHours: 0.03, atStartup: false });
         await run(w, 5 * MIN);
         expect(posts).toEqual([]);
     });
@@ -289,20 +296,20 @@ describe('feeder', () => {
         expect(w.submit({ ts, percent: 30, hours: 11.62, ppm: 1.87 })).toBe(true);
         await run(w, HOLD_MS + MIN);
         expect(posts.length).toBe(1);
-        expect(posts[0]).toMatchObject({ Percent: 30, runTime: 12, Amount: 1.87, NormalizedAmount: 1.87, logTimestamp: new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+        expect(posts[0]).toMatchObject({ Percent: 30, runTime: 11.6, Amount: 1.87, NormalizedAmount: 1.87, logTimestamp: new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z') });
         expect(w.status().feeder).toBe('Test Feeder');
     });
-    it('writes a handed-in change only when the % or whole hours differ from the last logged', async () => {
+    it('writes a handed-in change only when the % or hours (to 0.1 h) differ from the last logged', async () => {
         feeder = 'Test Feeder';
         const w = writer();
         await run(w, STARTUP_GRACE_MS + MIN);
         w.submit({ ts: fedAt(), percent: 30, hours: 11.6, ppm: 1.87 });
         await run(w, HOLD_MS + MIN);
-        w.submit({ ts: fedAt(), percent: 30, hours: 11.7, ppm: 1.88 });   // same % and whole hours: nothing new
+        w.submit({ ts: fedAt(), percent: 30, hours: 11.62, ppm: 1.88 });   // same % and the same 0.1 h: nothing new
         await run(w, HOLD_MS + MIN);
-        w.submit({ ts: fedAt(), percent: 30, hours: 12.6, ppm: 2.03 });   // the run time crossed into 13 h
+        w.submit({ ts: fedAt(), percent: 30, hours: 11.7, ppm: 1.89 });    // the run time moved to 11.7 h
         await run(w, HOLD_MS + MIN);
-        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[30, 12, 1.87], [30, 13, 2.03]]);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[30, 11.6, 1.87], [30, 11.7, 1.89]]);
     });
     it('writes only the last of several handed-in changes within the hold', async () => {
         feeder = 'Test Feeder';
@@ -327,7 +334,7 @@ describe('feeder', () => {
         reading = pctReading(34);
         w.superChlorEnded({ id: 50, start: now - 4 * H, end: now, reason: 'timer', hours: 4, poweredHours: 4, atStartup: false });
         await run(w, 30000);
-        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[34, 12, 2.13], [100, 4, swgPpm(1.47, 100, 4, 12000)], [34, 12, 2.13]]);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[34, 11.6, 2.13], [100, 4, swgPpm(1.47, 100, 4, 12000, 2)], [34, 11.6, 2.13]]);
     });
     it('refuses changes that are not usable', () => {
         feeder = 'Test Feeder';

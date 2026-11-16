@@ -50,13 +50,13 @@ export function submitPoolMathSwgEntry(e: { ts: number | string | Date; percent:
     return writer.submit({ ts, percent: Number(e.percent), hours: Number(e.hours), ppm: Number(e.ppmPerDay) });
 }
 
-// The whole hours of a run window (one ending before it starts runs past midnight); 0 when there is none.
+// The hours of a run window to 0.1 h, as PoolMath keeps them (one ending before it starts runs past midnight); 0 when there is none.
 export function windowHours(start: Date | null | undefined, end: Date | null | undefined): number {
     if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
     let ms = end.getTime() - start.getTime();
     if (ms <= 0) ms += 24 * 3600 * 1000;
-    const h = Math.round(ms / 3600000);
-    return h >= 1 && h <= 24 ? h : 0;
+    const h = Math.round(ms / 360000) / 10;
+    return h >= 0.1 && h <= 24 ? h : 0;
 }
 
 // The run hours sent with each entry: the chosen schedule's window for the day (sunrise/sunset times as calculated for today), else the
@@ -79,7 +79,7 @@ export function swgLogSettings(): SwgLogSettings {
         hours = windowHours(new Date(base.getTime() + sched.startTime * 60000), new Date(base.getTime() + sched.endTime * 60000));
     }
     if (!(hours > 0)) { set.hoursNote = `Schedule #${id} has no run window today, so ${fallback}.`; return set; }
-    return { enabled: pm.swgLogEnabled, hours, hoursSource: 'schedule', hoursNote: `${hours} h from schedule #${id} (circuit ${sched.circuit}), rounded to whole hours.` };
+    return { enabled: pm.swgLogEnabled, hours, hoursSource: 'schedule', hoursNote: `${hours} h from schedule #${id} (circuit ${sched.circuit}), to 0.1 h.` };
 }
 
 function reading(): SwgLogReading {
@@ -122,7 +122,7 @@ export function poolMathSwgLogStatus(): SwgLogStatus | { enabled: boolean } {
     return writer ? writer.status() : { enabled: sys.poolMath.swgLogEnabled };
 }
 
-// swgLogEnabled (true/false), swgLogHours (whole hours from 1 to 24; 0 or null clears it) and swgLogScheduleId (a schedule's id, or -1
+// swgLogEnabled (true/false), swgLogHours (hours from 0.1 to 24, to 0.1 h; 0 or null clears it) and swgLogScheduleId (a schedule's id, or -1
 // or null for the hours set by hand) from PUT /config/poolMath.
 export function setPoolMathSwgLogSettings(obj: any) {
     if (!obj) return;
@@ -134,7 +134,7 @@ export function setPoolMathSwgLogSettings(obj: any) {
     }
     if (typeof obj.swgLogHours !== 'undefined') {
         const v = obj.swgLogHours === null || obj.swgLogHours === '' ? 0 : Number(obj.swgLogHours);
-        if (!Number.isInteger(v) || v < 0 || v > 24) throw new RangeError('The SWG run hours a day must be a whole number of hours from 1 to 24 (0 clears it).');
+        if (!isFinite(v) || v < 0 || v > 24 || Math.abs(v * 10 - Math.round(v * 10)) > 1e-6) throw new RangeError('The SWG run hours a day must be from 0.1 to 24, to 0.1 h (0 clears it).');
         sys.poolMath.swgLogHours = v;
     }
     if (typeof obj.swgLogEnabled !== 'undefined') {

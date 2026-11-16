@@ -1,5 +1,5 @@
 // The PoolMath SWG log's run hours from a schedule (controller/PoolMathSwgLogService.ts): the chosen schedule's window for the day, rounded
-// to whole hours, else the hours set by hand. sys and state are small fakes.
+// to 0.1 h, else the hours set by hand. sys and state are small fakes.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fx = vi.hoisted(() => ({
@@ -27,8 +27,9 @@ beforeEach(() => {
 });
 
 describe('windowHours', () => {
-    it('rounds the window to whole hours', () => {
-        expect(windowHours(at(6, 52), at(17, 31))).toBe(11);
+    it('rounds the window to 0.1 h', () => {
+        expect(windowHours(at(6, 52), at(17, 31))).toBe(10.7);
+        expect(windowHours(at(6, 49), at(18, 49))).toBe(12);
         expect(windowHours(at(7), at(16))).toBe(9);
     });
     it('handles a window past midnight and no window', () => {
@@ -43,7 +44,7 @@ describe('swgLogSettings', () => {
     });
     it('uses the chosen schedule\'s window for the day', () => {
         fx.poolMath.swgLogScheduleId = 3;
-        expect(swgLogSettings()).toMatchObject({ enabled: true, hours: 11, hoursSource: 'schedule' });
+        expect(swgLogSettings()).toMatchObject({ enabled: true, hours: 10.7, hoursSource: 'schedule' });
     });
     it('falls back to the schedule\'s saved times when today\'s window is not known', () => {
         fx.poolMath.swgLogScheduleId = 3;
