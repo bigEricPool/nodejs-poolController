@@ -2859,6 +2859,10 @@ export class ChlorinatorState extends EqState {
     public get usageHours(): number { return this.data.usageHours || 0; }
     public get usagePounds(): number { return this.data.usagePounds || 0; }
     public get usageSince(): number { return this.data.usageSince || 0; }
+    /** For a cell counted by cycles: the time up to which its cycles have been added to the totals, so the lines of an hour split by a
+     * restart each add only their own part of the hour. Set with the totals (resetUsage) and moved on as each hour is added. */
+    public get usageCountedTo(): number { return this.data.usageCountedTo || 0; }
+    public set usageCountedTo(val: number) { if (Number.isFinite(val) && val > this.usageCountedTo) this.setDataVal('usageCountedTo', val); }
     /** Hours the output was above 0 (the cell enabled; it is energized only part of that time). The equivalent hours above are the work it did. */
     public get usageRunHours(): number { return this.data.usageRunHours || 0; }
     /** Pounds of the total that were estimated from pool log SWG entries, for the time before the output log began. */
@@ -2877,6 +2881,7 @@ export class ChlorinatorState extends EqState {
         this.setDataVal('usageRunHours', runHours);
         this.setDataVal('usageEstimatedPounds', estimatedPounds > 0 ? Math.min(estimatedPounds, pounds) : 0);
         this.setDataVal('usageSince', since);
+        this.setDataVal('usageCountedTo', since);
     }
     public calcSaltRequired(saltTarget?: number) : number {
         if (typeof saltTarget === 'undefined') saltTarget = sys.chlorinators.getItemById(this.id, false).saltTarget || 0;

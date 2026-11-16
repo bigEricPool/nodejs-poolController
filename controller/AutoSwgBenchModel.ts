@@ -30,7 +30,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // A miss is the test minus the projection; it equals the projected loss minus the actual loss.
 
 import { ChlorinatorOutputHour } from './ChlorinatorLog';
-import { cellUsageForHour, CycleContext } from './ChlorinatorUsage';
+import { cellUsageSince, CycleContext } from './ChlorinatorUsage';
 
 export const HOUR_MS = 3600000;
 export const DAY_MS = 24 * HOUR_MS;
@@ -272,15 +272,21 @@ export function buildHourlyInputs(src: BenchSources, from: number, to: number, g
         }
         rows.push(r); index.set(t, r);
     }
-    // the cell: each logged hour (keyed by its start) through the cycle count; the hours before the log from the SWG entries
+    // the cell: each logged hour (keyed by its start) through the base's count, which counts an hour once from all its lines (an njsPC
+    // restart splits an hour into two or three); the hours before the log from the SWG entries
     let logStart = Infinity;
+    const linesByHour = new Map<number, ChlorinatorOutputHour[]>();
     for (const h of src.outputHours || []) {
         const start = new Date(h.t).getTime();
         if (!isFinite(start)) continue;
         logStart = Math.min(logStart, start);
+        if (!index.has(start + HOUR_MS)) continue;
+        const list = linesByHour.get(start);
+        if (list) list.push(h); else linesByHour.set(start, [h]);
+    }
+    for (const [start, lines] of Array.from(linesByHour.entries())) {
         const r = index.get(start + HOUR_MS);
-        if (!r) continue;
-        const u = cellUsageForHour(h, src.cellLbsPerDay, src.cycle);
+        const u = cellUsageSince(lines, start, src.cellLbsPerDay, src.cycle, to);
         r.gen += poundsToPpm(u.pounds, src.gallons);
         r.genFrom = 'log';
     }
