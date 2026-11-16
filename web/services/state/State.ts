@@ -43,7 +43,7 @@ import { buildSteps, rangeSince } from "../../../controller/AutoSwgSteps";
 import { appendAutoSwgHistory, logAutoSwgSettingChanges, readAutoSwgHistory, snapshotAutoSwgSettings, toLocalSwgEntries, AutoSwgApplyTrigger, AUTO_SWG_ALGORITHM_VERSION } from "../../../controller/AutoSwgHistory";
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedSwgEvents, archivedWaterTemps, saltAdditionPpm, isPoolMathArchiveCurrent, syncPoolMathArchive } from "../../../controller/PoolMathArchive";
 import { migrateToChlorinatorLog } from "../../../controller/AutoSwgMigration";
-import { SUPER_CHLOR_APPLY_REFUSED, SUPER_CHLOR_HELD, SUPER_CHLOR_HOLD_NOTE, superChlorHoldUpdate, superChlorOn } from "../../../controller/AutoSwgSuperChlorHold";
+import { SUPER_CHLOR_APPLY_REFUSED, SUPER_CHLOR_HELD, SUPER_CHLOR_HOLD_NOTE, normalSwgPct, superChlorHoldUpdate, superChlorOn } from "../../../controller/AutoSwgSuperChlorHold";
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
@@ -243,12 +243,22 @@ function autoSwgSuperChlorOn(): boolean {
     }
     catch (err) { return false; }
 }
+// The normal % now (the setpoint during a run, not the 100% output); the last % shown when the chlorinator can't be read.
+function autoSwgNormalPct(): number | undefined {
+    try {
+        const id = sys.autoSwg.chlorinatorId;
+        const chlor = typeof id === 'number' ? sys.chlorinators.toArray().find(c => c.id === id) : undefined;
+        const pct = chlor ? normalSwgPct(state.chlorinators.getItemById(chlor.id, false)) : undefined;
+        return typeof pct === 'number' ? pct : state.autoSwg.currentPct;
+    }
+    catch (err) { return state.autoSwg.currentPct; }
+}
 // Holds an automatic change while super chlorinate is on: recorded in the history as held, and remembered so a check is made up when the run ends.
 function holdForSuperChlor(what: string, pct: number, trigger?: AutoSwgApplyTrigger) {
     const now = new Date().toISOString();
     logger.info(`SWG Assist: ${what} of ${pct}% held: super chlorinate is on. A check is made up when it ends.`);
     try {
-        appendAutoSwgHistory({ source: 'held', held: SUPER_CHLOR_HELD, trigger: trigger, algorithm: AUTO_SWG_ALGORITHM_VERSION, appliedAt: now, recommendedPct: pct, previousPct: state.autoSwg.currentPct });
+        appendAutoSwgHistory({ source: 'held', held: SUPER_CHLOR_HELD, trigger: trigger, algorithm: AUTO_SWG_ALGORITHM_VERSION, appliedAt: now, recommendedPct: pct, previousPct: autoSwgNormalPct() });
     }
     catch (err) { logger.error(`SWG Assist: could not write the held change to the history: ${err.message}`); }
     state.autoSwg.superChlorHeldAt = now;
@@ -537,7 +547,7 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
     state.autoSwg.staleFcNote = result.staleFcNote;
     state.autoSwg.fcAnomalyNote = result.fcAnomalyNote;
     state.autoSwg.ratingNote = result.ratingNote;
-    state.autoSwg.currentPct = schlor ? schlor.targetOutput : result.currentPct;
+    state.autoSwg.currentPct = schlor ? normalSwgPct(schlor) : result.currentPct;
     // recommendedPct is what Apply sends to the chlorinator, so it needs to be
     // the duty cycle that actually reaches targetFc within the target window -- not
     // just the one that treads water at the current level. Plain steady-state

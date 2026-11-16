@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../logger/Logger', () => ({ logger: { error: () => {}, warn: () => {}, info: () => {}, verbose: () => {}, debug: () => {}, silly: () => {} } }));
 
-import { superChlorHoldUpdate, superChlorOn } from '../../controller/AutoSwgSuperChlorHold';
+import { normalSwgPct, superChlorHoldUpdate, superChlorOn } from '../../controller/AutoSwgSuperChlorHold';
 import { toLocalSwgEntries } from '../../controller/AutoSwgHistory';
 
 describe('super chlorinate hold', () => {
@@ -25,6 +25,13 @@ describe('super chlorinate hold', () => {
         // the run ended: the make-up check, once (heldAt is cleared, so the next look does nothing)
         expect(superChlorHoldUpdate(false, heldAt)).toEqual({ hold: false, makeUp: true, clearHeldAt: true });
         expect(superChlorHoldUpdate(false, undefined)).toEqual({ hold: false, makeUp: false, clearHeldAt: false });
+    });
+
+    it('the normal % during a run is the setpoint, not the 100% output (the held record of 2026-11-16 stored 100)', () => {
+        expect(normalSwgPct({ superChlor: true, targetOutput: 100, poolSetpoint: 4 })).toBe(4);
+        expect(normalSwgPct({ superChlor: false, targetOutput: 4, poolSetpoint: 4 })).toBe(4);
+        expect(normalSwgPct({ superChlor: true, targetOutput: 100 })).toBe(100);
+        expect(normalSwgPct(undefined)).toBeUndefined();
     });
 
     it('a held change in the history is not an SWG % entry', () => {
