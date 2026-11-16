@@ -50,6 +50,7 @@ import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 import { poolMathSwgLogStatus } from "../../../controller/PoolMathSwgLogService";
+import { registerBenchHistorySource } from "../../../controller/AutoSwgBenchHistorySource";
 import { ChlorinatorStateMessage } from "../../../controller/comms/messages/status/ChlorinatorStateMessage";
 import { weatherHistory } from "../../../controller/WeatherHistory";
 
@@ -1185,6 +1186,8 @@ function showAutoSwgArchiveStatus() {
     a.emitEquipmentChange();
 }
 export function registerAutoSwgPoolMath() {
+    // the Model Bench's water balance in the History panel, where this build has one
+    registerBenchHistorySource();
     // The SWG is dead-manned to the Pool circuit: it only has power with its own relay (the schedule SWG Assist follows) AND the Pool on. The pool's logging
     // records each change of that as a power event (from which the cell's 3-hour cycles are counted); other chlorinators keep the default (body on).
     setChlorinatorPowerSource(chlor => {
@@ -1242,9 +1245,14 @@ async function runAutoSwgAutoCheck() {
     finally {
         armAutoSwgAutoCheck();
         runAutoSwgAutoTune().catch(err => logger.error(`SWG Assist: auto tune failed: ${err.message}`));
-        // the Model Bench freezes its variants' fits; it only reads and writes its own files
-        autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
+        benchCheck();
     }
+}
+
+// The Model Bench freezes its variants' fits and refreshes its CYA and acid advice: after the automatic check and after Check Now, Refine, Refresh and Apply,
+// and Apply. It only reads and writes its own files, is not waited for, and skips itself while busy.
+function benchCheck() {
+    autoSwgBench.onCheck(Date.now()).catch(err => logger.warn(`SWG Assist bench: ${err && err.message}`));
 }
 
 export class StateRoute {
@@ -2068,6 +2076,10 @@ export class StateRoute {
         app.get('/state/autoSwg/bench/cya', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.cyaReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
         });
+        // The bench's water balance: pH and CSI projections, the fits and scores, the acid advice and the dose checks (advisory only).
+        app.get('/state/autoSwg/bench/chem', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.chemReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
+        });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {
@@ -2131,6 +2143,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('new');
                 await applyIfAutoApplyEnabled(skipped, 'check-now');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2150,6 +2163,7 @@ export class StateRoute {
             try {
                 let skipped = await runAutoSwgRecommendation('refine');
                 await applyIfAutoApplyEnabled(skipped, 'refine');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2168,6 +2182,7 @@ export class StateRoute {
                 if (!sys.autoSwg.automationAvailable) throw new ServiceParameterError('Auto-Apply is not available. Use Check Now and apply the recommendation yourself.', 'autoSwg', 'autoApplyEnabled', false);
                 let skipped = await runAutoSwgRecommendation('auto');
                 await applyIfAutoApplyEnabled(skipped, 'refresh-and-apply');
+                benchCheck();
                 return res.status(200).send(autoSwgResponse(skipped));
             }
             catch (err) {
@@ -2181,6 +2196,7 @@ export class StateRoute {
             try {
                 let pctOverride = typeof req.body.poolSetpoint !== 'undefined' ? parseInt(req.body.poolSetpoint, 10) : undefined;
                 let schlor = await applyAutoSwgRecommendation(false, pctOverride);
+                benchCheck();
                 return res.status(200).send({ chlorinator: schlor.get(true), autoSwg: state.autoSwg.get(true) });
             }
             catch (err) { next(err); }
@@ -2321,4 +2337,5 @@ export class StateRoute {
             res.status(200).send(state.getState(req.params.section));
         });
     }
-}
+}
+

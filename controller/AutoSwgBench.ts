@@ -51,13 +51,18 @@ import {
     ScoringSettings, scoreSummary, spanCoverage
 } from './AutoSwgBenchModel';
 import {
-    CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, polygonArea
+    CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, pathVsTests, polygonArea,
+    tfpSwgFc, WaterTemp, Dilution
 } from './AutoSwgBenchCya';
+import {
+    acidAdvice, AcidAdvice, acidChecks, borAt, borateChecks, chAt, ChemContext, chemFromEntries, ChemScoreRow, ChemSettings, chemSummary, csi, csiAt,
+    fitPh, normalizeChemSettings, PH_VARIANTS, PhClockIndex, PhFit, phPairs, projectPh, saltAt, scorePhTest, settleAt, taAt, tempAt
+} from './AutoSwgBenchChem';
 import {
     buildCalendar, DEFAULT_SIM_SETTINGS, fitModelPlant, liveProjector, modelProjector, outcome, plainProjector, Projector, SimData, SimOutcome, SimRhythm, SimSettings,
     simulate, summarizeOutcomes, testsFor
 } from './AutoSwgBenchSim';
-import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedStabilizerAdditions, archivedSwgEvents, saltAdditionPpm } from './PoolMathArchive';
+import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSaltAdditions, archivedStabilizerAdditions, archivedSwgEvents, readPoolMathArchive, saltAdditionPpm } from './PoolMathArchive';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
 import { projectionLog } from './AutoSwgProjection';
 import { chlorinatorLog } from './ChlorinatorLog';
@@ -68,6 +73,7 @@ import { saltHistory } from './AutoSwgSaltHistory';
 
 const KEEP_MS = 548 * DAY_MS;          // 18 months
 const SCORE_DAYS = 60;                 // how far back onReadings looks for tests not scored yet
+const LONG_DAYS = 400;                 // the CYA path starts at the oldest CYA test this far back (see longRows)
 const PAUSE_MS = 40;
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
@@ -90,7 +96,7 @@ function fromSource<T>(name: string, fn: ((a: number, b: number) => T[]) | undef
 
 // ---------------------------------------------------------------- settings and files
 
-export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; scoring: ScoringSettings; }
+export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; scoring: ScoringSettings; chem: ChemSettings; }
 export interface BenchFitRow { t: number; id: string; v: number; fit?: Fit; cya?: number; clearness?: number; replay?: boolean; }
 export type BenchMode = 'nowcast' | 'forecast' | 'live';
 // sunShare: the share of the projected loss that is the sun term (models). revised*: the revised hindcast after a later CYA test (see the top).
@@ -113,6 +119,10 @@ const BASELINE_DAYS = 120;
 
 function dataFile(name: string): string { return path.join(process.cwd(), 'data', name); }
 const SETTINGS_FILE = 'autoSwgBench.json', FITS_FILE = 'autoSwgBenchFits.jsonl', SCORES_FILE = 'autoSwgBenchScores.jsonl', CYA_FILE = 'autoSwgBenchCya.jsonl';
+// the water balance (AutoSwgBenchChem.ts): the pH fits and scores, and each run's projection (pH, CSI, TA and CYA ahead, and the acid advice) for the
+// History panel (AutoSwgBenchHistorySource.ts on the wiring branch)
+const CHEM_SCORES_FILE = 'autoSwgBenchChemScores.jsonl', CHEM_RUNS_FILE = 'autoSwgBenchChem.jsonl';
+const CHEM_AHEAD_DAYS = 7, CHEM_STEP_MS = 6 * HOUR_MS;
 
 function sameDefinition(a: BenchVariant, b: BenchVariant): boolean {
     const strip = (v: BenchVariant) => JSON.stringify(Object.assign({}, v, { version: 0, label: undefined, retired: undefined }));
@@ -141,6 +151,21 @@ export function normalizeVariant(raw: any): BenchVariant | undefined {
     return v;
 }
 
+// PoolMath's water temperatures in F (units 1 is C).
+function poolMathWaterTemps(): WaterTemp[] {
+    const out: WaterTemp[] = [];
+    try {
+        for (const e of readPoolMathArchive().entries) {
+            if (e.type !== 'testlog' || typeof e.waterTemp !== 'number') continue;
+            const t = new Date(e.ts).getTime();
+            const f = e.waterTempUnits === 1 ? e.waterTemp * 9 / 5 + 32 : e.waterTemp;
+            if (isFinite(t) && isFinite(f) && f > 32 && f < 110) out.push({ t: t, f: f });
+        }
+    }
+    catch (err) { logger.warn(`SWG Assist bench: could not read PoolMath's water temperatures: ${err && err.message}`); }
+    return out.sort((a, b) => a.t - b.t);
+}
+
 // A local date for the advice text (YYYY-MM-DD).
 function localDate(t: number): string {
     const d = new Date(t);
@@ -165,7 +190,7 @@ class AutoSwgBench {
         const variants: BenchVariant[] = raw && Array.isArray(raw.variants) ? raw.variants.map(normalizeVariant).filter((v: any) => !!v) : DEFAULT_VARIANTS.map(v => Object.assign({}, v));
         // a default variant added in a later release joins a stored list (the stored ones are kept as they are)
         for (const d of DEFAULT_VARIANTS) if (!variants.some(v => v.id === d.id)) variants.push(Object.assign({}, d));
-        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya), scoring: normalizeScoring(raw && raw.scoring) };
+        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya), scoring: normalizeScoring(raw && raw.scoring), chem: normalizeChemSettings(raw && raw.chem) };
         return this.settings;
     }
     private writeSettings(s: BenchSettings) {
@@ -179,7 +204,7 @@ class AutoSwgBench {
     // in the list is kept; `retired` hides it from the checks.
     public putSettings(body: any): BenchSettings {
         const cur = this.getSettings();
-        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya, scoring: cur.scoring };
+        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya, scoring: cur.scoring, chem: cur.chem };
         if (body && typeof body.enabled === 'boolean') next.enabled = body.enabled;
         // the scoring settings, as { scoring: {...} } or as maxGapDays, minCoverage, minGapN at the top
         if (body && typeof body === 'object') {
@@ -188,6 +213,7 @@ class AutoSwgBench {
             if (Object.keys(sc).length) next.scoring = normalizeScoring(Object.assign({}, cur.scoring, sc));
         }
         if (body && body.cya && typeof body.cya === 'object') next.cya = normalizeCyaSettings(Object.assign({}, cur.cya, body.cya));
+        if (body && body.chem && typeof body.chem === 'object') next.chem = normalizeChemSettings(Object.assign({}, cur.chem, body.chem));
         if (body && body.geometry) next.geometry = normalizeGeometry(Object.assign({}, cur.geometry, body.geometry));
         if (body && Array.isArray(body.variants)) {
             for (const raw of body.variants) {
@@ -248,6 +274,25 @@ class AutoSwgBench {
     } {
         const cfg: any = sys.autoSwg;
         const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
+        const sources = this.sourcesFor(from, to, true);
+        const rows = buildHourlyInputs(sources, from, to, this.getSettings().geometry);
+        const readings = archivedFcReadings().map(r => ({ t: r.ts.getTime(), fc: r.value })).filter(r => r.t >= from && r.t <= to);
+        const c = this.cyaInputs(gallons);
+        const cya = c.cya, cyaAdds = c.cyaAdds, saltAdds = c.saltAdds, cyaPathAt = c.pathAt;
+        const settings = this.getSettings();
+        // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
+        const starts = inputStarts(rows), sc = settings.scoring;
+        const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
+        return {
+            rows: rows, readings: readings, cya: cya, intervals: intervalsFrom(readings, rows), sources: sources, gallons: gallons,
+            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt,
+            starts: starts, skipFit: skipFit
+        };
+    }
+    // What buildHourlyInputs reads for [from, to]. `withPlace` false leaves out the place, so no sun geometry is worked out (the long rows).
+    private sourcesFor(from: number, to: number, withPlace: boolean): BenchSources {
+        const cfg: any = sys.autoSwg;
+        const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
         const id = typeof cfg.chlorinatorId === 'number' ? cfg.chlorinatorId : firstChlorinatorId();
         const chlor: any = typeof id === 'number' ? sys.chlorinators.find(c => c.id === id) : undefined;
         const days = Math.ceil((Date.now() - from) / DAY_MS) + 2;
@@ -260,8 +305,8 @@ class AutoSwgBench {
         const own: SwgEntry[] = toLocalSwgEntries(readAutoSwgHistory()).map(e => ({ ts: new Date(e.ts).getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }));
         const pm: SwgEntry[] = archivedSwgEvents().map(e => ({ ts: e.ts.getTime(), ppmPerDay: e.ppmPerDay, hrs: e.hrs, pct: e.pct }));
         const loc: any = sys.general && sys.general.location;
-        const sources: BenchSources = {
-            lat: loc && typeof loc.latitude === 'number' ? loc.latitude : undefined, lon: loc && typeof loc.longitude === 'number' ? loc.longitude : undefined,
+        return {
+            lat: withPlace && loc && typeof loc.latitude === 'number' ? loc.latitude : undefined, lon: withPlace && loc && typeof loc.longitude === 'number' ? loc.longitude : undefined,
             gallons: gallons, cellLbsPerDay: chlor ? chlor.cellLbsPerDay : (cfg.swgLbsPerDay || 0),
             outputHours: outputHours, cycle: cycle, swgEntries: mergeSwgEntries(own, pm),
             chlorine: cfg.creditChlorineAdditions === false ? [] : archivedChlorineAdditions().map(a => ({ ts: a.ts.getTime(), ppm: chlorinePpm(a.percent, a.ml, gallons) })),
@@ -270,27 +315,41 @@ class AutoSwgBench {
             pump: fromSource('pump', pumpSource, from, to),
             salt: saltHistory.daily(days).map(d => ({ t: new Date(d.date + 'T12:00:00').getTime(), ppm: d.median }))
         };
-        const rows = buildHourlyInputs(sources, from, to, this.getSettings().geometry);
-        const readings = archivedFcReadings().map(r => ({ t: r.ts.getTime(), fc: r.value })).filter(r => r.t >= from && r.t <= to);
-        const cya = archivedCyaReadings().map(r => ({ t: r.ts.getTime(), ppm: r.value }));
+    }
+
+    // The long hourly rows the CYA path and the chemistry paths are built on: from the oldest CYA test of the last LONG_DAYS days (at least 60 days back)
+    // to now, whatever window a caller works on, so the check, the summary, the route and a replay all see the same path. Kept for the hour. No sun
+    // geometry is worked out for them: only the rain, salt, water temperature, pump time and cell output are read.
+    private longCache: { hour: number; from: number; rows: BenchHour[] } | undefined;
+    public longRows(now: number = Date.now()): { from: number; rows: BenchHour[] } {
+        const hour = Math.floor(now / HOUR_MS);
+        const cut = now - LONG_DAYS * DAY_MS;
+        const oldest = archivedCyaReadings().map(r => r.ts.getTime()).filter(t => t >= cut).reduce((m, t) => Math.min(m, t), now - 60 * DAY_MS);
+        const from = Math.floor((oldest - DAY_MS) / HOUR_MS) * HOUR_MS;
+        if (this.longCache && this.longCache.hour === hour && this.longCache.from === from) return this.longCache;
+        const to = hour * HOUR_MS;
+        const rows = buildHourlyInputs(this.sourcesFor(from, to, false), from, to, this.getSettings().geometry);
+        this.longCache = { hour: hour, from: from, rows: rows };
+        return this.longCache;
+    }
+
+    // The CYA tests, the stabilizer and salt additions, PoolMath's water temperatures, and the path as known at any moment, on the long rows (one path
+    // builder for every caller). The path at a moment is kept for the life of these inputs.
+    public cyaInputs(gallons: number, now: number = Date.now()): { cya: CyaTest[]; cyaAdds: CyaAddition[]; saltAdds: CyaAddition[]; waterTemps: WaterTemp[]; pathAt: (asOf: number) => CyaPath; rows: BenchHour[] } {
+        const long = this.longRows(now);
+        const cya = archivedCyaReadings().map(r => ({ t: r.ts.getTime(), ppm: r.value })).filter(c => c.t >= long.from);
         const cyaAdds: CyaAddition[] = archivedStabilizerAdditions(gallons || undefined).map(a => ({ t: a.ts.getTime(), ppm: a.ppm })).filter(a => a.ppm > 0);
         const saltAdds: CyaAddition[] = archivedSaltAdditions().map(a => ({ t: a.ts.getTime(), ppm: saltAdditionPpm(a.pounds, gallons) })).filter(a => a.ppm > 0);
+        const waterTemps = poolMathWaterTemps();
         const settings = this.getSettings();
         const defaultK = defaultRainK(polygonArea(settings.geometry.outline), gallons);
         const memo = new Map<number, CyaPath>();
-        const cyaPathAt = (asOf: number): CyaPath => {
+        const pathAt = (asOf: number): CyaPath => {
             let p = memo.get(asOf);
-            if (!p) { p = cyaPath(cya, cyaAdds, rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK }); memo.set(asOf, p); }
+            if (!p) { p = cyaPath(cya, cyaAdds, long.rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK, waterTemps: waterTemps }); memo.set(asOf, p); }
             return p;
         };
-        // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
-        const starts = inputStarts(rows), sc = settings.scoring;
-        const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
-        return {
-            rows: rows, readings: readings, cya: cya, intervals: intervalsFrom(readings, rows), sources: sources, gallons: gallons,
-            cyaAdds: cyaAdds, saltAdds: saltAdds, cyaSrc: { tests: cya, path: (asOf: number) => cyaPathAt(asOf).at }, cyaPathAt: cyaPathAt,
-            starts: starts, skipFit: skipFit
-        };
+        return { cya: cya, cyaAdds: cyaAdds, saltAdds: saltAdds, waterTemps: waterTemps, pathAt: pathAt, rows: long.rows };
     }
     private maxFitDays(): number { return Math.max(30, ...this.getSettings().variants.map(v => Math.max(v.fitDays || 0, v.windowDays || 0) + 2)); }
 
@@ -396,6 +455,7 @@ class AutoSwgBench {
             }
             catch (err) { logger.warn(`SWG Assist bench: the CYA drift check failed: ${err && err.message}`); }
             this.refreshAdvice(inp, now);
+            this.chemCheck(now);
             this.lastCheck = now;
             this.lastError = undefined;
         }
@@ -512,6 +572,7 @@ class AutoSwgBench {
             try { this.recordCyaTests(inp, now); }
             catch (err) { logger.warn(`SWG Assist bench: recording the CYA tests failed: ${err && err.message}`); }
             this.refreshAdvice(inp, now);
+            this.chemScore(now);
             this.lastScored = now;
             this.lastError = undefined;
         }
@@ -546,6 +607,7 @@ class AutoSwgBench {
             this.rewriteRows(SCORES_FILE, r => !r.replay);
             this.appendRows(FITS_FILE, fits);
             this.appendRows(SCORES_FILE, scores);
+            await this.chemReplay(since);
             logger.info(`SWG Assist bench: replay from ${new Date(since).toISOString()} wrote ${scores.length} scores for ${variants.length} variants.`);
         }
         catch (err) { this.replayState.error = err && err.message; logger.warn(`SWG Assist bench: replay failed: ${err && err.message}`); }
@@ -609,7 +671,7 @@ class AutoSwgBench {
                 lastMisses: liveNext.slice(-10).map(r => { const f = flagsOf(r); return { t: new Date(r.t).toISOString(), test: r.test, proj: r.proj, miss: r.miss, days: r.days, flags: f.length ? f : undefined }; })
             };
         });
-        let coverage: any, stabilizer: any, cya: any;
+        let coverage: any, stabilizer: any, cya: any, chem: any;
         try {
             const inp = this.gatherInputs(now - 14 * DAY_MS, now);
             coverage = Object.assign(inputCoverage(inp.rows, now - 14 * DAY_MS, now), { weatherSource: !!weatherSource, waterTempSource: !!waterTempSource, pumpSource: !!pumpSource, place: typeof inp.sources.lat === 'number' });
@@ -618,9 +680,11 @@ class AutoSwgBench {
         catch (err) { coverage = { error: err && err.message }; }
         try { cya = this.cyaReport(120, false); }
         catch (err) { cya = { error: err && err.message }; }
+        try { const c = this.chemReport(120, false); chem = { advice: c.advice, now: c.now, pairs: c.pairs, variants: c.variants }; }
+        catch (err) { chem = { error: err && err.message }; }
         return {
             enabled: s.enabled, scoring: sc, lastCheck: this.lastCheck ? new Date(this.lastCheck).toISOString() : undefined, lastScored: this.lastScored ? new Date(this.lastScored).toISOString() : undefined,
-            lastError: this.lastError, replay: this.replayState, coverage: coverage, stabilizerAdditions: stabilizer, cya: cya, variants: variants
+            lastError: this.lastError, replay: this.replayState, coverage: coverage, stabilizerAdditions: stabilizer, cya: cya, chem: chem, variants: variants
         };
     }
 
@@ -629,14 +693,23 @@ class AutoSwgBench {
     public cyaReport(days: number, samples: boolean = true): any {
         const now = Date.now();
         const d = Math.max(7, Math.min(400, Math.floor(days) || 120));
-        const inp = this.gatherInputs(now - (d + 60) * DAY_MS, now);
-        const p = inp.cyaPathAt(now);
+        const cfg: any = sys.autoSwg;
+        const inp = this.cyaInputs(cfg.gallons > 0 ? cfg.gallons : 0, now);
+        const p = inp.pathAt(now);
         const from = now - d * DAY_MS;
         const iso = (t: number) => new Date(t).toISOString();
         const recorded = this.readRows<any>(CYA_FILE);
+        const nowVal = round(p.at(now), 1);
+        const storm = (e: any) => Object.assign({}, e, { t1: iso(e.t1), t2: iso(e.t2), m: round(e.m, 2), inches: round(e.inches, 2) });
         return {
-            settings: this.getSettings().cya, source: p.source, rainK: round(p.rainK, 4), defaultK: round(p.defaultK, 4), pairs: p.pairs,
-            now: round(p.at(now), 1), anchor: p.anchor ? { t: iso(p.anchor.t), ppm: p.anchor.ppm } : undefined,
+            settings: this.getSettings().cya, source: p.source, rainK: round(p.rainK, 4), defaultK: round(p.defaultK, 4), lossPerMonth: p.lossNow,
+            now: nowVal, anchor: p.anchor ? { t: iso(p.anchor.t), ppm: p.anchor.ppm } : undefined,
+            // TFP's SWG FC levels at the CYA on the path now (the minimum, the target range and SLAM)
+            tfpFc: tfpSwgFc(nowVal),
+            // how the TFP path did at the tests (a check; it never changes the path)
+            vsTests: pathVsTests(p, from),
+            runoff: p.runoff.map(storm),
+            storms: p.storms.filter(e => e.t2 >= from).map(storm),
             tests: p.notes.filter(n => n.t >= from).map(n => Object.assign({}, n, { t: iso(n.t) })),
             additions: inp.cyaAdds.filter(a => a.t >= from).map(a => ({ t: iso(a.t), ppm: round(a.ppm, 1) })),
             advice: this.lastAdvice || state.autoSwg.benchCyaAdvice,
@@ -644,6 +717,199 @@ class AutoSwgBench {
             drift: recorded.filter(r => r.kind === 'drift').slice(-4).map(r => Object.assign({}, r, { t: iso(r.t) })),
             path: samples ? pathSamples(p, from, now).map(x => [iso(x[0]), x[1]]) : undefined
         };
+    }
+
+    // ------------------------------------------------------------ the water balance (AutoSwgBenchChem.ts)
+
+    // The chemistry as of now: PoolMath's tests and doses, the long rows, the CYA path and the rain dilution the path uses.
+    public chemContext(now: number = Date.now()): { ctx: ChemContext; clocks: PhClockIndex } {
+        const cfg: any = sys.autoSwg;
+        const pm: any = sys.poolMath;
+        const gallons = cfg.gallons > 0 ? cfg.gallons : (pm && pm.gallons > 0 ? pm.gallons : 0);
+        const c = this.cyaInputs(gallons, now);
+        const s = this.getSettings();
+        const path = c.pathAt(now);
+        const dil = new Dilution(c.rows, c.saltAdds);
+        if (s.cya.source === 'rain' || s.cya.source === 'both') dil.setRunoff(path.rainK, now, s.cya.runoffMax);
+        let entries: any[] = [];
+        try { entries = readPoolMathArchive().entries || []; }
+        catch (err) { logger.warn(`SWG Assist bench: could not read the PoolMath archive: ${err && err.message}`); }
+        const id = typeof cfg.chlorinatorId === 'number' ? cfg.chlorinatorId : firstChlorinatorId();
+        const chlor: any = typeof id === 'number' ? sys.chlorinators.find(x => x.id === id) : undefined;
+        const lbs = chlor ? chlor.cellLbsPerDay : (cfg.swgLbsPerDay || 0);
+        const ppmPerHourAtFull = poundsToPpm(lbs / 24, gallons);
+        const ctx: ChemContext = {
+            data: chemFromEntries(entries), gallons: gallons, cya: path.at,
+            dilution: (t1: number, t2: number) => dil.factor(t1, t2, s.cya.source, path.rainK), rows: c.rows, ppmPerHourAtFull: ppmPerHourAtFull
+        };
+        return { ctx: ctx, clocks: new PhClockIndex(c.rows, ppmPerHourAtFull) };
+    }
+
+    // At a check: every pH variant is fitted on what is known now (frozen for the tests to come), and the advice and the run are published. Never throws.
+    private chemCheck(now: number) {
+        try {
+            const s = this.getSettings().chem;
+            const { ctx, clocks } = this.chemContext(now);
+            const pairs = phPairs(ctx, now, s);
+            const fits = PH_VARIANTS.map(v => fitPh(v, pairs, clocks, s));
+            this.appendRows(CHEM_SCORES_FILE, fits.map(f => ({ t: now, kind: 'fit', id: f.id, fit: f })));
+            this.chemPublish(ctx, clocks, fits, now);
+        }
+        catch (err) { logger.warn(`SWG Assist bench: the water balance check failed: ${err && err.message}`); }
+    }
+
+    // After new readings: each pH test of the last SCORE_DAYS days not scored yet, by every variant with the fit it froze at the last check before the
+    // test; then the advice and the run again with the newest fits. Never throws.
+    private chemScore(now: number) {
+        try {
+            const { ctx, clocks } = this.chemContext(now);
+            const rows = this.readRows<any>(CHEM_SCORES_FILE);
+            const have = new Set(rows.filter(r => r.kind === 'score' && !r.replay).map(r => `${r.id}|${r.what}|${r.t}`));
+            const fits = rows.filter(r => r.kind === 'fit' && !r.replay && r.fit).sort((a, b) => a.t - b.t);
+            const since = now - SCORE_DAYS * DAY_MS;
+            const ph = ctx.data.ph;
+            const fresh: ChemScoreRow[] = [];
+            for (let k = 1; k < ph.length; k++) {
+                const b = ph[k];
+                if (b.t < since || b.t > now) continue;
+                for (const v of PH_VARIANTS) {
+                    if (have.has(`${v.id}|ph|${b.t}`)) continue;
+                    let fit: any;
+                    for (const f of fits) { if (f.id !== v.id) continue; if (f.t < b.t) fit = f; else break; }
+                    if (!fit) continue;
+                    fresh.push(...scorePhTest(ctx, v, fit.fit, clocks, k, fit.t, false, this.getSettings().scoring.maxGapDays));
+                }
+            }
+            this.appendRows(CHEM_SCORES_FILE, fresh);
+            if (fresh.length) logger.info(`SWG Assist bench: ${fresh.length} pH/CSI score${fresh.length === 1 ? '' : 's'} added.`);
+            const latest: PhFit[] = [];
+            for (const v of PH_VARIANTS) { const f = fits.filter(x => x.id === v.id).pop(); if (f) latest.push(f.fit); }
+            if (latest.length) this.chemPublish(ctx, clocks, latest, now);
+        }
+        catch (err) { logger.warn(`SWG Assist bench: scoring the pH tests failed: ${err && err.message}`); }
+    }
+
+    // The acid advice on state.autoSwg.benchAcidAdvice (when it changed), and the run: the main variant's pH from the last pH test to CHEM_AHEAD_DAYS
+    // ahead every 6 hours, with the CSI, TA and CYA there, appended to CHEM_RUNS_FILE for the History panel.
+    private lastAcidAdvice: AcidAdvice | undefined;
+    private chemTrimmedAt = 0;
+    private chemPublish(ctx: ChemContext, clocks: PhClockIndex, fits: PhFit[], now: number) {
+        const s = this.getSettings().chem;
+        const v = PH_VARIANTS.find(x => x.id === s.main) || PH_VARIANTS[0];
+        const fit = fits.find(f => f.id === v.id);
+        if (!fit) return;
+        const advice = acidAdvice(ctx, v, fit, clocks, now, s, localDate);
+        this.lastAcidAdvice = advice;
+        if (JSON.stringify(state.autoSwg.benchAcidAdvice || null) !== JSON.stringify(advice)) {
+            state.autoSwg.benchAcidAdvice = advice;
+            state.autoSwg.emitEquipmentChange();
+        }
+        const last = ctx.data.ph.filter(p => p.t <= now).pop();
+        if (!last) return;
+        const times: number[] = [];
+        for (let t = Math.ceil(last.t / CHEM_STEP_MS) * CHEM_STEP_MS; t <= now + CHEM_AHEAD_DAYS * DAY_MS; t += CHEM_STEP_MS) times.push(t);
+        const ph = projectPh(ctx, v, fit, clocks, last.t, last.v, times, now);
+        const r1 = (x: number) => typeof x === 'number' && isFinite(x) ? Math.round(x * 10) / 10 : undefined;
+        const r2 = (x: number) => typeof x === 'number' && isFinite(x) ? Math.round(x * 100) / 100 : undefined;
+        const run: any = {
+            t: now, kind: 'run', run: now, variant: v.id, fit: { r: fit.r, c: fit.c, n: fit.n }, start: { t: last.t, ph: last.v },
+            points: times.map((t, k) => [t, r2(ph[k]), r2(csiAt(ctx, t, ph[k])), r1(taAt(ctx, t)), r1(ctx.cya(t))])
+        };
+        if (advice.level !== 'none') run.advice = { level: advice.level, at: advice.at, doseFlOz: advice.doseFlOz, doseTo: advice.doseTo, reason: advice.reason };
+        this.appendRows(CHEM_RUNS_FILE, [run]);
+        if (Date.now() - this.chemTrimmedAt > 7 * DAY_MS) { this.chemTrimmedAt = Date.now(); this.rewriteRows(CHEM_RUNS_FILE, () => true); this.rewriteRows(CHEM_SCORES_FILE, () => true); }
+    }
+
+    // The pH tests since `since` worked out as if the bench had been running: each scored with the fits as of the last 10:00 or 22:00 check before it.
+    // Earlier replay rows are replaced; live rows are kept.
+    private async chemReplay(since: number) {
+        const s = this.getSettings();
+        const { ctx, clocks } = this.chemContext(Date.now());
+        const ph = ctx.data.ph;
+        const cache = new Map<number, PhFit[]>();
+        const fitRows: any[] = [], scores: ChemScoreRow[] = [];
+        for (let k = 1; k < ph.length; k++) {
+            if (ph[k].t < since) continue;
+            const check = lastCheckBefore(ph[k].t);
+            if (!cache.has(check)) {
+                const pairs = phPairs(ctx, check, s.chem);
+                const fits = PH_VARIANTS.map(v => fitPh(v, pairs, clocks, s.chem));
+                cache.set(check, fits);
+                fitRows.push(...fits.map(f => ({ t: check, kind: 'fit', id: f.id, fit: f, replay: true })));
+                await pause(PAUSE_MS);
+            }
+            const fits = cache.get(check);
+            for (const v of PH_VARIANTS) {
+                const f = fits.find(x => x.id === v.id);
+                if (f) scores.push(...scorePhTest(ctx, v, f, clocks, k, check, true, s.scoring.maxGapDays));
+            }
+        }
+        this.rewriteRows(CHEM_SCORES_FILE, r => !r.replay);
+        this.appendRows(CHEM_SCORES_FILE, fitRows);
+        this.appendRows(CHEM_SCORES_FILE, scores);
+        logger.info(`SWG Assist bench: the pH replay wrote ${scores.length} scores.`);
+    }
+
+    // The water balance as known now: the paths and the projection, each variant's fit and scores (live and replay apart, pH and CSI), the acid advice,
+    // each dose against the chemistry (with the strength that explains it), the borate tests against the dilution, and our CSI against PoolMath's.
+    public chemReport(days: number, detail: boolean = true): any {
+        const now = Date.now();
+        const d = Math.max(7, Math.min(400, Math.floor(days) || 120));
+        const from = now - d * DAY_MS;
+        const s = this.getSettings();
+        const { ctx, clocks } = this.chemContext(now);
+        const iso = (t: number) => new Date(t).toISOString();
+        const r2 = (x: number) => typeof x === 'number' && isFinite(x) ? Math.round(x * 100) / 100 : undefined;
+        const pairs = phPairs(ctx, now, s.chem);
+        const fits = PH_VARIANTS.map(v => fitPh(v, pairs, clocks, s.chem));
+        const all = this.readRows<any>(CHEM_SCORES_FILE).filter(r => r.kind === 'score') as ChemScoreRow[];
+        const variants = PH_VARIANTS.map(v => {
+            const mine = all.filter(r => r.id === v.id && r.t >= from);
+            const pick = (replay: boolean, what: string) => mine.filter(r => !!r.replay === replay && r.what === what);
+            return {
+                id: v.id, label: v.label, kind: v.kind, main: v.id === s.chem.main, fit: fits.find(f => f.id === v.id),
+                live: { ph: chemSummary(pick(false, 'ph')), csi: chemSummary(pick(false, 'csi')) },
+                replay: { ph: chemSummary(pick(true, 'ph')), csi: chemSummary(pick(true, 'csi')) },
+                lastMisses: detail ? pick(false, 'ph').slice(-10).map(r => ({ t: iso(r.t), start: r.start, test: r.test, proj: r.proj, miss: r.miss, days: r.days, flags: r.flags })) : undefined
+            };
+        });
+        const main = PH_VARIANTS.find(x => x.id === s.chem.main) || PH_VARIANTS[0];
+        const mainFit = fits.find(f => f.id === main.id);
+        const last = ctx.data.ph.filter(p => p.t <= now).pop();
+        const phNow = last ? projectPh(ctx, main, mainFit, clocks, last.t, last.v, [now], now)[0] : undefined;
+        const ta = taAt(ctx, now);
+        const out: any = {
+            settings: s.chem,
+            now: {
+                ph: r2(phNow), csi: typeof phNow === 'number' ? r2(csiAt(ctx, now, phNow)) : undefined, ta: r2(ta), ch: r2(chAt(ctx, now)), cya: r2(ctx.cya(now)),
+                borates: r2(borAt(ctx, now)), salt: saltAt(ctx, now), tempF: r2(tempAt(ctx, now)),
+                settles: r2(settleAt(ctx, now) + (mainFit && mainFit.c || 0)), lastTest: last ? { t: iso(last.t), ph: last.v } : undefined
+            },
+            advice: this.lastAcidAdvice || state.autoSwg.benchAcidAdvice,
+            pairs: { n: pairs.length, recent: pairs.filter(p => p.w > 1).length, since: ctx.data.acid.length ? iso(ctx.data.acid[0].t) : undefined },
+            variants: variants
+        };
+        if (!detail) return out;
+        out.acid = acidChecks(ctx, from).map(x => Object.assign({}, x, { t: iso(x.t) }));
+        out.borates = borateChecks(ctx).filter(x => x.t2 >= from).map(x => Object.assign({}, x, { t1: iso(x.t1), t2: iso(x.t2) }));
+        // our CSI from the test's own values against PoolMath's, at each test with both
+        const diffs: number[] = [];
+        for (const c of ctx.data.csi) {
+            if (c.t < from) continue;
+            const p = ctx.data.ph.find(x => x.t === c.t), taT = ctx.data.ta.find(x => x.t === c.t), ch = ctx.data.ch.find(x => x.t === c.t);
+            if (!p || !taT || !ch) continue;
+            const ours = csi(p.v, taT.v, ch.v, ctx.cya(c.t), saltAt(ctx, c.t), borAt(ctx, c.t), tempAt(ctx, c.t));
+            if (typeof ours === 'number') diffs.push(ours - c.v);
+        }
+        out.csiVsPoolMath = diffs.length ? { n: diffs.length, meanDiff: r2(diffs.reduce((a, b) => a + b, 0) / diffs.length), meanAbsDiff: r2(diffs.reduce((a, b) => a + Math.abs(b), 0) / diffs.length) } : { n: 0 };
+        const run = this.readRows<any>(CHEM_RUNS_FILE).filter(r => r.kind === 'run').pop();
+        out.projection = run ? { run: iso(run.run), variant: run.variant, points: run.points.map((p: any[]) => [iso(p[0]), p[1], p[2], p[3], p[4]]) } : undefined;
+        return out;
+    }
+
+    // The runs between from and to (for the History panel): each run's points, oldest run first.
+    public chemRuns(from: number, to: number): any[] {
+        return this.readRows<any>(CHEM_RUNS_FILE).filter(r => r.kind === 'run' && r.run >= from - CHEM_AHEAD_DAYS * DAY_MS && r.run <= to).sort((a, b) => a.run - b.run);
     }
 
     // ------------------------------------------------------------ the closed-loop simulator
@@ -669,6 +935,8 @@ class AutoSwgBench {
                 ppmPerHourAtFull: poundsToPpm(inp.sources.cellLbsPerDay / 24, inp.gallons)
             };
             const settings = simSettingsFrom(cfg, req.runWindow);
+            // TFP's minimum FC for an SWG pool at the CYA on the path now: the outcome counts the hours below it (belowTfpMin)
+            if (inp.cya.length) settings.tfpMin = tfpSwgFc(inp.cyaPathAt(end).at(end)).min;
             const cal = buildCalendar(data, settings);
             const s = this.getSettings();
             const projectors: Projector[] = [liveProjector()];
