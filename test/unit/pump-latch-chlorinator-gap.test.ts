@@ -52,14 +52,26 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); });
 
 describe('NixiePump.checkLatchAsync and the chlorinator power log', () => {
-    it('notes a 5.1 s gap with the pump\'s own relays', async () => {
+    // The gap holds each pass's own send time: 5.1 s and 5.6 s were measured on the live system with no latch expiry at the relay manager,
+    // 6.3 s and 7.8 s for the one real expiry. Only a gap past the 5 s latch by over 1 s is noted, and the 1 s slack is passed on.
+    it('does not note gaps of 5.1 s, 5.6 s or 6.0 s', async () => {
         at(T + 2000); await pump.check();
-        at(T + 7100); await pump.check();
-        expect(fx.gaps).toEqual([[T + 2000, T + 7100, [LOW, HIGH]]]);
+        at(T + 7100); await pump.check();          // 5.1 s
+        at(T + 12700); await pump.check();         // 5.6 s
+        at(T + 18700); await pump.check();         // 6.0 s, the threshold itself
+        expect(fx.gaps).toEqual([]);
+        expect(pump.primed).toBe(0);
+    });
+    it('notes gaps of 6.3 s and 7.8 s with the pump\'s own relays and the 1 s slack, and primes for each', async () => {
+        at(T + 2000); await pump.check();
+        at(T + 8300); await pump.check();          // 6.3 s
+        at(T + 16100); await pump.check();         // 7.8 s
+        expect(fx.gaps).toEqual([[T + 2000, T + 8300, [LOW, HIGH], 1000], [T + 8300, T + 16100, [LOW, HIGH], 1000]]);
+        expect(pump.primed).toBe(2);
     });
     it('notes nothing for the first pass, for gaps within the latch, or while the pump is off', async () => {
         expect(fx.gaps).toEqual([]);
-        at(T + 5000); await pump.check();          // exactly the latch
+        at(T + 6000); await pump.check();          // exactly the latch plus the slack
         expect(fx.gaps).toEqual([]);
         pump.run(0);
         at(T + 20000); await pump.check();
@@ -71,7 +83,7 @@ describe('NixiePump.checkLatchAsync and the chlorinator power log', () => {
         pump.run(1, true);
         at(T + 8000); await pump.check();
         at(T + 9000); await pump.check();
-        expect(fx.gaps).toEqual([[T, T + 8000, [LOW, HIGH]]]);
+        expect(fx.gaps).toEqual([[T, T + 8000, [LOW, HIGH], 1000]]);
         expect(pump.primed).toBe(0);
     });
     it('keeps priming when the power log fails', async () => {
