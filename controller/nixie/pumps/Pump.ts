@@ -12,6 +12,7 @@ import { Outbound, Protocol, Response } from '../../comms/messages/Messages';
 import { conn } from '../../comms/Comms';
 import { setTimeout } from 'timers/promises';
 import { NeptuneModbusStateMessage } from '../../comms/messages/status/NeptuneModbusStateMessage';
+import { noteChlorinatorRelayGap } from '../../ChlorinatorLogService';
 
 export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
     public async deletePumpAsync(id: number) {
@@ -299,6 +300,12 @@ export class NixiePump extends NixieEquipment {
         let offFor = typeof this._stoppedAt === 'undefined' ? 0 : now - this._stoppedAt;
         this._stoppedAt = undefined;
         this._relaysOkAt = now;
+        // A chlorinator powered through these relays lost its power for a moment too: the chlorinator power log records it (it skips a gap
+        // its own stall check already wrote, and chlorinators not wired through these relays).
+        if (!first && gap > NixiePump.relayLatchMs) {
+            try { noteChlorinatorRelayGap(now - gap, now, ((this.pump.relays as any).get() || []).map((r: any) => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding }))); }
+            catch (err) { logger.warn(`NCP: Could not note the relay gap of pump ${this.pump.name} for the chlorinator power log: ${err.message}`); }
+        }
         try {
             if (this.isPriming) return;
             if (first) await this.startPrimingAsync(undefined, 'njsPC started with the pump on, so its relays had timed out');
