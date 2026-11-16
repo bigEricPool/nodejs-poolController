@@ -614,7 +614,7 @@ export class ConfigRoute {
         });
         // The pool's PoolMath share (the history archive is read for it): GET/PUT /config/poolMath { shareCode, poolName, historyKinds }
         // (historyKinds: the kinds shown as history, null for the defaults; see GET /state/poolMath/history/kinds), and the PoolMath SWG log's
-        // { swgLogEnabled, swgLogHours } (see controller/PoolMathSwgLog.ts; its sign-in is never part of this section)
+        // { swgLogEnabled, swgLogScheduleId, swgLogHours } (see controller/PoolMathSwgLog.ts; its sign-in is never part of this section)
         app.get('/config/poolMath', (req, res, next) => {
             try { return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
         });

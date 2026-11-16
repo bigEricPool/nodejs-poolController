@@ -17,8 +17,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 // Runs the PoolMath SWG log (PoolMathSwgLog.ts) for the configured chlorinator: one PoolMath client for the life of the process (one
-// sign-in per start, plus one each time the token expires), checked every 15 seconds. The settings are swgLogEnabled and swgLogHours in
-// the poolMath section of poolConfig.json (PUT /config/poolMath); the status is GET /state/poolMath/swgLog.
+// sign-in per start, plus one each time the token expires), checked every 15 seconds. The settings are swgLogEnabled, swgLogScheduleId
+// and swgLogHours in the poolMath section of poolConfig.json (PUT /config/poolMath); the status is GET /state/poolMath/swgLog.
 
 import * as path from 'path';
 import { logger } from '../logger/Logger';
@@ -27,11 +27,43 @@ import { state } from './State';
 import { poolGallons } from './ChlorinatorLogService';
 import { onSuperChlorRunEnded } from './ChlorinatorSuperChlorLog';
 import { PoolMathClient } from './PoolMathClient';
-import { SwgLogReading, SwgLogStatus, SwgLogWriter } from './PoolMathSwgLog';
+import { SwgLogReading, SwgLogSettings, SwgLogStatus, SwgLogWriter } from './PoolMathSwgLog';
 
 const CHECK_MS = 15 * 1000;
 let writer: SwgLogWriter | undefined;
 let timer: NodeJS.Timeout | undefined;
+
+// The whole hours of a run window (one ending before it starts runs past midnight); 0 when there is none.
+export function windowHours(start: Date | null | undefined, end: Date | null | undefined): number {
+    if (!start || !end || isNaN(start.getTime()) || isNaN(end.getTime())) return 0;
+    let ms = end.getTime() - start.getTime();
+    if (ms <= 0) ms += 24 * 3600 * 1000;
+    const h = Math.round(ms / 3600000);
+    return h >= 1 && h <= 24 ? h : 0;
+}
+
+// The run hours sent with each entry: the chosen schedule's window for the day (sunrise/sunset times as calculated for today), else the
+// hours set by hand.
+export function swgLogSettings(): SwgLogSettings {
+    const pm = sys.poolMath;
+    const set = { enabled: pm.swgLogEnabled, hours: pm.swgLogHours, hoursSource: 'set' as 'schedule' | 'set', hoursNote: undefined as string };
+    const id = pm.swgLogScheduleId;
+    if (id < 0) return set;
+    const fallback = pm.swgLogHours > 0 ? `the ${pm.swgLogHours} h set by hand are used` : 'nothing is written until it has one or run hours are set';
+    const sched = sys.schedules.toArray().find(s => s.id === id);
+    if (!sched || sched.disabled) { set.hoursNote = `Schedule #${id} is missing or disabled, so ${fallback}.`; return set; }
+    let hours = 0;
+    try {
+        const t = state.schedules.getItemById(id, false).scheduleTime.calcScheduleDate(state.time, sched);
+        hours = windowHours(t.startTime, t.endTime);
+    } catch (err) { /* below */ }
+    if (!(hours > 0) && typeof sched.startTime === 'number' && typeof sched.endTime === 'number') {
+        const base = new Date(2026, 0, 1);
+        hours = windowHours(new Date(base.getTime() + sched.startTime * 60000), new Date(base.getTime() + sched.endTime * 60000));
+    }
+    if (!(hours > 0)) { set.hoursNote = `Schedule #${id} has no run window today, so ${fallback}.`; return set; }
+    return { enabled: pm.swgLogEnabled, hours, hoursSource: 'schedule', hoursNote: `${hours} h from schedule #${id} (circuit ${sched.circuit}), rounded to whole hours.` };
+}
 
 function reading(): SwgLogReading {
     const chlors = sys.chlorinators.toArray();
@@ -49,7 +81,7 @@ export function startPoolMathSwgLog() {
     if (writer) return;
     writer = new SwgLogWriter({
         client: new PoolMathClient({ userAgent: `nodejs-poolController/${sys.appVersion || ''} (PoolMath SWG log)` }),
-        settings: () => ({ enabled: sys.poolMath.swgLogEnabled, hours: sys.poolMath.swgLogHours }),
+        settings: swgLogSettings,
         reading,
         file: path.join(process.cwd(), 'data', 'poolMathSwgLog.json')
     });
@@ -72,9 +104,16 @@ export function poolMathSwgLogStatus(): SwgLogStatus | { enabled: boolean } {
     return writer ? writer.status() : { enabled: sys.poolMath.swgLogEnabled };
 }
 
-// swgLogEnabled (true/false) and swgLogHours (whole hours from 1 to 24; 0 or null clears it) from PUT /config/poolMath.
+// swgLogEnabled (true/false), swgLogHours (whole hours from 1 to 24; 0 or null clears it) and swgLogScheduleId (a schedule's id, or -1
+// or null for the hours set by hand) from PUT /config/poolMath.
 export function setPoolMathSwgLogSettings(obj: any) {
     if (!obj) return;
+    if (typeof obj.swgLogScheduleId !== 'undefined') {
+        const v = obj.swgLogScheduleId === null || obj.swgLogScheduleId === '' ? -1 : Number(obj.swgLogScheduleId);
+        if (!Number.isInteger(v) || v < -1) throw new RangeError('swgLogScheduleId must be a schedule id, or -1 for the run hours set by hand.');
+        if (v >= 0 && !sys.schedules.toArray().some(s => s.id === v)) throw new RangeError(`There is no schedule #${v}.`);
+        sys.poolMath.swgLogScheduleId = v;
+    }
     if (typeof obj.swgLogHours !== 'undefined') {
         const v = obj.swgLogHours === null || obj.swgLogHours === '' ? 0 : Number(obj.swgLogHours);
         if (!Number.isInteger(v) || v < 0 || v > 24) throw new RangeError('The SWG run hours a day must be a whole number of hours from 1 to 24 (0 clears it).');
