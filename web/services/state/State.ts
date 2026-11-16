@@ -624,7 +624,7 @@ async function runAutoSwgRecommendation(mode: AutoSwgCheckMode, extraRationaleNo
 // The projected FC points for the Water panel's FC line (see AutoSwgProjection.ts): brought up to date in the background after a calculation and after an
 // apply. It reads no PoolMath page of its own and cannot fail either of them.
 function updateAutoSwgProjection() {
-    void updateProjectionPoints({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName });
+    void updateProjectionPoints({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, chlorCycle: autoSwgChlorCycle(sys.autoSwg) });
 }
 
 // The calculation's inputs include the PoolMath share code and pool name. Keep them out of the history records so
@@ -1194,7 +1194,7 @@ function assistChlorinatorId(): number | undefined {
 function sampleAutoSwgSalt() {
     try { state.autoSwg.heartbeatAt = new Date().toISOString(); } catch (err) { /* the heartbeat is best effort */ }
     try { showAutoSwgArchiveStatus(); } catch (err) { /* the archive status is best effort */ }
-    void updateHourlyProjection({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName });
+    void updateHourlyProjection({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName, chlorCycle: autoSwgChlorCycle(sys.autoSwg) });
     watchAutoSwg();
     try {
         let cfg = sys.autoSwg;

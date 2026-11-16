@@ -32,12 +32,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // The points are worked out from the history of applies (data/autoSwgHistory.jsonl), the PoolMath archive and the PoolMath page the last calculation read,
 // so nothing here contacts PoolMath. The work is done in the background after a calculation or an apply, a little at a time (updateProjectionPoints), and
 // changes no calculation.
+//
+// The cycle count. From the first line of the chlorinator's power log, a calculation counts what the cell made from its cycles (AutoSwgCycleCount.ts), not
+// % x run window. Points from that time on are worked out that way and carry v = COUNT_VERSION. A point from that time on without it was worked out the
+// old way (before the count, or from an apply record of a calculation made before it), so it is dropped once and worked out again. That includes the `after`
+// points: from the log's first line, an apply's `after` is calculated (at the apply's time, from what was known then) instead of taken from its record, so
+// the line has no step where the record's old basis meets the recalculated points. Records made before the count do not hold the chlorinator's cycle
+// settings, so their calculations take the current ones (cfg.chlorCycle). Before the power log nothing changes: the logging is not detailed enough there.
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger/Logger';
 import { cachedPageHtml, computeRecommendation } from './AutoSwgService';
 import { readAutoSwgHistory, toLocalSwgEntries } from './AutoSwgHistory';
+import { readPowerEvents } from './AutoSwgCycleCount';
 import { archivedChlorineAdditions, archivedCyaReadings, archivedFcReadings, archivedSwgEvents, archivedWaterTemps } from './PoolMathArchive';
 
 const KEEP_MONTHS = 48;
@@ -50,7 +58,21 @@ const HOURLY_DAYS = 7;                 // how far back the hourly points are fil
 const MAX_TASKS = 400;
 
 export type ProjectionKind = 'after' | 'before' | 'reading' | 'hourly' | 'lead';
-export interface ProjectionPoint { t: number; fc: number; kind: ProjectionKind; run: number; tf?: number; td?: number; }
+export interface ProjectionPoint { t: number; fc: number; kind: ProjectionKind; run: number; tf?: number; td?: number; v?: number; }
+export const COUNT_VERSION = 1;   // v of a point worked out with the cycle count (see the header)
+export interface ChlorCycle { id?: number; cycleHours: number; restartsOnPower: boolean; burstFirst: boolean; }
+
+// The points to work out again with the cycle count: from `since` (the power log's first line) on, without v = COUNT_VERSION. A `lead` point at a test
+// time (`testTimes`) is the test itself, not a calculation, and stays.
+export function staleForRecount(points: ProjectionPoint[], since: number, testTimes: Set<number>): ProjectionPoint[] {
+    if (!isFinite(since)) return [];
+    return points.filter(p => p.t >= since && p.v !== COUNT_VERSION && !(p.kind === 'lead' && testTimes.has(p.t)));
+}
+
+// A record's inputs for a replay: a record made before the cycle count has no chlorCycle, so it takes the chlorinator's current settings.
+export function withChlorCycle(inputs: any, cyc: ChlorCycle | undefined): any {
+    return cyc && inputs && !inputs.chlorCycle ? Object.assign({}, inputs, { chlorCycle: cyc }) : inputs;
+}
 const KIND_ORDER = { before: 0, hourly: 1, lead: 1, reading: 2, after: 3 };
 const LEAD_MAX_MS = HOURLY_DAYS * 86400000;   // a test further back than this from the check that read it is not led in (the line starts at the check, as before)
 
@@ -131,6 +153,21 @@ class ProjectionLog {
         for (const p of fresh) { this.points.push(p); this.keys.add(keyOf(p.kind, p.t, p.run)); }
         this.prune();
     }
+    // Drops the given points (see staleForRecount), so they are worked out again; the file is rewritten through a temporary file.
+    public drop(list: ProjectionPoint[]) {
+        this.load();
+        if (list.length === 0) return;
+        const gone = new Set(list);
+        const kept = this.points.filter(p => !gone.has(p));
+        const file = this.file();
+        const tmp = `${file}.tmp`;
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(tmp, kept.map(p => JSON.stringify(p)).join('\n') + (kept.length ? '\n' : ''), 'utf8');
+        fs.renameSync(tmp, file);
+        this.points = kept;
+        this.keys = new Set(kept.map(p => keyOf(p.kind, p.t, p.run)));
+    }
+    public all(): ProjectionPoint[] { this.load(); return this.points; }
     // Once a day, drops what is older than KEEP_MONTHS (the file is rewritten through a temporary file only when something is dropped).
     private prune() {
         const now = Date.now();
@@ -163,6 +200,7 @@ const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const idOf = (r: any): number => new Date(r.appliedAt).getTime();
 const failed = new Set<string>();   // calculations that could not be made (too little history before that moment): not tried again until njsPC restarts
 let busy = false;
+let hourlyRedoFrom = Infinity;   // the first hourly point dropped for the cycle count: the hourly points are filled in from there, past HOURLY_DAYS
 let again = false;   // a call came in while a run was going: it goes once more when that one is done, so a new apply is not left until the next calculation
 
 // The applies that carry a calculation: an applied recommendation with the parameters it used, the FC it projected and the reading it was based on.
@@ -178,28 +216,48 @@ function runRecords(records: any[]): any[] {
 // call during a run makes the run go once more when it is done), and it never throws. Resolves true when it got as far as the calculations (false when a run
 // was going, or the PoolMath page has not been read since njsPC started). `cfg` is the share code and pool name of the SWG Assist settings (this module does
 // not read the equipment configuration itself).
-export async function updateProjectionPoints(cfg: { shareCode: string; poolName?: string }): Promise<boolean> {
+export async function updateProjectionPoints(cfg: { shareCode: string; poolName?: string; chlorCycle?: ChlorCycle }): Promise<boolean> {
     if (busy) { again = true; return false; }
     busy = true;
     try {
         const history = readAutoSwgHistory();
         const runs = runRecords(history);
-        projectionLog.add(runs.map(r => {
+        // The cycle count (see the header): from the power log's first line on, points are calculated with it.
+        const cyc = cfg.chlorCycle && cfg.chlorCycle.cycleHours > 0 ? cfg.chlorCycle : undefined;
+        const powerEvents = cyc ? readPowerEvents(typeof cyc.id === 'number' && cyc.id >= 0 ? cyc.id : undefined) : [];
+        const since = powerEvents.length ? powerEvents[0].t : Infinity;
+        const v = isFinite(since) ? COUNT_VERSION : undefined;
+        const stamp = (p: ProjectionPoint): ProjectionPoint => (v && p.t >= since ? Object.assign(p, { v }) : p);
+        const afterOf = (r: any, fc: number): ProjectionPoint => {
             const id = idOf(r);
-            const point: ProjectionPoint = { t: id, fc: round2(r.outputs.projectedCurrentFc), kind: 'after', run: id };
+            const point: ProjectionPoint = { t: id, fc: round2(fc), kind: 'after', run: id };
             if (typeof r.targetFc === 'number') point.tf = r.targetFc;
             const td = r.targetDate ? new Date(r.targetDate).getTime() : NaN;
             if (isFinite(td)) point.td = td;
             return point;
-        }));
+        };
         const from = Date.now() - LOOKBACK_DAYS * 86400000;
-        // The tests that started a run: the test itself is the first point of that run's line (no calculation).
         const leads = leadWindows(runs, from);
-        projectionLog.add(leads.map(w => ({ t: w.readingT, fc: round2(w.value), kind: 'lead' as ProjectionKind, run: w.run })));
+        const stale = staleForRecount(projectionLog.all(), since, new Set(leads.map(w => w.readingT)));
+        if (stale.length) {
+            projectionLog.drop(stale);
+            for (const p of stale) if (p.kind === 'hourly' && p.t < hourlyRedoFrom) hourlyRedoFrom = p.t;
+            logger.info(`SWG Assist: ${stale.length} projected FC point${stale.length === 1 ? '' : 's'} since ${new Date(since).toISOString()} will be worked out again with the cycle count.`);
+        }
+        // The `after` of every apply before the power log, from its record (no calculation); from the log on they are calculated below.
+        projectionLog.add(runs.filter(r => !(idOf(r) >= since)).map(r => afterOf(r, r.outputs.projectedCurrentFc)));
+        // The tests that started a run: the test itself is the first point of that run's line (no calculation).
+        projectionLog.add(leads.map(w => stamp({ t: w.readingT, fc: round2(w.value), kind: 'lead' as ProjectionKind, run: w.run })));
         const html = cachedPageHtml(HTML_MAX_AGE_MS);
         if (!html || !cfg.shareCode) return false;
         const base = { shareCode: cfg.shareCode, poolName: cfg.poolName || undefined, inFlight: undefined as any };
-        const tasks: { kind: ProjectionKind; t: number; run: number; params: any }[] = [];
+        const tasks: { kind: ProjectionKind; t: number; run: number; params: any; record?: any }[] = [];
+        // The `after` of every apply from the power log on: calculated at the apply's time from what was known then.
+        for (const r of runs) {
+            const id = idOf(r);
+            if (!(id >= since) || projectionLog.has('after', id, id) || failed.has(keyOf('after', id, id))) continue;
+            tasks.push({ kind: 'after', t: id, run: id, params: Object.assign({}, withChlorCycle(r.inputs, cyc), base, { asOf: new Date(id) }), record: r });
+        }
         // What the previous run expected at the time of each apply, from only the readings it had.
         for (let i = 1; i < runs.length; i++) {
             const prev = runs[i - 1], next = runs[i];
@@ -207,7 +265,7 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (t < from || projectionLog.has('before', t, run) || failed.has(keyOf('before', t, run))) continue;
             const readingAt = new Date(prev.outputs.mostRecentFc.ts);
             if (isNaN(readingAt.getTime())) continue;
-            tasks.push({ kind: 'before', t: t, run: run, params: Object.assign({}, next.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+            tasks.push({ kind: 'before', t: t, run: run, params: Object.assign({}, withChlorCycle(next.inputs, cyc), base, { asOf: new Date(t), dataAsOf: readingAt }) });
         }
         // What the run in force expected at the time of each FC test (from the readings before it).
         for (const reading of archivedFcReadings()) {
@@ -218,12 +276,12 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (!current) continue;
             const run = idOf(current);
             if (projectionLog.has('reading', t, run) || failed.has(keyOf('reading', t, run))) continue;
-            tasks.push({ kind: 'reading', t: t, run: run, params: Object.assign({}, current.inputs, base, { asOf: new Date(t - 60000) }) });
+            tasks.push({ kind: 'reading', t: t, run: run, params: Object.assign({}, withChlorCycle(current.inputs, cyc), base, { asOf: new Date(t - 60000) }) });
         }
         // What the run in force expected at the top of each hour.
         const lastHour = Math.floor(Date.now() / 3600000) * 3600000;
         const firstRun = runs.length ? idOf(runs[0]) : Infinity;
-        for (let t = Math.max(Math.ceil((Date.now() - HOURLY_DAYS * 86400000) / 3600000) * 3600000, Math.ceil(firstRun / 3600000) * 3600000); t <= lastHour; t += 3600000) {
+        for (let t = Math.max(Math.ceil(Math.min(Date.now() - HOURLY_DAYS * 86400000, hourlyRedoFrom) / 3600000) * 3600000, Math.ceil(firstRun / 3600000) * 3600000); t <= lastHour; t += 3600000) {
             let current: any;
             for (const r of runs) { if (idOf(r) <= t) current = r; else break; }
             if (!current) continue;
@@ -231,14 +289,14 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (projectionLog.has('hourly', t, run) || failed.has(keyOf('hourly', t, run))) continue;
             const readingAt = new Date(current.outputs.mostRecentFc.ts);
             if (isNaN(readingAt.getTime())) continue;
-            tasks.push({ kind: 'hourly', t: t, run: run, params: Object.assign({}, current.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+            tasks.push({ kind: 'hourly', t: t, run: run, params: Object.assign({}, withChlorCycle(current.inputs, cyc), base, { asOf: new Date(t), dataAsOf: readingAt }) });
         }
         // What a run that came from a new test expected at the top of each hour between the test and its apply, from only what it knew (as for the hourly points).
         for (const w of leads) {
             const readingAt = new Date(w.readingT);
             for (const t of w.hours) {
                 if (projectionLog.has('lead', t, w.run) || failed.has(keyOf('lead', t, w.run))) continue;
-                tasks.push({ kind: 'lead', t: t, run: w.run, params: Object.assign({}, w.record.inputs, base, { asOf: new Date(t), dataAsOf: readingAt }) });
+                tasks.push({ kind: 'lead', t: t, run: w.run, params: Object.assign({}, withChlorCycle(w.record.inputs, cyc), base, { asOf: new Date(t), dataAsOf: readingAt }) });
             }
         }
         if (tasks.length === 0) return true;
@@ -248,10 +306,14 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
         for (const task of tasks.slice(0, MAX_TASKS)) {
             try {
                 const result = await computeRecommendation(task.params, html, local, undefined, archive);
-                projectionLog.add([{ t: task.t, fc: round2(result.projectedCurrentFc), kind: task.kind, run: task.run }]);
+                projectionLog.add([stamp(task.kind === 'after' ? afterOf(task.record, result.projectedCurrentFc) : { t: task.t, fc: round2(result.projectedCurrentFc), kind: task.kind, run: task.run })]);
                 made++;
             }
-            catch (err) { failed.add(keyOf(task.kind, task.t, task.run)); }
+            catch (err) {
+                failed.add(keyOf(task.kind, task.t, task.run));
+                // An apply's `after` that cannot be calculated again keeps its record's value (stamped, so it is not dropped again): the line still has its start.
+                if (task.kind === 'after') projectionLog.add([stamp(afterOf(task.record, task.record.outputs.projectedCurrentFc))]);
+            }
             await pause(PAUSE_MS);
         }
         if (made > 0) logger.verbose(`SWG Assist: ${made} projected FC point${made === 1 ? '' : 's'} added for the Water panel.`);
@@ -270,7 +332,7 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
 // Called every ten minutes (with the salt sample): once for each hour, brings the points up to date so the hourly point of the hour just begun is written.
 // It reads nothing until the hour changes, and tries again at the next call when the PoolMath page has not been read yet.
 let lastHourDone = 0;
-export async function updateHourlyProjection(cfg: { shareCode: string; poolName?: string }): Promise<void> {
+export async function updateHourlyProjection(cfg: { shareCode: string; poolName?: string; chlorCycle?: ChlorCycle }): Promise<void> {
     const hour = Math.floor(Date.now() / 3600000) * 3600000;
     if (hour === lastHourDone || busy || !cfg.shareCode) return;
     if (await updateProjectionPoints(cfg)) lastHourDone = hour;
