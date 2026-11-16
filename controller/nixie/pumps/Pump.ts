@@ -270,6 +270,10 @@ export class NixiePump extends NixieEquipment {
     // starting takes longer than the latch. Either way the pump is primed (when priming is set up for it). A pump that starts after being off for more
     // than minOffForPrimingMs is primed too; found off at startup, it is taken as off for long enough. Called after each pass that sets the relays.
     protected static readonly relayLatchMs = 5000;
+    // The gap is measured between finished passes, so it also holds the time a pass takes to send its commands: a gap a little over the latch
+    // (5.1 s, 5.6 s on the live system) did not let the relay manager's latch run out. Only a gap past the latch by more than this counts.
+    protected static readonly relayGapSlackMs = 1000;
+    public static relayGapExpired(gapMs: number): boolean { return gapMs > NixiePump.relayLatchMs + NixiePump.relayGapSlackMs; }
     protected _relaysOkAt: number;
     protected _relaysChecked = false;
     // A pump that has been off this long has had time for water to settle, so it primes when it starts.
@@ -309,7 +313,7 @@ export class NixiePump extends NixieEquipment {
         try {
             if (this.isPriming) return;
             if (first) await this.startPrimingAsync(undefined, 'njsPC started with the pump on, so its relays had timed out');
-            else if (gap > NixiePump.relayLatchMs) await this.startPrimingAsync(undefined, `its relays were not refreshed for ${Math.round(gap / 100) / 10} s, longer than their ${NixiePump.relayLatchMs / 1000} s latch`);
+            else if (NixiePump.relayGapExpired(gap)) await this.startPrimingAsync(undefined, `its relays were not refreshed for ${Math.round(gap / 100) / 10} s, longer than their ${NixiePump.relayLatchMs / 1000} s latch`);
             else if (offFor > NixiePump.minOffForPrimingMs) await this.startPrimingAsync(undefined, `it was turned on after being off for more than ${NixiePump.minOffForPrimingMs / 1000} s`);
         } catch (err) { logger.error(`NCP: Error priming pump ${this.pump.name}: ${err.message}`); }
     }

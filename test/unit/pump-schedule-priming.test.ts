@@ -29,7 +29,9 @@ class TestPump extends NixiePump {
         this._stoppedAt = stoppedAt;
         this._priming = priming ? { until: Date.now() + 60000, trigger: 6, circuitOn: false } : undefined;
     }
-    public async startPrimingAsync(triggerCircuitId?: number) { this.started.push(triggerCircuitId); }
+    public reasons: string[] = [];
+    public async startPrimingAsync(triggerCircuitId?: number, reason?: string) { this.started.push(triggerCircuitId); this.reasons.push(reason); }
+    public latchAsync(relaysSet = true) { return this.checkLatchAsync(relaysSet); }
 }
 const T = Date.parse('2026-11-09T11:43:00.000Z');
 let pump: TestPump, pumps: NixiePumpCollection;
@@ -77,5 +79,37 @@ describe('NixiePumpCollection.primeForScheduleAsync', () => {
         await pumps.primeForScheduleAsync(2);
         expect(pump.started).toEqual([]);
         expect(fx.info).toEqual([]);
+    });
+});
+
+// The relay gap is measured between finished passes, so it holds each pass's own send time: only a gap past the 5 s latch by over 1 s primes.
+describe('NixiePump relay gap priming', () => {
+    async function gapPrimes(gapMs: number): Promise<boolean> {
+        vi.useFakeTimers();
+        try {
+            pump.set(1, undefined);
+            vi.setSystemTime(T);
+            await pump.latchAsync();            // the first pass after startup primes (njsPC started with the pump on)
+            pump.started = []; pump.reasons = [];
+            vi.setSystemTime(T + 3000);
+            await pump.latchAsync();            // a normal refresh
+            vi.setSystemTime(T + 3000 + gapMs);
+            await pump.latchAsync();
+            return pump.started.length > 0;
+        } finally { vi.useRealTimers(); }
+    }
+    it('does not prime for gaps of 5.1 s and 5.6 s (the latch did not run out on the live system)', async () => {
+        expect(await gapPrimes(5100)).toBe(false);
+        expect(await gapPrimes(5600)).toBe(false);
+        expect(await gapPrimes(6000)).toBe(false);
+    });
+    it('primes for gaps of 6.3 s and 7.8 s (the relay manager logged the latch running out)', async () => {
+        expect(await gapPrimes(6300)).toBe(true);
+        expect(pump.reasons).toEqual(['its relays were not refreshed for 6.3 s, longer than their 5 s latch']);
+        expect(await gapPrimes(7800)).toBe(true);
+    });
+    it('relayGapExpired: the threshold is the latch plus 1 s', () => {
+        expect(NixiePump.relayGapExpired(6000)).toBe(false);
+        expect(NixiePump.relayGapExpired(6001)).toBe(true);
     });
 });
