@@ -35,3 +35,11 @@ export function superChlorHoldUpdate(on: boolean, heldAt: string | undefined): {
     const ended = !on && !!heldAt;
     return { hold: on, makeUp: ended, clearHeldAt: ended };
 }
+
+// The normal SWG % of the chlorinator: its target output, except during super chlorinate, when the output reads 100 while the setpoint keeps the
+// normal % (so a held change, and the card, show the % the run will return to, not 100).
+export function normalSwgPct(chlorState: { superChlor?: boolean; targetOutput?: number; poolSetpoint?: number } | undefined): number | undefined {
+    if (!chlorState) return undefined;
+    if (chlorState.superChlor === true && typeof chlorState.poolSetpoint === 'number') return chlorState.poolSetpoint;
+    return chlorState.targetOutput;
+}
