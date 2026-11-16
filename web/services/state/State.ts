@@ -51,7 +51,6 @@ import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
 import { poolMathSwgLogStatus, setPoolMathSwgFeeder, submitPoolMathSwgEntry } from "../../../controller/PoolMathSwgLogService";
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
-import { poolMathSwgLogStatus } from "../../../controller/PoolMathSwgLogService";
 import { registerBenchHistorySource } from "../../../controller/AutoSwgBenchHistorySource";
 import { ChlorinatorStateMessage } from "../../../controller/comms/messages/status/ChlorinatorStateMessage";
 import { weatherHistory } from "../../../controller/WeatherHistory";
