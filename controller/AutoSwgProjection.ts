@@ -200,7 +200,6 @@ const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 const idOf = (r: any): number => new Date(r.appliedAt).getTime();
 const failed = new Set<string>();   // calculations that could not be made (too little history before that moment): not tried again until njsPC restarts
 let busy = false;
-let hourlyRedoFrom = Infinity;   // the first hourly point dropped for the cycle count: the hourly points are filled in from there, past HOURLY_DAYS
 let again = false;   // a call came in while a run was going: it goes once more when that one is done, so a new apply is not left until the next calculation
 
 // The applies that carry a calculation: an applied recommendation with the parameters it used, the FC it projected and the reading it was based on.
@@ -241,7 +240,6 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
         const stale = staleForRecount(projectionLog.all(), since, new Set(leads.map(w => w.readingT)));
         if (stale.length) {
             projectionLog.drop(stale);
-            for (const p of stale) if (p.kind === 'hourly' && p.t < hourlyRedoFrom) hourlyRedoFrom = p.t;
             logger.info(`SWG Assist: ${stale.length} projected FC point${stale.length === 1 ? '' : 's'} since ${new Date(since).toISOString()} will be worked out again with the cycle count.`);
         }
         // The `after` of every apply before the power log, from its record (no calculation); from the log on they are calculated below.
@@ -278,10 +276,11 @@ export async function updateProjectionPoints(cfg: { shareCode: string; poolName?
             if (projectionLog.has('reading', t, run) || failed.has(keyOf('reading', t, run))) continue;
             tasks.push({ kind: 'reading', t: t, run: run, params: Object.assign({}, withChlorCycle(current.inputs, cyc), base, { asOf: new Date(t - 60000) }) });
         }
-        // What the run in force expected at the top of each hour.
+        // What the run in force expected at the top of each hour: the last HOURLY_DAYS days, and every hour from the power log's first line on (the
+        // hours the cycle count covers, no further back than LOOKBACK_DAYS; once they are there this costs only the look-ups).
         const lastHour = Math.floor(Date.now() / 3600000) * 3600000;
         const firstRun = runs.length ? idOf(runs[0]) : Infinity;
-        for (let t = Math.max(Math.ceil(Math.min(Date.now() - HOURLY_DAYS * 86400000, hourlyRedoFrom) / 3600000) * 3600000, Math.ceil(firstRun / 3600000) * 3600000); t <= lastHour; t += 3600000) {
+        for (let t = Math.max(Math.ceil(Math.min(Date.now() - HOURLY_DAYS * 86400000, Math.max(since, from)) / 3600000) * 3600000, Math.ceil(firstRun / 3600000) * 3600000); t <= lastHour; t += 3600000) {
             let current: any;
             for (const r of runs) { if (idOf(r) <= t) current = r; else break; }
             if (!current) continue;
