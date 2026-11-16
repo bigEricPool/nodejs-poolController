@@ -75,17 +75,34 @@ describe('cellUsageForHour with cycles', () => {
         expect(u.cycle).toBe(true);
         expect(u.hours).toBeCloseTo(1, 10);   // the first hour of a 1.02 h burst
         expect(u.pounds).toBeCloseTo(1.47 / 24, 10);
-        const half = cellUsageForHour(hour({ n: 3, on: 3 }), 1.47, ctx);   // a line that covers half the hour
-        expect(half.hours).toBeCloseTo(0.5, 10);
+        // a line that covers half the hour (njsPC restarted in it) counts the span it is given, the hour by default
+        expect(cellUsageForHour(hour({ n: 3, on: 3 }), 1.47, ctx, [at(0), at(0.5)]).hours).toBeCloseTo(0.5, 10);
+        expect(cellUsageForHour(hour({ n: 3, on: 3 }), 1.47, ctx, [at(0.5), at(2)]).hours).toBeCloseTo(0.5, 10);
+        expect(cellUsageForHour(hour({ n: 3, on: 3 }), 1.47, ctx).hours).toBeCloseTo(1, 10);
+        expect(cellUsageForHour(hour({}), 1.47, ctx, [at(1), at(2)]).hours).toBe(0);
     });
     it('counts an hour before it by its mean output', () => {
         const u = cellUsageForHour(hour({ t: new Date(at(-1)).toISOString() }), 1.47, ctx);
         expect(u.cycle).toBeUndefined();
         expect(u.hours).toBeCloseTo(0.34, 10);
     });
-    it('still credits nothing for a stale hour or one that was not generating', () => {
-        expect(cellUsageForHour(hour({ age: 901 }), 1.47, ctx).hours).toBe(0);
+    it('credits nothing for a fault the cell reported; the power log, not a stale output or lost comms, says when it had power', () => {
         expect(cellUsageForHour(hour({ st: [1] }), 1.47, ctx).hours).toBe(0);
+        expect(cellUsageForHour(hour({ st: [129] }), 1.47, ctx).hours).toBe(0);
+        expect(cellUsageForHour(hour({ age: 901 }), 1.47, ctx).hours).toBeCloseTo(1, 10);
+        expect(cellUsageForHour(hour({ st: [128], age: 40000, out: 2 }), 1.47, ctx).hours).toBeCloseTo(1, 10);
+        expect(cellUsageForHour(hour({ st: [128, 16] }), 1.47, ctx).hours).toBeCloseTo(1, 10);
+        // the % of the cycle comes from the % in force, so a line whose mean output is 0 still counts a cycle begun before it
+        expect(cellUsageForHour(hour({ out: 0, on: 0 }), 1.47, ctx).hours).toBeCloseTo(1, 10);
+    });
+    it('counts an hour with several lines once, at most its enabled time, and only up to the time given', () => {
+        const lines = [hour({ n: 3, on: 3 }), hour({ n: 4, on: 4 })];
+        const u = cellUsageSince(lines, at(-2), 1.47, ctx);
+        expect(u.hours).toBeCloseTo(1, 10);
+        expect(u.runHours).toBeCloseTo(1, 10);
+        expect(u.cycleHourCount).toBe(1);
+        expect(cellUsageSince(lines, at(-2), 1.47, ctx, at(0.25)).hours).toBeCloseTo(0.25, 10);
+        expect(cellUsageSince([hour({ n: 3, on: 3 }), hour({ n: 3, on: 3, st: [8] })], at(-2), 1.47, ctx).hours).toBe(0);
     });
     it('says how many hours were counted by cycles', () => {
         const hours = [hour({ t: new Date(at(-1)).toISOString() }), hour({}), hour({ t: new Date(at(1)).toISOString() })];
