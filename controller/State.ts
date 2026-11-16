@@ -2873,7 +2873,9 @@ export class ChlorinatorState extends EqState {
     /** Pounds of the total that were estimated from pool log SWG entries, for the time before the output log began. */
     public get usageEstimatedPounds(): number { return this.data.usageEstimatedPounds || 0; }
     public addUsage(hours: number, pounds: number, runHours: number = 0) {
-        if (!(hours > 0)) return;
+        // an hour can be enabled with no current in it (a cell on for a few minutes of each cycle), so either may be 0
+        if (!(hours > 0) && !(runHours > 0)) return;
+        if (!(hours > 0)) hours = 0;
         this.setDataVal('usageHours', this.usageHours + hours);
         this.setDataVal('usagePounds', this.usagePounds + (pounds > 0 ? pounds : 0));
         this.setDataVal('usageRunHours', this.usageRunHours + (runHours > 0 ? runHours : 0));

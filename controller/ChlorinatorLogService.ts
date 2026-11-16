@@ -340,7 +340,8 @@ export function creditHour(h: ChlorinatorOutputHour, now: number = Date.now()) {
     const u = cellUsageForHour(h, chlor.cellLbsPerDay, ctx, span);
     if (!u.cycle && start < s.usageSince) return;
     if (u.cycle) s.usageCountedTo = span[1];
-    if (u.hours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
+    // the enabled time counts even in an hour with no current (most hours of a cell at a low %)
+    if (u.hours > 0 || u.runHours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
 }
 
 function swgEntriesFor(id: number): SwgEntry[] {
