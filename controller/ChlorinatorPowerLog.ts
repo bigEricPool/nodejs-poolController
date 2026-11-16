@@ -22,6 +22,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // a few lines a day; the first line for a chlorinator is the state it was in when the log began, not necessarily a change.
 //
 // Each line: t  the time (ISO, UTC)    id  the chlorinator id    on  true when the power came on, false when it went off
+//            cause  only on an "off" written at a start for a stop that wrote nothing (a crash, a kill, a power loss): "outage", the time is the
+//                   last time njsPC was known to be running, not the start. Readers can ignore it.
 //
 // What "has power" means is up to ChlorinatorLogService.ts (by default the chlorinator's body is on). The same clock guards as the
 // output log apply: nothing is written while the time looks unset, nor before the newest event (the clock went back).
@@ -36,7 +38,8 @@ const PRUNE_EVERY_MS = DAY_MS;
 // As for the output log, the file is rewritten only when its oldest line is this far past the cutoff.
 const PRUNE_SLACK_MS = 31 * DAY_MS;
 
-export interface ChlorinatorPowerEvent { t: string; id: number; on: boolean; }
+export type ChlorinatorPowerCause = 'outage';
+export interface ChlorinatorPowerEvent { t: string; id: number; on: boolean; cause?: ChlorinatorPowerCause; }
 
 function isEvent(e: any): e is ChlorinatorPowerEvent {
     return !!e && typeof e.t === 'string' && typeof e.id === 'number' && typeof e.on === 'boolean' && !isNaN(new Date(e.t).getTime());
@@ -61,13 +64,14 @@ export class ChlorinatorPowerLog {
         return this.last.get(id);
     }
     // Writes the chlorinator's power state when it differs from the last one written (or none was). Returns the event written.
-    public record(id: number, on: boolean, now: number = Date.now()): ChlorinatorPowerEvent | undefined {
+    public record(id: number, on: boolean, now: number = Date.now(), cause?: ChlorinatorPowerCause): ChlorinatorPowerEvent | undefined {
         if (typeof id !== 'number' || typeof on !== 'boolean' || !clockLooksSet(now)) return undefined;
         const prev = this.lastEvent(id);
         if (prev && prev.on === on) return undefined;
         // the clock went back: wait until it has passed the newest event, so the lines stay in time order
         if (prev && now < new Date(prev.t).getTime()) return undefined;
         const e: ChlorinatorPowerEvent = { t: new Date(now).toISOString(), id: id, on: on };
+        if (cause) e.cause = cause;
         try {
             const f = this.file();
             fs.mkdirSync(path.dirname(f), { recursive: true });
