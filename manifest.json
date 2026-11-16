@@ -172,6 +172,18 @@
       "build": true
     },
     {
+      "name": "feature/swg-fault-hours",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "SWG Assist's power-log cycle credit gives nothing for clock hours whose chlorinator output-log line has a cell fault status (CELL_FAULT; clean cell 16 and comms lost 128 are not faults). On feature/swg-restart-credit with feature/chlorinator-log merged in; no settings, no dashPanel part.",
+      "depends": [
+        "feature/swg-restart-credit",
+        "feature/chlorinator-log"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "archive/2026-11-13/feature/dashboard-enhancements",
       "kind": "archive",
       "status": "archive",
