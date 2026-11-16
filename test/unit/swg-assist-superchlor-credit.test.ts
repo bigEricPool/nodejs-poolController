@@ -121,7 +121,7 @@ describe('super chlorinate credit in the burn', () => {
             // creditPpm is what is credited on top of the SWG entries: with the writer's pair, its 100% entry already holds part of the run (its
             // Amount, the run's total, as a rate over the 8 h, less the normal rate), so the two together are the run's 2.74
             const heldByEntry = writerPair ? (RATED * 8 / 24 - ppmPerDay(30)) * 8 / 24 : 0;   // 0.82
-            expect(r.superChlor[0].creditPpm + heldByEntry).toBeCloseTo((1 - 0.30) * (RATED / 24) * 8, 2);   // 2.74
+            expect(Math.abs(r.superChlor[0].creditPpm + heldByEntry - (1 - 0.30) * (RATED / 24) * 8)).toBeLessThanOrEqual(0.01);   // 2.74 (creditPpm is rounded)
             expect(Math.abs(r.avgConsumptionPpmPerDay - none.avgConsumptionPpmPerDay)).toBeLessThanOrEqual(0.01);
             expect(r.fcAnomalyNote).toBeUndefined();
         });
