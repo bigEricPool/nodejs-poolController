@@ -180,10 +180,10 @@ function cycleContextFor(chlor: Chlorinator, hours: ChlorinatorOutputHour[], now
 }
 // The last hours of each chlorinator, for the % in force at a cycle start when an hour is credited (a cycle can begin hours before).
 const recentHours = new Map<number, ChlorinatorOutputHour[]>();
-function recentHoursOf(id: number, h: ChlorinatorOutputHour): ChlorinatorOutputHour[] {
+function recentHoursOf(id: number, h: ChlorinatorOutputHour, now: number = Date.now()): ChlorinatorOutputHour[] {
     let list = recentHours.get(id);
     if (!list) {
-        list = chlorinatorLog.read(1, Date.now(), id, firstChlorinatorId());
+        list = chlorinatorLog.read(1, now, id, firstChlorinatorId());
         recentHours.set(id, list);
     }
     if (list.indexOf(h) < 0 && !list.some(x => x.t === h.t && x.n === h.n && x.id === h.id)) list.push(h);
@@ -221,17 +221,27 @@ export function sampleChlorinators(now: number = Date.now()) {
     }
 }
 
-// Each hour written is added to that chlorinator's totals (hours that start before the totals were last set are already in them).
-function creditHour(h: ChlorinatorOutputHour) {
+// Each hour written is added to that chlorinator's totals (hours that start before the totals were last set are already in them). A cell
+// counted by cycles adds the cycles from where its count reached (usageCountedTo) to now or the end of the hour, so the lines of an hour
+// split by a restart (one written at the stop, one at the end of the hour) each add their own part, not the whole hour twice.
+export function creditHour(h: ChlorinatorOutputHour, now: number = Date.now()) {
     const first = firstChlorinatorId();
     const id = typeof h.id === 'number' ? h.id : first;
     if (typeof id !== 'number') return;
     const chlor = sys.chlorinators.find(c => c.id === id);
     if (!chlor) return;
     const s = state.chlorinators.getItemById(id, false);
-    if (!s || new Date(h.t).getTime() < s.usageSince) return;
-    const ctx = chlor.cycleHours > 0 ? cycleContextFor(chlor, recentHoursOf(id, h), Date.now()) : undefined;
-    const u = cellUsageForHour(h, chlor.cellLbsPerDay, ctx);
+    const start = new Date(h.t).getTime();
+    if (!s || !isFinite(start)) return;
+    // by cycles, an hour the totals were set in part way through (a recount) still adds the part after it
+    const countedTo = Math.max(s.usageCountedTo, s.usageSince);
+    const byCycles = chlor.cycleHours > 0 && start + 3600000 > countedTo;
+    if (start < s.usageSince && !byCycles) return;
+    const ctx = chlor.cycleHours > 0 ? cycleContextFor(chlor, recentHoursOf(id, h, now), now) : undefined;
+    const span: [number, number] = [Math.max(start, countedTo), Math.min(start + 3600000, now)];
+    const u = cellUsageForHour(h, chlor.cellLbsPerDay, ctx, span);
+    if (!u.cycle && start < s.usageSince) return;
+    if (u.cycle) s.usageCountedTo = span[1];
     if (u.hours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
 }
 
