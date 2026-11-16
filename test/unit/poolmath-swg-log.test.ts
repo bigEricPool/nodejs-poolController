@@ -33,8 +33,9 @@ const client = {
     lastSignInAt: undefined as number | undefined,
     lastSignInError: undefined as string | undefined,
 };
+let feeder: string | undefined;
 function writer() {
-    const w = new SwgLogWriter({ client: client as any, settings: () => settings, reading: () => reading, file, now: () => now });
+    const w = new SwgLogWriter({ client: client as any, settings: () => settings, reading: () => reading, file, now: () => now, feeder: () => feeder });
     w.start();
     return w;
 }
@@ -54,6 +55,7 @@ beforeEach(() => {
     posts = [];
     fail = undefined;
     fileFound = true;
+    feeder = undefined;
 });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -252,5 +254,88 @@ describe('status', () => {
         client.lastSignInAt = undefined;
         fileFound = false;
         expect(writer().status()).toMatchObject({ credentialsFile: 'missing', note: expect.stringMatching(/credentials file/) });
+    });
+});
+
+describe('run hours changes', () => {
+    it('writes an entry when the whole-hour run time changes with the same %', async () => {
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        settings.hours = 11;           // the schedule's window grew past the half hour
+        await run(w, HOLD_MS + MIN);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[34, 11, swgPpm(1.47, 34, 11, 12000)]]);
+        await run(w, 10 * MIN);
+        expect(posts.length).toBe(1);
+    });
+    it('writes one entry when % and hours change together', async () => {
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        settings.hours = 10; reading = pctReading(30);
+        await run(w, HOLD_MS + MIN);
+        expect(posts.map(p => [p.Percent, p.runTime])).toEqual([[30, 10]]);
+    });
+});
+
+describe('feeder', () => {
+    const fedAt = () => now - 90 * 1000;
+    it('writes a handed-in change with its own time, rate and hours, and ignores the setting', async () => {
+        feeder = 'Test Feeder';
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        reading = pctReading(40);      // the setting alone writes nothing while a feeder is registered
+        await run(w, HOLD_MS + MIN);
+        expect(posts).toEqual([]);
+        const ts = fedAt();
+        expect(w.submit({ ts, percent: 30, hours: 11.62, ppm: 1.87 })).toBe(true);
+        await run(w, HOLD_MS + MIN);
+        expect(posts.length).toBe(1);
+        expect(posts[0]).toMatchObject({ Percent: 30, runTime: 12, Amount: 1.87, NormalizedAmount: 1.87, logTimestamp: new Date(ts).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+        expect(w.status().feeder).toBe('Test Feeder');
+    });
+    it('writes a handed-in change only when the % or whole hours differ from the last logged', async () => {
+        feeder = 'Test Feeder';
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        w.submit({ ts: fedAt(), percent: 30, hours: 11.6, ppm: 1.87 });
+        await run(w, HOLD_MS + MIN);
+        w.submit({ ts: fedAt(), percent: 30, hours: 11.7, ppm: 1.88 });   // same % and whole hours: nothing new
+        await run(w, HOLD_MS + MIN);
+        w.submit({ ts: fedAt(), percent: 30, hours: 12.6, ppm: 2.03 });   // the run time crossed into 13 h
+        await run(w, HOLD_MS + MIN);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[30, 12, 1.87], [30, 13, 2.03]]);
+    });
+    it('writes only the last of several handed-in changes within the hold', async () => {
+        feeder = 'Test Feeder';
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        w.submit({ ts: now - 30000, percent: 30, hours: 12, ppm: 1.9 });
+        await run(w, 30000);
+        const ts = now;
+        w.submit({ ts, percent: 28, hours: 12, ppm: 1.78 });
+        await run(w, HOLD_MS + MIN);
+        expect(posts.map(p => p.Percent)).toEqual([28]);
+    });
+    it('drops a handed-in change during super chlorinate, and the entry at its end keeps the feeder rate', async () => {
+        feeder = 'Test Feeder';
+        const w = writer();
+        await run(w, STARTUP_GRACE_MS + MIN);
+        w.submit({ ts: fedAt(), percent: 34, hours: 11.6, ppm: 2.13 });
+        await run(w, HOLD_MS + MIN);
+        reading = pctReading(34, { superChlorOn: true });
+        w.submit({ ts: fedAt(), percent: 20, hours: 11.6, ppm: 1.25 });
+        await run(w, HOLD_MS + MIN);
+        reading = pctReading(34);
+        w.superChlorEnded({ id: 50, start: now - 4 * H, end: now, reason: 'timer', hours: 4, poweredHours: 4, atStartup: false });
+        await run(w, 30000);
+        expect(posts.map(p => [p.Percent, p.runTime, p.Amount])).toEqual([[34, 12, 2.13], [100, 4, swgPpm(1.47, 100, 4, 12000)], [34, 12, 2.13]]);
+    });
+    it('refuses changes that are not usable', () => {
+        feeder = 'Test Feeder';
+        const w = writer();
+        expect(w.submit({ ts: Date.UTC(2020, 0, 1), percent: 30, hours: 12, ppm: 1 })).toBe(false);
+        expect(w.submit({ ts: now, percent: 130, hours: 12, ppm: 1 })).toBe(false);
+        expect(w.submit({ ts: now, percent: 30, hours: 0, ppm: 1 })).toBe(false);
+        settings.enabled = false;
+        expect(w.submit({ ts: now, percent: 30, hours: 12, ppm: 1 })).toBe(false);
     });
 });
