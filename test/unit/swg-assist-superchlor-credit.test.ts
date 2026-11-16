@@ -18,7 +18,8 @@ const ppmPerDay = (pct: number) => RATED * (pct / 100) * (WIN_HOURS / 24);
 
 const T0 = Date.UTC(2026, 9, 1, 12, 0, 0);     // first reading, noon
 const READINGS = [T0, T0 + 2 * DAY, T0 + 4 * DAY, T0 + 6 * DAY];
-const RUN = { startMs: T0 + 2 * DAY + 20 * H, endMs: T0 + 2 * DAY + 28 * H };   // 08:00-16:00 on the day after the second reading
+const RUN = { startMs: T0 + 2 * DAY + 20 * H, endMs: T0 + 2 * DAY + 28 * H };
+const DEFAULT_RUN = RUN;   // 08:00-16:00 on the day after the second reading
 
 const base: AutoSwgParams = {
     shareCode: 'test', gallons: GALLONS, swgLbsPerDay: LBS, swgStartTime: '07:00', swgStopTime: '17:00', timezone: 'UTC',
@@ -44,8 +45,10 @@ function simulateFc(sets: { ts: number; pct: number }[], runs: { startMs: number
 }
 
 // The history for a set % that starts at 20% (with an optional local apply), with or without the run, and with or without the writer's PoolMath pair.
-function history(opts: { run: boolean; writerPair?: boolean; applyAt?: number; applyPct?: number }) {
-    const sets: { ts: number; pct: number }[] = [{ ts: T0 - 5 * DAY, pct: 20 }];
+function history(opts: { run: boolean; writerPair?: boolean; applyAt?: number; applyPct?: number; basePct?: number; span?: { startMs: number; endMs: number } }) {
+    const basePct = typeof opts.basePct === 'number' ? opts.basePct : 20;
+    const RUN = opts.span || DEFAULT_RUN;
+    const sets: { ts: number; pct: number }[] = [{ ts: T0 - 5 * DAY, pct: basePct }];
     const local: LocalSwgEntry[] = [];
     if (typeof opts.applyAt === 'number') {
         sets.push({ ts: opts.applyAt, pct: opts.applyPct });
@@ -56,16 +59,16 @@ function history(opts: { run: boolean; writerPair?: boolean; applyAt?: number; a
     let v = 8, t = READINGS[0];
     fc.push({ ts: new Date(t), value: v });
     for (const r of READINGS.slice(1)) { v = simulateFc(sets, runs, v, t, r); t = r; fc.push({ ts: new Date(r), value: v }); }
-    const swg: ArchivedHistory['swg'] = [{ ts: new Date(T0 - 5 * DAY), pct: 20, hrs: WIN_HOURS, ppmPerDay: ppmPerDay(20) }];
+    const swg: ArchivedHistory['swg'] = [{ ts: new Date(T0 - 5 * DAY), pct: basePct, hrs: WIN_HOURS, ppmPerDay: ppmPerDay(basePct) }];
     if (opts.run && opts.writerPair) {
         // the writer's entries: 100% with runTime = the powered hours and Amount = the run's total FC, at the start; then the normal % at the end
         const poweredH = (RUN.endMs - RUN.startMs) / H;
-        const endPct = typeof opts.applyAt === 'number' ? opts.applyPct : 20;
+        const endPct = typeof opts.applyAt === 'number' ? opts.applyPct : basePct;
         swg.push({ ts: new Date(RUN.startMs), pct: 100, hrs: poweredH, ppmPerDay: RATED * poweredH / 24 });
         swg.push({ ts: new Date(RUN.endMs), pct: endPct, hrs: WIN_HOURS, ppmPerDay: ppmPerDay(endPct) });
     }
     const archive: ArchivedHistory = { fc, swg, cya: [{ ts: new Date(T0), value: 70 }], chlorine: [] };
-    const scRuns: SuperChlorRun[] = opts.run ? [{ startMs: RUN.startMs, endMs: RUN.endMs, poweredHours: 8, reason: 'timer' }] : [];
+    const scRuns: SuperChlorRun[] = opts.run ? [{ startMs: RUN.startMs, endMs: RUN.endMs, poweredHours: (RUN.endMs - RUN.startMs) / H, reason: 'timer' }] : [];
     return { archive, local, scRuns };
 }
 
@@ -108,6 +111,35 @@ describe('super chlorinate credit in the burn', () => {
             expect(r.fcAnomalyNote).toBeUndefined();
         });
     }
+
+    // The normal % makes chlorine only in the run window, so a run takes away the window hours' worth of it, not an even 24 h share: at 30%, an
+    // 8 h run inside the window is credited (1 - 0.30) x the full rate per hour x 8, with or without the writer's PoolMath pair.
+    for (const writerPair of [false, true]) {
+        it(`an 8 h run at a normal 30% is credited (1 - 0.30) x full rate x 8 h (${writerPair ? 'with' : 'without'} the writer's pair)`, async () => {
+            const none = await calc(history({ run: false, basePct: 30 }), AFTER);
+            const r = await calc(history({ run: true, basePct: 30, writerPair }), AFTER);
+            expect(r.superChlor[0].creditPpm).toBeCloseTo((1 - 0.30) * (RATED / 24) * 8, 2);   // 2.74
+            expect(Math.abs(r.avgConsumptionPpmPerDay - none.avgConsumptionPpmPerDay)).toBeLessThanOrEqual(0.01);
+            expect(r.fcAnomalyNote).toBeUndefined();
+        });
+    }
+    it('a run partly outside the run window: the hours outside get the full rate with nothing taken off', async () => {
+        const span = { startMs: T0 + 2 * DAY + 25 * H, endMs: T0 + 2 * DAY + 33 * H };   // 13:00-21:00; the window ends at 17:00
+        const none = await calc(history({ run: false, basePct: 30 }), AFTER);
+        const r = await calc(history({ run: true, basePct: 30, span }), AFTER);
+        expect(r.superChlor[0].creditPpm).toBeCloseTo((RATED / 24) * 8 - 0.30 * (RATED / 24) * 4, 2);   // 3.33
+        expect(Math.abs(r.avgConsumptionPpmPerDay - none.avgConsumptionPpmPerDay)).toBeLessThanOrEqual(0.01);
+    });
+    it('a run with the cell powered for only part of it: the normal % is taken off for the powered hours only', async () => {
+        const h = history({ run: true, basePct: 30 });
+        const r = await calc(h, AFTER, [{ startMs: DEFAULT_RUN.startMs, endMs: DEFAULT_RUN.endMs, poweredHours: 6 }]);
+        expect(r.superChlor[0].creditPpm).toBeCloseTo((1 - 0.30) * (RATED / 24) * 6, 2);   // 2.06
+    });
+    it('a 4-minute run (as in the 2026-11-16 live test) gets a few hundredths', async () => {
+        const span = { startMs: T0 + 2 * DAY + 20 * H, endMs: T0 + 2 * DAY + 20 * H + 4 * 60000 };
+        const r = await calc(history({ run: true, span }), AFTER);
+        expect(r.superChlor[0].creditPpm).toBeCloseTo((1 - 0.20) * (RATED / 24) * (4 / 60), 2);   // 0.03
+    });
 
     it('a run after the last reading is in the projection', async () => {
         // readings up to the second one only, then the run; the projection an hour after the run ends should be what the cell made

@@ -1141,7 +1141,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         ph = Math.min(ph, (end - r.startMs) / 3600000);
         return { s: r.startMs, e: end, ph, inProgress: !(typeof r.endMs === 'number' && r.endMs <= scEndMs) };
     }).filter(r => r.e > r.s);
-    const isRunEntry = (ev: SwgEvent, r: { s: number; e: number }) => ev.source === 'poolmath' && ev.pct >= 99.5 && ev.ts.getTime() >= r.s - LOCAL_SWG_MATCH_MS && ev.ts.getTime() < r.e;
+    const isRunEntry = (ev: SwgEvent, r: { s: number; e: number }) => ev.source === 'poolmath' && ev.pct >= 99 && ev.ts.getTime() >= r.s - LOCAL_SWG_MATCH_MS && ev.ts.getTime() < r.e;
     const scRunsIn = (a: Date, b: Date) => scRuns.filter(r => r.e > a.getTime() && r.s < b.getTime());
     // what the runs add over [a, b] beyond the SWG entries: `interval` for the burn intervals, otherwise for a projection (the SWG part weighted by `weight`)
     const superChlorCredit = (a: Date, b: Date, mode: 'interval' | 'projection', weight: number = 1): number => {
@@ -1152,8 +1152,13 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
             if (e.getTime() <= s.getTime()) continue;
             const full = ratedPpmPer24h * r.ph * ((e.getTime() - s.getTime()) / (r.e - r.s)) / 24;
             if (mode === 'interval') {
+                // the normal % is lost only for the powered hours inside the run window (taken to fall there first); powered hours outside it get the
+                // full rate with nothing taken off, since the normal % makes nothing then
                 const normalEvents = swgEvents.filter(ev => !isRunEntry(ev, r));
-                total += full - generatedBetween(swgEvents, s, e) + generatedBetween(normalEvents, s, e) - swgGeneratedSinceLastReading(normalEvents, s, e, swgStart, params.timezone);
+                const windowHours = dailyWindowOverlapHours(s, e, swgStart, swgHours, params.timezone);
+                const poweredHere = r.ph * ((e.getTime() - s.getTime()) / (r.e - r.s));
+                const lostShare = windowHours > 0 ? Math.min(1, poweredHere / windowHours) : 0;
+                total += full - generatedBetween(swgEvents, s, e) + generatedBetween(normalEvents, s, e) - lostShare * swgGeneratedSinceLastReading(normalEvents, s, e, swgStart, params.timezone);
             }
             else total += full - weight * swgGeneratedSinceLastReading(swgEvents, s, e, swgStart, params.timezone);
         }
