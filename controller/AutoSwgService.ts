@@ -54,7 +54,7 @@ import { noteShareRequest } from './PoolMathArchive';
 import type { BandDecision } from './SwgAssistBand';
 import { readSuperChlorRuns } from './AutoSwgSuperChlor';
 import type { SuperChlorRun } from './AutoSwgSuperChlor';
-import { findRestarts, readPowerEvents, restartExtraHours, restartReach, fillRestarts } from './AutoSwgRestarts';
+import { cycleGenerationPpm, readPowerEvents } from './AutoSwgCycleCount';
 import type { PowerEvent } from './ChlorinatorUsage';
 
 // How old the newest FC reading can be before the result says its projection is mostly
@@ -231,12 +231,14 @@ export interface AutoSwgParams {
     // The super chlorinate runs (see AutoSwgSuperChlor.ts). Read from data/chlorinatorSuperChlorLog.jsonl when not given; tests pass their own. Never recorded
     // in the history's inputs.
     superChlorRuns?: SuperChlorRun[];
-    // The chlorinator's cycle settings (from its configuration, not an SWG Assist setting), for the restart credit: a cell counted by cycles whose cycles
-    // restart at power-on gets the extra on-time of each short power drop in the run window (see AutoSwgRestarts.ts). Omitted, or cycleHours 0, or
-    // restartsOnPower false: no restart credit.
+    // The chlorinator's cycle settings (from its configuration, not an SWG Assist setting). With cycleHours above 0, the hours the power log covers are
+    // credited with what the cell really made, counted by its cycles from the power events (see AutoSwgCycleCount.ts), instead of the % over the run
+    // window. Omitted, or cycleHours 0: the run window throughout.
     chlorCycle?: { id?: number; cycleHours: number; restartsOnPower: boolean; burstFirst: boolean };
     // The chlorinator's power events. Read from data/chlorinatorPowerLog.jsonl when not given; tests pass their own. Never recorded in the history's inputs.
     powerEvents?: PowerEvent[];
+    // Called with the burn intervals (between consecutive FC readings) as calculated, for reports and tests. Never recorded in the history's inputs.
+    onIntervals?: (rows: { t1: Date; t2: Date; gen: number; added: number; rise: number; days: number; perDay: number; suspect: boolean }[]) => void;
     // A recent fall in the chlorinator's own salt reading (see AutoSwgSaltHistory.recentDrop). Only noted in the result (saltNote); the
     // calculation is not adjusted for it.
     saltDrop?: { fromPpm: number; toPpm: number; pct: number; fromAt: string; toAt: string; addedPpm?: number };
@@ -282,8 +284,9 @@ export interface AutoSwgResult {
     // Each super chlorinate run the calculation credited (from the averaging window on): its span, the hours at 100%, what the cell made in them (fullPpm)
     // and what was credited on top of the SWG entries for that span (creditPpm).
     superChlor?: { start: string; end?: string; poweredHours: number; fullPpm: number; creditPpm: number; inProgress: boolean }[];
-    // The njsPC restarts in the run window from the averaging window on, and the ppm their new cycles added on top of the SWG entries (see AutoSwgRestarts.ts).
-    restarts?: { count: number; creditPpm: number; sinceReadingPpm: number };
+    // The cycle count (see AutoSwgCycleCount.ts), from the averaging window or the start of the power log, whichever is later: from when, what the cycles made
+    // (cyclePpm) and what the % over the run window would have credited for the same time (windowPpm).
+    cycleCount?: { since: string; cyclePpm: number; windowPpm: number };
     projectionWeight: number;       // the weight applied to the modelled change
     // Where the next FC test is likely to read (about 90%): the projection plus or minus how far it has recently missed. See FC_RANGE_Z.
     projectedFcRange: { low: number; high: number; sd: number; halfWidth?: number; basis: 'history' | 'default'; intervals: number };   // halfWidth: the projection to low/high (before low is held at 0); sd: root mean square miss with the growth, for reference
@@ -1140,6 +1143,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     // of them PoolMath or the local log has. The burn intervals spread the normal % evenly over the day (generatedBetween), while the cell really makes it in
     // the run window; the normal % would have made its window hours' worth in the span, not an even share, so that difference is taken out as well (normalEvents:
     // the SWG entries without PoolMath's 100% entries for the run). The projections already count the window hours, so they need only the first part.
+    // Where the cycle count covers the run (below), the normal % is the cycle count's: the run's credit is what the cell made at 100% less what the cycles
+    // at the normal % would have made in the same span, which is what the generation there already holds, so nothing is counted twice.
     // A past calculation (asOf) sees only what had run by then: a run still on then counts up to then, its hours in proportion.
     const scEndMs = typeof asOfMs === 'undefined' ? Date.now() : asOfMs;
     const ratedPpmPer24h = params.gallons > 0 && params.swgLbsPerDay > 0 ? (params.swgLbsPerDay * 1_000_000) / (params.gallons * 8.34) : 0;
@@ -1153,58 +1158,68 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     }).filter(r => r.e > r.s);
     const isRunEntry = (ev: SwgEvent, r: { s: number; e: number }) => ev.source === 'poolmath' && ev.pct >= 99 && ev.ts.getTime() >= r.s - LOCAL_SWG_MATCH_MS && ev.ts.getTime() < r.e;
     const scRunsIn = (a: Date, b: Date) => scRuns.filter(r => r.e > a.getTime() && r.s < b.getTime());
+
+    // The cycle count: from the first line of the chlorinator's power log (data/chlorinatorPowerLog.jsonl), each hour is credited with what the cell
+    // really made, counted by its cycles (see AutoSwgCycleCount.ts), in place of the % over the run window. That takes in the restarts (a fresh on-period
+    // each), a power-off part way through an on-period, and power outside the window. The % of a cycle is the SWG entry in effect at its start, without
+    // PoolMath's 100% entries for super chlorinate runs (the run is credited separately, above). Hours before the log begins keep the run window. Power drops
+    // njsPC never saw (a REM relay latch expiring while njsPC was stalled) leave no lines and are not counted. A past calculation (asOf) sees only the
+    // events logged by then. Only what was made is counted this way; the % for the future is still worked out from the run window.
+    const cyc = params.chlorCycle;
+    const cycleOn = !!cyc && cyc.cycleHours > 0 && ratedPpmPer24h > 0;
+    const powerEvents: PowerEvent[] = cycleOn ? (params.powerEvents || readPowerEvents(typeof cyc.id === 'number' && cyc.id >= 0 ? cyc.id : undefined))
+        .filter(e => e && isFinite(e.t) && e.t <= scEndMs).slice().sort((x, y) => x.t - y.t) : [];
+    const cycleSince = powerEvents.length ? powerEvents[0].t : Infinity;
+    const cycleSettings = cycleOn ? { cycleHours: cyc.cycleHours, restartsOnPower: cyc.restartsOnPower !== false, burstFirst: cyc.burstFirst !== false } : undefined;
+    const normalSwgEvents = scRuns.length ? swgEvents.filter(ev => !scRuns.some(r => isRunEntry(ev, r))) : swgEvents;
+    const normalPctAt = (ms: number): number => { const ev = swgEventAt(normalSwgEvents, new Date(ms)); return ev ? ev.pct : 0; };
+    const cycleGen = (a: number, b: number): number => b > a ? cycleGenerationPpm(powerEvents, a, b, cycleSettings, normalPctAt, ratedPpmPer24h) : 0;
+    // What the SWG made over [a, b]: for a burn interval (spread evenly over the day before the power log, as before; an interval that reaches into the log
+    // counts its part before the log by the run window, the same basis as the cycles) ...
+    const genInterval = (a: Date, b: Date): number => {
+        const c = Math.max(a.getTime(), Math.min(b.getTime(), cycleSince));
+        if (c >= b.getTime()) return generatedBetween(swgEvents, a, b);
+        return swgGeneratedSinceLastReading(swgEvents, a, new Date(c), swgStart, params.timezone) + cycleGen(c, b.getTime());
+    };
+    // ... and since a reading (the run window before the power log).
+    const genSince = (a: Date, b: Date): number => {
+        const c = Math.max(a.getTime(), Math.min(b.getTime(), cycleSince));
+        return swgGeneratedSinceLastReading(swgEvents, a, new Date(c), swgStart, params.timezone) + cycleGen(c, b.getTime());
+    };
+
     // what the runs add over [a, b] beyond the SWG entries: `interval` for the burn intervals, otherwise for a projection (the SWG part weighted by `weight`)
     const superChlorCredit = (a: Date, b: Date, mode: 'interval' | 'projection', weight: number = 1): number => {
         if (!(ratedPpmPer24h > 0)) return 0;
         let total = 0;
         for (const r of scRunsIn(a, b)) {
-            const s = new Date(Math.max(r.s, a.getTime())), e = new Date(Math.min(r.e, b.getTime()));
-            if (e.getTime() <= s.getTime()) continue;
-            const full = ratedPpmPer24h * r.ph * ((e.getTime() - s.getTime()) / (r.e - r.s)) / 24;
-            if (mode === 'interval') {
-                // the normal % is lost only for the powered hours inside the run window (taken to fall there first); powered hours outside it get the
-                // full rate with nothing taken off, since the normal % makes nothing then
-                const normalEvents = swgEvents.filter(ev => !isRunEntry(ev, r));
-                const windowHours = dailyWindowOverlapHours(s, e, swgStart, swgHours, params.timezone);
-                const poweredHere = r.ph * ((e.getTime() - s.getTime()) / (r.e - r.s));
-                const lostShare = windowHours > 0 ? Math.min(1, poweredHere / windowHours) : 0;
-                total += full - generatedBetween(swgEvents, s, e) + generatedBetween(normalEvents, s, e) - lostShare * swgGeneratedSinceLastReading(normalEvents, s, e, swgStart, params.timezone);
+            const s0 = Math.max(r.s, a.getTime()), e0 = Math.min(r.e, b.getTime());
+            if (e0 <= s0) continue;
+            // the part before the power log (credited against the SWG entries, as before) and the part the cycle count covers
+            const m = Math.max(s0, Math.min(e0, cycleSince));
+            if (m > s0) {
+                const s = new Date(s0), e = new Date(m);
+                const full = ratedPpmPer24h * r.ph * ((m - s0) / (r.e - r.s)) / 24;
+                if (mode === 'interval') {
+                    // the normal % is lost only for the powered hours inside the run window (taken to fall there first); powered hours outside it get the
+                    // full rate with nothing taken off, since the normal % makes nothing then. An interval that reaches into the power log counts its
+                    // part before the log by the run window (genInterval), so that is what the entries hold for this part.
+                    const normalEvents = swgEvents.filter(ev => !isRunEntry(ev, r));
+                    const windowBasis = b.getTime() > cycleSince;
+                    const held = windowBasis ? swgGeneratedSinceLastReading(swgEvents, s, e, swgStart, params.timezone) : generatedBetween(swgEvents, s, e);
+                    const heldNormal = windowBasis ? swgGeneratedSinceLastReading(normalEvents, s, e, swgStart, params.timezone) : generatedBetween(normalEvents, s, e);
+                    const windowHours = dailyWindowOverlapHours(s, e, swgStart, swgHours, params.timezone);
+                    const poweredHere = r.ph * ((m - s0) / (r.e - r.s));
+                    const lostShare = windowHours > 0 ? Math.min(1, poweredHere / windowHours) : 0;
+                    total += full - held + heldNormal - lostShare * swgGeneratedSinceLastReading(normalEvents, s, e, swgStart, params.timezone);
+                }
+                else total += full - weight * swgGeneratedSinceLastReading(swgEvents, s, e, swgStart, params.timezone);
             }
-            else total += full - weight * swgGeneratedSinceLastReading(swgEvents, s, e, swgStart, params.timezone);
+            if (e0 > m) {
+                const full = ratedPpmPer24h * r.ph * ((e0 - m) / (r.e - r.s)) / 24;
+                total += full - (mode === 'interval' ? 1 : weight) * cycleGen(m, e0);
+            }
         }
         return total;
-    };
-
-    // njsPC restarts: each short power drop in the run window starts a new cycle, and the current flows first in a cycle, so the cell runs up to one more
-    // on-period at the set % than the SWG entries say (see AutoSwgRestarts.ts). Credited as FC added, the extra on-time at the full rate; the normal running
-    // credit is untouched. The % is the SWG entry in effect. Time inside a super chlorinate run is skipped (the cell is at 100% then, credited above). A past
-    // calculation (asOf) sees only the power events logged by then.
-    const cyc = params.chlorCycle;
-    const restartOn = !!cyc && cyc.cycleHours > 0 && cyc.restartsOnPower === true && ratedPpmPer24h > 0;
-    const powerEvents: PowerEvent[] = restartOn ? (params.powerEvents || readPowerEvents(typeof cyc.id === 'number' && cyc.id >= 0 ? cyc.id : undefined))
-        .filter(e => e && isFinite(e.t) && e.t <= scEndMs).slice().sort((x, y) => x.t - y.t) : [];
-    const inRunWindow = (ms: number) => dailyWindowOverlapHours(new Date(ms), new Date(ms + 1000), swgStart, swgHours, params.timezone) > 0;
-    const restarts = restartOn ? findRestarts(powerEvents, inRunWindow) : [];
-    const restartSpans = restarts.length ? restartReach(powerEvents, restarts) : [];
-    const restartFilled = restarts.length ? fillRestarts(powerEvents, restarts) : [];
-    const pctFromEntries = (ms: number): number => { const ev = swgEventAt(swgEvents, new Date(ms)); return ev ? ev.pct : 0; };
-    const restartCycle = restartOn ? { cycleHours: cyc.cycleHours, restartsOnPower: true, burstFirst: cyc.burstFirst !== false } : undefined;
-    // the ppm the restarts added over [a, b], outside super chlorinate runs
-    const restartCredit = (a: Date, b: Date): number => {
-        if (!restarts.length || !(b.getTime() > a.getTime())) return 0;
-        let pieces = [{ s: a.getTime(), e: b.getTime() }];
-        for (const r of scRunsIn(a, b)) {
-            const next: { s: number; e: number }[] = [];
-            for (const p of pieces) {
-                if (r.e <= p.s || r.s >= p.e) { next.push(p); continue; }
-                if (r.s > p.s) next.push({ s: p.s, e: r.s });
-                if (r.e < p.e) next.push({ s: r.e, e: p.e });
-            }
-            pieces = next;
-        }
-        let hours = 0;
-        for (const p of pieces) hours += restartExtraHours(powerEvents, restarts, p.s, p.e, restartCycle, pctFromEntries, restartSpans, restartFilled);
-        return hours * ratedPpmPer24h / 24;
     };
 
     // Time-weighted running average FC consumption over the last windowDays.
@@ -1218,15 +1233,17 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         const [t1, fc1] = [fcEvents[i].ts, fcEvents[i].value];
         const [t2, fc2] = [fcEvents[i + 1].ts, fcEvents[i + 1].value];
         if (t2.getTime() <= t1.getTime()) continue;
-        const gen = generatedBetween(swgEvents, t1, t2);
+        const gen = genInterval(t1, t2);
         const rawDelta = fc2 - fc1;
-        const added = addedBetween(t1, t2) + superChlorCredit(t1, t2, 'interval') + restartCredit(t1, t2);
+        const added = addedBetween(t1, t2) + superChlorCredit(t1, t2, 'interval');
         const consumed = gen + added - rawDelta;
         const days = dayEquivalents(t1, t2);
         // an interval with a super chlorinate run in it is not flagged: the rise is the run's
         const suspect = anomalyTolerance > 0 && consumed < -anomalyTolerance && scRunsIn(t1, t2).length === 0;
         intervals.push({ t1, t2, perDay: days > 0 ? consumed / days : 0, consumed, rise: rawDelta, gen, added, days, suspect, uncovered: t1.getTime() < firstSwgMs });
     }
+
+    if (params.onIntervals) params.onIntervals(intervals.map(iv => ({ t1: iv.t1, t2: iv.t2, gen: iv.gen, added: iv.added, rise: iv.rise, days: iv.days, perDay: iv.perDay, suspect: iv.suspect })));
 
     const rightNow = params.asOf ? new Date(params.asOf) : new Date();
     // The running average as it stood at `end`, from the readings logged by then (intervals that end after it are not known yet). The live
@@ -1313,9 +1330,14 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         rationale.push(`Super chlorinate ${formatLocalDateTime(new Date(r.s), params.timezone)}-${r.inProgress ? 'now (still on)' : formatLocalDateTime(new Date(r.e), params.timezone)}: +${fullPpm.toFixed(2)} ppm credited (${r.ph.toFixed(1)} h at 100%${Math.abs(fullPpm - creditPpm) >= 0.005 ? `, in place of the ${(fullPpm - creditPpm).toFixed(2)} ppm the SWG % entries hold for that time` : ''}).`);
         return { start: new Date(r.s).toISOString(), end: r.inProgress ? undefined : new Date(r.e).toISOString(), poweredHours: Math.round(r.ph * 100) / 100, fullPpm: Math.round(fullPpm * 100) / 100, creditPpm: Math.round(creditPpm * 100) / 100, inProgress: r.inProgress };
     });
-    const restartsShown = restarts.filter(r => r.onMs >= windowStart.getTime());
-    const restartsCreditPpm = restartCredit(windowStart, rightNow);
-    if (restartsShown.length && restartsCreditPpm >= 0.005) rationale.push(`njsPC restarts in the run window: ${restartsShown.length}, +${restartsCreditPpm.toFixed(2)} ppm from new cycles (current first).`);
+    let cycleCount: { since: string; cyclePpm: number; windowPpm: number } | undefined;
+    if (cycleSince < rightNow.getTime()) {
+        const from = new Date(Math.max(cycleSince, windowStart.getTime()));
+        const cyclePpm = cycleGen(from.getTime(), rightNow.getTime());
+        const windowPpm = swgGeneratedSinceLastReading(normalSwgEvents, from, rightNow, swgStart, params.timezone);
+        cycleCount = { since: from.toISOString(), cyclePpm: Math.round(cyclePpm * 100) / 100, windowPpm: Math.round(windowPpm * 100) / 100 };
+        rationale.push(`Generation since ${formatLocalDateTime(from, params.timezone)} counted from the power log (${cyc.cycleHours}-h cycles, current ${cycleSettings.burstFirst ? 'first' : 'last'}): ${cyclePpm.toFixed(2)} ppm vs ${windowPpm.toFixed(2)} ppm by the run window.`);
+    }
     if (daylight) rationale.push(`Daylight weighting: day length ${daylight.dayHours.toFixed(1)}h (${params.sunriseTime}-${params.sunsetTime} ${params.timezone}); ${(daylight.share * 100).toFixed(0)}% of a day's FC consumption counted as daytime (${daylight.auto ? `the night burn is taken as ${daylight.ratio} of the day rate` : 'configured'}). Whole 24h blocks count as one day; only the partial block is weighted.`);
     if (swgMerge.localUsed > 0) {
         rationale.push(`SWG entries: ${swgMerge.localUsed} from the local SWG % change log, ${poolMathSwgEvents.length - swgMerge.replaced} from PoolMath; ${swgMerge.replaced} PoolMath ${swgMerge.replaced === 1 ? 'entry' : 'entries'} within 1h of a local entry ignored in favor of the local one.`);
@@ -1390,18 +1412,17 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     const lastFc = fcEvents[fcEvents.length - 1];
     const elapsedDays = (rightNow.getTime() - lastFc.ts.getTime()) / 86400000;
     const latestSwg = swgEvents[swgEvents.length - 1];
-    const swgGeneratedSinceReading = swgGeneratedSinceLastReading(swgEvents, lastFc.ts, rightNow, swgStart, params.timezone);
+    const swgGeneratedSinceReading = genSince(lastFc.ts, rightNow);
     const elapsedEq = dayEquivalents(lastFc.ts, rightNow);
     const baseWeight = typeof params.projectionWeight === 'number' ? Math.max(0, Math.min(1, params.projectionWeight)) : 1;
     const effectiveWeight = projectionWeight(baseWeight, elapsedDays, typeof params.projectionTaperStartDays === 'number' ? params.projectionTaperStartDays : 3,
         typeof params.projectionTaperEndDays === 'number' ? params.projectionTaperEndDays : 0);
     const liquidSinceReading = addedBetween(lastFc.ts, rightNow);
     const superChlorSinceReading = superChlorCredit(lastFc.ts, rightNow, 'projection', effectiveWeight);
-    const restartsSinceReading = effectiveWeight * restartCredit(lastFc.ts, rightNow);
-    const addedSinceReading = liquidSinceReading + superChlorSinceReading + restartsSinceReading;
+    const addedSinceReading = liquidSinceReading + superChlorSinceReading;
     const modelChange = swgGeneratedSinceReading - (avgPerDay * elapsedEq);
     let projectedCurrentFc = lastFc.value + effectiveWeight * modelChange + addedSinceReading;
-    rationale.push(`Projected current FC: ${projectedCurrentFc.toFixed(2)} ppm (last reading ${lastFc.value} ppm, ${elapsedDays.toFixed(2)} days ago${daylight ? ` = ${elapsedEq.toFixed(2)} days of consumption, daylight-weighted` : ''}; minus ${(avgPerDay * elapsedEq).toFixed(2)} ppm consumed; plus ${swgGeneratedSinceReading.toFixed(2)} ppm generated${liquidSinceReading > 0 ? `; plus ${liquidSinceReading.toFixed(2)} ppm of liquid chlorine added` : ''}${Math.abs(superChlorSinceReading) >= 0.005 ? `; ${superChlorSinceReading >= 0 ? 'plus' : 'minus'} ${Math.abs(superChlorSinceReading).toFixed(2)} ppm for super chlorinate` : ''}${restartsSinceReading >= 0.005 ? `; plus ${restartsSinceReading.toFixed(2)} ppm from njsPC restarts in the run window` : ''}${effectiveWeight < 1 ? `; only ${Math.round(effectiveWeight * 100)}% of the modelled change is applied (Projection Weighting${effectiveWeight < baseWeight ? `, reduced because the last reading is ${elapsedDays.toFixed(1)} days old` : ''})` : ''}).`);
+    rationale.push(`Projected current FC: ${projectedCurrentFc.toFixed(2)} ppm (last reading ${lastFc.value} ppm, ${elapsedDays.toFixed(2)} days ago${daylight ? ` = ${elapsedEq.toFixed(2)} days of consumption, daylight-weighted` : ''}; minus ${(avgPerDay * elapsedEq).toFixed(2)} ppm consumed; plus ${swgGeneratedSinceReading.toFixed(2)} ppm generated${liquidSinceReading > 0 ? `; plus ${liquidSinceReading.toFixed(2)} ppm of liquid chlorine added` : ''}${Math.abs(superChlorSinceReading) >= 0.005 ? `; ${superChlorSinceReading >= 0 ? 'plus' : 'minus'} ${Math.abs(superChlorSinceReading).toFixed(2)} ppm for super chlorinate` : ''}${effectiveWeight < 1 ? `; only ${Math.round(effectiveWeight * 100)}% of the modelled change is applied (Projection Weighting${effectiveWeight < baseWeight ? `, reduced because the last reading is ${elapsedDays.toFixed(1)} days old` : ''})` : ''}).`);
     // With the last reading this old, the projection is mostly extrapolation from an
     // average -- worth saying so rather than presenting it with the same confidence as one
     // anchored to a recent test.
@@ -1451,7 +1472,8 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     if (params.storm && params.outages && params.outages.length && staleFcNote && typeof asOfMs === 'undefined') {
         let lost = 0;
         for (const o of params.outages) {
-            const a = Math.max(new Date(o.from).getTime(), lastFc.ts.getTime()), b = Math.min(new Date(o.to).getTime(), rightNow.getTime());
+            // the hours the cycle count covers already have the outage in them (the power log shows njsPC down as power off)
+            const a = Math.max(new Date(o.from).getTime(), lastFc.ts.getTime()), b = Math.min(new Date(o.to).getTime(), rightNow.getTime(), cycleSince);
             if (b > a) lost += swgGeneratedSinceLastReading(swgEvents, new Date(a), new Date(b), swgStart, params.timezone);
         }
         if (lost >= OUTAGE_MIN_LOSS_PPM) {
@@ -1482,9 +1504,9 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         const then = averageAsOf(asOfThen);
         if (!(then.coveredDays > 0)) continue;   // a calculation then would have had nothing to average (the report skips it too)
         const elapsedThen = (asOfThen.getTime() - iv.t1.getTime()) / 86400000;
-        const generatedThen = swgGeneratedSinceLastReading(swgEvents, iv.t1, asOfThen, swgStart, params.timezone);
+        const generatedThen = genSince(iv.t1, asOfThen);
         const weightThen = projectionWeight(baseWeight, elapsedThen, rangeTaperStart, rangeTaperEnd);
-        const projectedRise = weightThen * (generatedThen - (then.weightedTotal / then.coveredDays) * dayEquivalents(iv.t1, asOfThen)) + addedBetween(iv.t1, asOfThen) + superChlorCredit(iv.t1, asOfThen, 'projection', weightThen) + weightThen * restartCredit(iv.t1, asOfThen);
+        const projectedRise = weightThen * (generatedThen - (then.weightedTotal / then.coveredDays) * dayEquivalents(iv.t1, asOfThen)) + addedBetween(iv.t1, asOfThen) + superChlorCredit(iv.t1, asOfThen, 'projection', weightThen);
         rangeMisses.push(projectedRise - iv.rise);
     }
     const rangeSpread = fcRangeHalfWidth(rangeMisses, elapsedDays);
@@ -1796,6 +1818,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
     delete inputsUsed.saltDrop;
     delete inputsUsed.superChlorRuns;
     delete inputsUsed.powerEvents;
+    delete inputsUsed.onIntervals;
     delete inputsUsed.storm;
 
     // Range control holding the SWG at 0% above the range: when the projection falls to the release level, and when the reading is old enough that the hold ends anyway.
@@ -1822,7 +1845,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
         fcModelChange: modelChange,
         fcAdded: addedSinceReading,
         superChlor: superChlorShown.length ? superChlorShown : undefined,
-        restarts: restartsShown.length ? { count: restartsShown.length, creditPpm: Math.round(restartsCreditPpm * 100) / 100, sinceReadingPpm: Math.round(restartsSinceReading * 100) / 100 } : undefined,
+        cycleCount: cycleCount,
         projectionWeight: effectiveWeight,
         projectedFcRange: { low: Math.round(projectedFcRange.low * 100) / 100, high: Math.round(projectedFcRange.high * 100) / 100, sd: Math.round(projectedFcRange.sd * 100) / 100, halfWidth: Math.round(projectedFcRange.halfWidth * 100) / 100, basis: projectedFcRange.basis, intervals: projectedFcRange.intervals },
         targetMarginPpm: Math.round(targetMarginPpm * 100) / 100,
@@ -1857,7 +1880,7 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
             additions.map(a => [a.ts.getTime(), a.percent, Math.round(a.ml)]),
             swgEvents.map(e => [e.ts.getTime(), e.ppmPerDay, e.hrs, e.pct]),
             scRuns.map(r => [r.s, r.inProgress ? 0 : r.e]),
-            restarts.map(r => r.onMs),
+            cycleCount ? [powerEvents.length, powerEvents[powerEvents.length - 1].t, cycleSettings.cycleHours, cycleSettings.restartsOnPower, cycleSettings.burstFirst] : 0,
         ])),
         mostRecentFc: { value: lastFc.value, ts: lastFc.ts.toISOString() },
         mostRecentCya: cyaEvents.length ? { value: cyaEvents[cyaEvents.length - 1].value, ts: cyaEvents[cyaEvents.length - 1].ts.toISOString() } : undefined,

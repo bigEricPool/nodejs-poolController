@@ -232,7 +232,7 @@ function recordAutoSwgChange(record: Parameters<typeof appendAutoSwgHistory>[0])
     catch (err) { logger.warn(`SWG Assist: could not hand the change to the PoolMath SWG log: ${err.message}`); }
 }
 
-// The cycle settings of the chlorinator SWG Assist controls (the one chosen, otherwise the first), for the restart credit (see AutoSwgRestarts.ts).
+// The cycle settings of the chlorinator SWG Assist controls (the one chosen, otherwise the first), for the cycle count of what the cell made (see AutoSwgCycleCount.ts).
 function autoSwgChlorCycle(cfg: typeof sys.autoSwg): { id: number; cycleHours: number; restartsOnPower: boolean; burstFirst: boolean } | undefined {
     try {
         const chlors = sys.chlorinators.toArray();
