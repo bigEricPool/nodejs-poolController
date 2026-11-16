@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // (ChlorinatorPowerLog.ts), checked every 15 seconds, which places the cycles of a cell counted by cycles, and, with the same check, when
 // each chlorinator's super chlorinate goes on and off (ChlorinatorSuperChlorLog.ts).
 
+import { performance } from 'perf_hooks';
 import { logger } from '../logger/Logger';
 import { ServiceParameterError } from './Errors';
 import { ControllerType } from './Constants';
@@ -35,6 +36,7 @@ import { cellUsageForHour, cellUsageFromInstall, CycleContext, mergeSwgEntries, 
 const SAMPLE_MS = 10 * 60 * 1000;
 const POWER_CHECK_MS = 15 * 1000;
 let powerTimer: NodeJS.Timeout | undefined;
+let stallTimer: NodeJS.Timeout | undefined;
 
 // Whether a chlorinator has power. The chlorinator's own settings decide first:
 //   powerRelays           the relays its power is wired through (a dead-man, for example the cell's own relay and the pump's low speed relay):
@@ -112,6 +114,79 @@ export function chlorinatorPower(chlor: Chlorinator, now: number = Date.now()): 
     return d;
 }
 export function chlorinatorHasPower(chlor: Chlorinator): boolean | undefined { return chlorinatorPower(chlor).on; }
+// Short drops of the power that njsPC cannot see (checkForStall, noteChlorinatorRelayGap): on Nixie each relay command carries a latch time,
+// and the relay manager turns the relay
+// off when it is not refreshed within it (Pump.ts sends 5 s with a pump relay, Circuit.ts 10 s with a circuit's). When njsPC stalls for
+// longer than that (a slow storage write, for example), a relay the chlorinator's power is wired through drops for a moment, the cell
+// restarts (a new cycle for a cell counted by cycles), and njsPC's own record still says on. Two ways in:
+//   checkForStall          a tick every STALL_TICK_MS: a tick that comes more than the latch late means nothing ran, so nothing was refreshed.
+//   noteChlorinatorRelayGap  for code that knows when it last refreshed given relays (a pump that checks its own latch, say), so a gap on the
+//                          relay manager's side, or one too short for the tick to see, is logged too. Nothing here calls it.
+// Either writes an "off" at the start of the gap plus the latch and an "on" when it ended, both marked cause "stall", for a chlorinator
+// logged as powered that has power again (ChlorinatorPowerLog.recordDrop, which also keeps the two from writing the same gap twice).
+export const PUMP_RELAY_LATCH_MS = 5000;
+export const CIRCUIT_RELAY_LATCH_MS = 10000;
+export const STALL_TICK_MS = 1000;
+type RelayRef = { connectionId: string; deviceBinding: string };
+// The latch of a relay as njsPC sends it: a pump's relay, a circuit's relay, or undefined when nothing in njsPC drives it.
+export function relayLatchMs(r: RelayRef): number | undefined {
+    for (const p of sys.pumps.get()) {
+        const relays: any[] = (sys.pumps.getItemById(p.id).relays as any).get() || [];
+        if (relays.some(x => relayMatches(x, r))) return PUMP_RELAY_LATCH_MS;
+    }
+    return sys.circuits.get().some((x: any) => relayMatches(x, r)) ? CIRCUIT_RELAY_LATCH_MS : undefined;
+}
+// How long the chlorinator's power survives without a refresh: the shortest latch of its power relays (one dropping is enough). With no
+// relays set, or none njsPC drives, a pump relay's: a cell is normally wired across the filter pump.
+export function chlorinatorPowerLatchMs(chlor: Chlorinator, only?: RelayRef[]): number | undefined {
+    const list = (chlor.powerRelays || []).filter(r => !only || only.some(o => relayMatches(o, r)));
+    if (only && !(chlor.powerRelays || []).length) {
+        // no relays set: only a gap of a pump relay counts (the default wiring)
+        return only.some(o => { try { return relayLatchMs(o) === PUMP_RELAY_LATCH_MS; } catch (err) { return false; } }) ? PUMP_RELAY_LATCH_MS : undefined;
+    }
+    if (only && !list.length) return undefined;
+    let latch: number | undefined;
+    for (const r of list) {
+        let l: number | undefined;
+        try { l = relayLatchMs(r); } catch (err) { l = undefined; }
+        if (typeof l === 'number' && (typeof latch === 'undefined' || l < latch)) latch = l;
+    }
+    return typeof latch === 'number' ? latch : (only ? undefined : PUMP_RELAY_LATCH_MS);
+}
+// The relays were not refreshed from `from` to `to` (ms): `relays` those relays, or all of them when not given. A gap counts only when it is
+// longer than the latch by more than `slackMs` (the part of it that may have been spent running). Returns the chlorinators logged.
+export function noteChlorinatorRelayGap(from: number, to: number, relays?: RelayRef[], slackMs: number = 0): number[] {
+    const out: number[] = [];
+    if (!powerStopsWithApp() || !(to > from)) return out;
+    for (const chlor of sys.chlorinators.toArray()) {
+        try {
+            const latch = chlorinatorPowerLatchMs(chlor, relays);
+            if (typeof latch !== 'number' || !(to - from - slackMs > latch)) continue;
+            if (chlorinatorPower(chlor, to).on !== true) continue;
+            if (!chlorinatorPowerLog.recordDrop(chlor.id, from, from + latch, to, 'stall')) continue;
+            // the cell is starting up again: missed RS-485 answers are expected for a while (chlorinatorCommsExpected)
+            relaysOnSince.set(chlor.id, to);
+            out.push(chlor.id);
+            logger.info(`Chlorinator ${chlor.id}: power off and on, its relays were not refreshed for ${((to - from) / 1000).toFixed(1)} s, longer than their ${latch / 1000} s latch.`);
+        }
+        catch (err) { logger.warn(`Chlorinator power log: could not check chlorinator ${chlor.id} for a relay gap: ${err.message}`); }
+    }
+    return out;
+}
+// The tick: `wall` the time, `mono` a clock that never jumps (performance.now()). The gap is measured on the second, so a clock change is not a
+// stall, and placed on the first.
+let lastTickMono: number | undefined;
+export function resetStallCheck() { lastTickMono = undefined; }
+export function checkForStall(wall: number = Date.now(), mono: number = performance.now()): number[] {
+    const prev = lastTickMono;
+    lastTickMono = mono;
+    if (typeof prev !== 'number') return [];
+    const gap = mono - prev;
+    // nothing is checked under the shortest latch
+    if (!(gap - STALL_TICK_MS > Math.min(PUMP_RELAY_LATCH_MS, CIRCUIT_RELAY_LATCH_MS))) return [];
+    return noteChlorinatorRelayGap(wall - gap, wall, undefined, STALL_TICK_MS);
+}
+
 // Whether a chlorinator should be answering on RS-485, for a controller that polls it (Nixie) to decide how loudly to log a missed answer.
 // Only its power relays can say no: while one of them is off, or for POWER_UP_GRACE_SEC after they all came on (the cell starts up), it cannot
 // answer, so missed answers are expected and not errors. With no relays set, or a relay njsPC does not know, it should answer (as before).
@@ -386,6 +461,12 @@ export function startChlorinatorLog() {
         try { checkSuperChlor(); } catch (err) { logger.warn(`Super chlorinate log: ${err.message}`); }
         powerTimer = setTimeout(check, POWER_CHECK_MS);
     }, 30000);
+    // the stall tick from then on too (starting up can itself hold everything up for a few seconds)
+    resetStallCheck();
+    stallTimer = setTimeout(function stallTick() {
+        try { checkForStall(); } catch (err) { logger.warn(`Chlorinator power log: ${err.message}`); }
+        stallTimer = setTimeout(stallTick, STALL_TICK_MS);
+    }, 30000);
     // a first sample a minute after start, when the chlorinators have reported, then every ten minutes
     timer = setTimeout(function tick() {
         try { sampleChlorinators(); } catch (err) { logger.warn(`Chlorinator log: ${err.message}`); }
@@ -394,6 +475,8 @@ export function startChlorinatorLog() {
 }
 
 export function stopChlorinatorLog() {
+    if (stallTimer) { clearTimeout(stallTimer); stallTimer = undefined; }
+    resetStallCheck();
     if (timer) { clearTimeout(timer); timer = undefined; }
     if (powerTimer) { clearTimeout(powerTimer); powerTimer = undefined; }
     try { chlorinatorSuperChlorLog.markSeen(sys.chlorinators.toArray().map(c => c.id)); } catch (err) { logger.warn(`Super chlorinate log: ${err.message}`); }

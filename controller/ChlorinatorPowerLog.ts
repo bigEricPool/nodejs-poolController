@@ -22,6 +22,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // a few lines a day; the first line for a chlorinator is the state it was in when the log began, not necessarily a change.
 //
 // Each line: t  the time (ISO, UTC)    id  the chlorinator id    on  true when the power came on, false when it went off
+//            cause  only on a drop njsPC did not see happen (recordDrop): "stall", the relays the power is wired through timed out while
+//                   they were not refreshed (njsPC stalled, or the relay manager could not be reached). Readers can ignore it.
 //
 // What "has power" means is up to ChlorinatorLogService.ts (by default the chlorinator's body is on). The same clock guards as the
 // output log apply: nothing is written while the time looks unset, nor before the newest event (the clock went back).
@@ -36,7 +38,8 @@ const PRUNE_EVERY_MS = DAY_MS;
 // As for the output log, the file is rewritten only when its oldest line is this far past the cutoff.
 const PRUNE_SLACK_MS = 31 * DAY_MS;
 
-export interface ChlorinatorPowerEvent { t: string; id: number; on: boolean; }
+export type ChlorinatorPowerCause = 'stall';
+export interface ChlorinatorPowerEvent { t: string; id: number; on: boolean; cause?: ChlorinatorPowerCause; }
 
 function isEvent(e: any): e is ChlorinatorPowerEvent {
     return !!e && typeof e.t === 'string' && typeof e.id === 'number' && typeof e.on === 'boolean' && !isNaN(new Date(e.t).getTime());
@@ -46,6 +49,8 @@ export class ChlorinatorPowerLog {
     private last = new Map<number, ChlorinatorPowerEvent>();
     private loaded = false;
     private lastPrune = 0;
+    // per chlorinator, when the power came back after the last drop written by recordDrop
+    private lastDropOn = new Map<number, number>();
     // `file` defaults to data/chlorinatorPowerLog.jsonl in the working folder; tests pass their own.
     constructor(private readonly fileOverride?: string) { }
     public file(): string { return this.fileOverride || path.join(process.cwd(), 'data', 'chlorinatorPowerLog.jsonl'); }
@@ -61,13 +66,14 @@ export class ChlorinatorPowerLog {
         return this.last.get(id);
     }
     // Writes the chlorinator's power state when it differs from the last one written (or none was). Returns the event written.
-    public record(id: number, on: boolean, now: number = Date.now()): ChlorinatorPowerEvent | undefined {
+    public record(id: number, on: boolean, now: number = Date.now(), cause?: ChlorinatorPowerCause): ChlorinatorPowerEvent | undefined {
         if (typeof id !== 'number' || typeof on !== 'boolean' || !clockLooksSet(now)) return undefined;
         const prev = this.lastEvent(id);
         if (prev && prev.on === on) return undefined;
         // the clock went back: wait until it has passed the newest event, so the lines stay in time order
         if (prev && now < new Date(prev.t).getTime()) return undefined;
         const e: ChlorinatorPowerEvent = { t: new Date(now).toISOString(), id: id, on: on };
+        if (cause) e.cause = cause;
         try {
             const f = this.file();
             fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -76,6 +82,21 @@ export class ChlorinatorPowerLog {
         this.last.set(id, e);
         if (now - this.lastPrune > PRUNE_EVERY_MS) this.prune(now);
         return e;
+    }
+    // A drop that is over by the time it is known: the power, logged as on, went off at `offAt` and came back at `onAt`. Writes the two lines
+    // marked with the cause, or nothing when the power is not logged as on, the drop would come before the newest line, or a drop already
+    // written for this chlorinator ended at or after `from` (the start of the gap that caused this one: two detectors saw the same gap).
+    // Returns whether it wrote them.
+    public recordDrop(id: number, from: number, offAt: number, onAt: number, cause: ChlorinatorPowerCause = 'stall'): boolean {
+        if (!(onAt > offAt) || !(offAt >= from)) return false;
+        const prev = this.lastEvent(id);
+        if (!prev || !prev.on || offAt < new Date(prev.t).getTime()) return false;
+        if ((this.lastDropOn.get(id) || 0) >= from) return false;
+        if (!this.record(id, false, offAt, cause)) return false;
+        this.lastDropOn.set(id, onAt);
+        // a failed "on" write leaves the power logged as off; the next check writes "on" at its own time
+        this.record(id, true, onAt, cause);
+        return true;
     }
     // The events from the last `days` days, oldest first, with the event before them for each chlorinator (the state the span began in).
     // With `id`, only that chlorinator's.
