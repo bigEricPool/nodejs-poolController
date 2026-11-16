@@ -48,6 +48,7 @@ import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 import { autoSwgBench } from "../../../controller/AutoSwgBench";
+import { registerBenchHistorySource } from "../../../controller/AutoSwgBenchHistorySource";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
 function formatHHMMInZone(dt: Date, timeZone: string): string {
@@ -1140,6 +1141,8 @@ function showAutoSwgArchiveStatus() {
     a.emitEquipmentChange();
 }
 export function registerAutoSwgPoolMath() {
+    // the Model Bench's water balance in the History panel, where this build has one
+    registerBenchHistorySource();
     // The SWG is dead-manned to the Pool circuit: it only has power with its own relay (the schedule SWG Assist follows) AND the Pool on. The pool's logging
     // records each change of that as a power event (from which the cell's 3-hour cycles are counted); other chlorinators keep the default (body on).
     setChlorinatorPowerSource(chlor => {
