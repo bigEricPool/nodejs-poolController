@@ -126,6 +126,18 @@
       "build": true
     },
     {
+      "name": "feature/chlorinator-powerlog-pump-latch",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "Glue between feature/pump-priming and feature/chlorinator-powerlog-stalls: a relay pump's latch check (NixiePump.checkLatchAsync) passes the latch gap and its relays to noteChlorinatorRelayGap, so the chlorinator power log catches short stalls its own tick cannot prove. Neither parent depends on the other; fork-only.",
+      "depends": [
+        "feature/pump-priming",
+        "feature/chlorinator-powerlog-stalls"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "feature/poolmath-swg-log",
       "kind": "feature",
       "status": "active",
