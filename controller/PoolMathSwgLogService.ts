@@ -32,6 +32,23 @@ import { SwgLogReading, SwgLogSettings, SwgLogStatus, SwgLogWriter } from './Poo
 const CHECK_MS = 15 * 1000;
 let writer: SwgLogWriter | undefined;
 let timer: NodeJS.Timeout | undefined;
+let feederName: string | undefined;
+
+// A module that keeps its own record of the SWG's changes registers here (by a short name shown in the status), and hands in each change
+// it records with submitPoolMathSwgEntry: the PoolMath entries then carry its exact time, rate and hours, and the % setting is not watched.
+// undefined unregisters it (the setting is watched again).
+export function setPoolMathSwgFeeder(name: string | undefined) {
+    const n = typeof name === 'string' && name.trim() ? name.trim().substring(0, 40) : undefined;
+    if (n !== feederName) logger.info(n ? `PoolMath SWG log: SWG changes now come from ${n}.` : 'PoolMath SWG log: SWG changes are taken from the chlorinator % setting again.');
+    feederName = n;
+}
+// One SWG change from the registered feeder: when it happened (ms, ISO string or Date), the %, the run hours a day it was worked out for
+// (exact; PoolMath gets them rounded to whole hours) and the FC ppm a day it makes. Returns whether it was taken.
+export function submitPoolMathSwgEntry(e: { ts: number | string | Date; percent: number; hours: number; ppmPerDay: number }): boolean {
+    if (!writer || !feederName || !e) return false;
+    const ts = e.ts instanceof Date ? e.ts.getTime() : typeof e.ts === 'string' ? Date.parse(e.ts) : e.ts;
+    return writer.submit({ ts, percent: Number(e.percent), hours: Number(e.hours), ppm: Number(e.ppmPerDay) });
+}
 
 // The whole hours of a run window (one ending before it starts runs past midnight); 0 when there is none.
 export function windowHours(start: Date | null | undefined, end: Date | null | undefined): number {
@@ -83,7 +100,8 @@ export function startPoolMathSwgLog() {
         client: new PoolMathClient({ userAgent: `nodejs-poolController/${sys.appVersion || ''} (PoolMath SWG log)` }),
         settings: swgLogSettings,
         reading,
-        file: path.join(process.cwd(), 'data', 'poolMathSwgLog.json')
+        file: path.join(process.cwd(), 'data', 'poolMathSwgLog.json'),
+        feeder: () => feederName
     });
     writer.start();
     onSuperChlorRunEnded(run => { if (writer) writer.superChlorEnded(run); });

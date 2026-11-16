@@ -4456,6 +4456,12 @@ export class AutoSwgState extends EqState {
     // Range control: the last applied decision held the SWG at 0% because FC was above the range (it resumes once FC is half a ppm below the top). Kept across restarts.
     public get bandCoasting(): boolean { return this.data.bandCoasting === true; }
     public set bandCoasting(val: boolean) { this.setDataVal('bandCoasting', val === true); }
+    // Super chlorinate is on for the chlorinator SWG Assist controls: its automatic changes (the automatic check, Auto-Apply, the step, Away) are held until it
+    // ends (superChlorHold). superChlorHeldAt is when one was held, so a make-up check runs after the run ends (also after a restart); cleared then.
+    public get superChlorHold(): boolean { return this.data.superChlorHold === true; }
+    public set superChlorHold(val: boolean) { this.setDataVal('superChlorHold', val === true); }
+    public get superChlorHeldAt(): string { return this.data.superChlorHeldAt; }
+    public set superChlorHeldAt(val: string) { this.setDataVal('superChlorHeldAt', val); }
     public get stepPct(): number { return this.data.stepPct; }
     public set stepPct(val: number) { this.setDataVal('stepPct', val); }
     // Range control, as of the last applied calculation (for the status under "SWG Assist applied ..."): what it did ('coast' = held at 0% above the range, 'hold', 'boost'), the FC it

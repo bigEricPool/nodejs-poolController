@@ -19,9 +19,13 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Writes an SWG entry to the pool owner's PoolMath log when the chlorinator's pool % changes (PoolMathClient.ts does the talking). Off by
 // default (the poolMath section's swgLogEnabled), and it needs the SWG run hours a day (swgLogHours, whole hours) and the encrypted
 // credentials file. The rules:
-//   - one entry each time the pool % setting changes to a new value while njsPC runs, once it has held for HOLD_MS; it is timed at the
-//     change. A change undone within that time writes nothing. Changes from dashPanel, the API, another njsPC feature or a panel all count: only the setting
-//     is watched. The spa %, the power, the flow, the actual output and the run hours setting never write.
+//   - one entry each time the pool % setting or the whole-hour run time changes while njsPC runs, once it has held for HOLD_MS; it is
+//     timed at the change. A change undone within that time writes nothing. Changes from dashPanel, the API, another njsPC feature or a panel
+//     all count: only the setting is watched. The spa %, the power, the flow and the actual output never write.
+//   - a feeder: another module that keeps its own record of the SWG's changes (with the exact time, rate and hours it worked out) can hand
+//     each one in (PoolMathSwgLogService.submitPoolMathSwgEntry) while it is registered (setPoolMathSwgFeeder). The setting is then not
+//     watched: each handed-in change is written as given (its time, %, FC ppm a day; the hours rounded to whole hours for PoolMath) when its
+//     % or whole hours differ from the last one logged, the last of several within HOLD_MS only. Without a feeder, the setting is watched.
 //   - never at a start: the % then becomes the starting point, also when it differs from the last one logged (STARTUP_GRACE_MS after a
 //     start, a change only moves the starting point). The same when the writing is turned on, or the hours are not set.
 //   - super chlorinate (ChlorinatorSuperChlorLog.ts): when a run ends, two entries: 100% for the hours the cell had power during the run
@@ -62,7 +66,7 @@ export function swgPpm(lbsPerDay: number, percent: number, hours: number, gallon
 export type SwgEntryKind = 'change' | 'superChlorRun' | 'superChlorRestore';
 export interface QueuedSwgEntry { kind: SwgEntryKind; ts: number; percent: number; hours: number; ppm: number; queuedAt: number; nextAt: number; tries: number; }
 interface SwgLogFile {
-    baseline?: { percent: number; at: number };   // the last % logged (or taken as the starting point)
+    baseline?: { percent: number; at: number; hours?: number; ppm?: number };   // the last % and whole hours logged (or the starting point)
     queue: QueuedSwgEntry[];
     sent: number[];                                // when entries were sent, for the daily limit (the last day only)
     lastWritten?: { kind: SwgEntryKind; ts: number; percent: number; hours: number; ppm: number; at: number; id?: string };
@@ -82,21 +86,23 @@ export interface SwgLogStatus {
     credentialsFile: 'found' | 'missing';
     lastSignIn?: { ok: boolean; at?: string };
     lastError?: string; lastErrorAt?: string;
-    pending: number; baselinePercent?: number;
+    pending: number; baselinePercent?: number; feeder?: string;
     lastWritten?: { kind: SwgEntryKind; ts: string; percent: number; hours: number; ppm: number; at: string };
     note?: string;
 }
 
 export class SwgLogWriter {
     private data: SwgLogFile = { queue: [], sent: [] };
-    private candidate?: { percent: number; at: number };
+    private candidate?: { percent: number; hours: number; at: number };
+    private fed?: { ts: number; percent: number; hours: number; ppm: number; receivedAt: number };
     private startedAt = 0;
     private wasEnabled = false;
     private sending = false;
     private lastSendAt = 0;
     private note?: string;
 
-    constructor(private readonly deps: { client: Client; settings: () => SwgLogSettings; reading: () => SwgLogReading; file: string; now?: () => number }) { }
+    constructor(private readonly deps: { client: Client; settings: () => SwgLogSettings; reading: () => SwgLogReading; file: string; now?: () => number; feeder?: () => string | undefined }) { }
+    private feeder(): string | undefined { return this.deps.feeder ? this.deps.feeder() : undefined; }
     private now(): number { return this.deps.now ? this.deps.now() : Date.now(); }
 
     public start() {
@@ -120,10 +126,37 @@ export class SwgLogWriter {
         if (msg) { this.data.lastError = msg; this.data.lastErrorAt = now; logger.warn(`PoolMath SWG log: ${msg}`); }
         else { this.data.lastError = undefined; this.data.lastErrorAt = undefined; }
     }
-    private setBaseline(percent: number, at: number, why: string) {
-        const before = this.data.baseline ? this.data.baseline.percent : undefined;
-        this.data.baseline = { percent, at };
-        if (before !== percent) logger.info(`PoolMath SWG log: ${percent}% taken as the starting point (${why}); nothing written to PoolMath.`);
+    private setBaseline(percent: number, hours: number, at: number, why: string) {
+        const b = this.data.baseline;
+        this.data.baseline = { percent, at, hours: hours > 0 ? hours : undefined };
+        if (!b || b.percent !== percent || (hours > 0 && b.hours !== hours))
+            logger.info(`PoolMath SWG log: ${percent}%${hours > 0 ? `, ${hours} h` : ''} taken as the starting point (${why}); nothing written to PoolMath.`);
+        this.save();
+    }
+
+    // A change handed in by the feeder: written (after HOLD_MS, the last of several only) when its % or whole hours differ from the last
+    // logged. Returns false when it is not taken (the writing is off, or the values are not usable).
+    public submit(e: { ts: number; percent: number; hours: number; ppm: number }): boolean {
+        const now = this.now();
+        if (!this.deps.settings().enabled) return false;
+        if (!e || !clockLooksSet(e.ts) || e.ts > now + 60000 || !(e.percent >= 0 && e.percent <= 100) || !(e.hours > 0 && e.hours <= 24) || !(e.ppm >= 0) || !isFinite(e.ppm)) {
+            logger.warn('PoolMath SWG log: a handed-in SWG change was not usable and was not taken.');
+            return false;
+        }
+        this.fed = { ts: e.ts, percent: e.percent, hours: e.hours, ppm: e.ppm, receivedAt: now };
+        return true;
+    }
+    private takeFed(now: number, r: SwgLogReading) {
+        const f = this.fed;
+        if (!f) return;
+        if (r.superChlorOn) { this.fed = undefined; logger.info('PoolMath SWG log: a handed-in change during super chlorinate is not written; the entry at its end carries the %.'); return; }
+        if (now - f.receivedAt < HOLD_MS) return;
+        this.fed = undefined;
+        const hours = Math.max(1, Math.round(f.hours));
+        const b = this.data.baseline;
+        if (b && b.percent === f.percent && b.hours === hours) { b.ppm = f.ppm; this.save(); return; }
+        this.enqueue('change', f.ts, f.percent, hours, Math.round(f.ppm * 100) / 100, now);
+        this.data.baseline = { percent: f.percent, at: f.ts, hours, ppm: f.ppm };
         this.save();
     }
     private enqueue(kind: SwgEntryKind, ts: number, percent: number, hours: number, ppm: number, now: number) {
@@ -140,7 +173,7 @@ export class SwgLogWriter {
             if (!set.enabled) {
                 if (this.wasEnabled) {
                     this.wasEnabled = false;
-                    this.data.baseline = undefined; this.data.queue = []; this.candidate = undefined;
+                    this.data.baseline = undefined; this.data.queue = []; this.candidate = undefined; this.fed = undefined;
                     this.save();
                     logger.info('PoolMath SWG log: turned off; nothing more is written to PoolMath.');
                 }
@@ -151,21 +184,31 @@ export class SwgLogWriter {
             this.wasEnabled = true;
             if (!clockLooksSet(now)) { this.note = 'Waiting for the clock to be set.'; return; }
             const r = this.deps.reading();
-            if (!r.ok) { this.note = r.reason; this.candidate = undefined; await this.sendDue(now); return; }
-            this.note = set.hours > 0 ? undefined : 'Choose the SWG schedule or set the run hours a day; nothing is written until then.';
+            if (!r.ok) { this.note = r.reason; this.candidate = undefined; this.fed = undefined; await this.sendDue(now); return; }
+            const feeder = this.feeder();
+            this.note = feeder || set.hours > 0 ? undefined : 'Choose the SWG schedule or set the run hours a day; nothing is written until then.';
             const pct = r.percent;
-            if (justEnabled) { this.candidate = undefined; this.setBaseline(pct, now, 'the writing was turned on'); }
-            else if (now - this.startedAt < STARTUP_GRACE_MS || !this.data.baseline) { this.candidate = undefined; this.setBaseline(pct, now, 'njsPC started'); }
+            const hours = set.hours > 0 ? set.hours : 0;
+            const b = this.data.baseline;
+            if (justEnabled) { this.candidate = undefined; this.fed = undefined; this.setBaseline(pct, hours, now, 'the writing was turned on'); }
+            else if (!b) { this.candidate = undefined; this.setBaseline(pct, hours, now, 'njsPC started'); }
+            else if (feeder) { this.candidate = undefined; this.takeFed(now, r); }
+            else if (now - this.startedAt < STARTUP_GRACE_MS) { this.candidate = undefined; this.setBaseline(pct, hours, now, 'njsPC started'); }
             else if (r.superChlorOn) this.candidate = undefined;
-            else if (pct === this.data.baseline.percent) this.candidate = undefined;
             else {
-                if (!this.candidate || this.candidate.percent !== pct) this.candidate = { percent: pct, at: now };
-                if (now - this.candidate.at >= HOLD_MS) {
-                    const c = this.candidate;
-                    this.candidate = undefined;
-                    if (set.hours > 0) this.enqueue('change', c.at, c.percent, set.hours, swgPpm(r.lbsPerDay, c.percent, set.hours, r.gallons), now);
-                    this.data.baseline = { percent: c.percent, at: c.at };
-                    this.save();
+                // hours set for the first time (or a starting point from before the hours were kept) only become part of the starting point
+                if (hours > 0 && !(b.hours > 0)) { b.hours = hours; this.save(); }
+                const hoursChanged = hours > 0 && b.hours > 0 && b.hours !== hours;
+                if (pct === b.percent && !hoursChanged) this.candidate = undefined;
+                else {
+                    if (!this.candidate || this.candidate.percent !== pct || this.candidate.hours !== hours) this.candidate = { percent: pct, hours, at: now };
+                    if (now - this.candidate.at >= HOLD_MS) {
+                        const c = this.candidate;
+                        this.candidate = undefined;
+                        if (c.hours > 0) this.enqueue('change', c.at, c.percent, c.hours, swgPpm(r.lbsPerDay, c.percent, c.hours, r.gallons), now);
+                        this.data.baseline = { percent: c.percent, at: c.at, hours: c.hours > 0 ? c.hours : undefined };
+                        this.save();
+                    }
                 }
             }
             if (now - this.startedAt >= STARTUP_GRACE_MS) await this.sendDue(now);
@@ -177,15 +220,21 @@ export class SwgLogWriter {
         try {
             const now = this.now();
             const set = this.deps.settings();
-            if (!set.enabled || !(set.hours > 0)) return;
+            if (!set.enabled) return;
             const r = this.deps.reading();
             if (!r.ok) return;
+            // the entry at the end carries the last logged hours and rate when the % is the same (a feeder's exact figures), else the writer's own
+            const b = this.data.baseline;
+            const same = !!b && b.percent === r.percent && b.hours > 0;
+            const backHours = same ? b.hours : set.hours;
+            if (!(backHours > 0)) return;
+            const backPpm = same && typeof b.ppm === 'number' ? Math.round(b.ppm * 100) / 100 : swgPpm(r.lbsPerDay, r.percent, backHours, r.gallons);
             const hours = Math.round(run.poweredHours);
-            this.candidate = undefined;
+            this.candidate = undefined; this.fed = undefined;
             if (hours <= 0) { logger.info('PoolMath SWG log: super chlorinate ran less than half an hour with power; nothing written to PoolMath.'); return; }
             this.enqueue('superChlorRun', run.start, 100, hours, swgPpm(r.lbsPerDay, 100, run.poweredHours, r.gallons), now);
-            this.enqueue('superChlorRestore', run.end, r.percent, set.hours, swgPpm(r.lbsPerDay, r.percent, set.hours, r.gallons), now);
-            this.data.baseline = { percent: r.percent, at: run.end };
+            this.enqueue('superChlorRestore', run.end, r.percent, backHours, backPpm, now);
+            this.data.baseline = { percent: r.percent, at: run.end, hours: backHours, ppm: same ? b.ppm : undefined };
             this.save();
         } catch (err) { logger.warn(`PoolMath SWG log: ${err.message}`); }
     }
@@ -262,6 +311,7 @@ export class SwgLogWriter {
             lastError: d.lastError, lastErrorAt: iso(d.lastErrorAt),
             pending: d.queue.length,
             baselinePercent: d.baseline ? d.baseline.percent : undefined,
+            feeder: this.feeder(),
             lastWritten: d.lastWritten ? { kind: d.lastWritten.kind, ts: iso(d.lastWritten.ts), percent: d.lastWritten.percent, hours: d.lastWritten.hours, ppm: d.lastWritten.ppm, at: iso(d.lastWritten.at) } : undefined,
             note: set.enabled ? (found ? this.note : 'No PoolMath credentials file has been created on this controller.') : undefined
         };

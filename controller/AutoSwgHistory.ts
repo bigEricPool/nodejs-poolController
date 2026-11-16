@@ -67,7 +67,8 @@ export const AUTO_SWG_LOGGED_SETTINGS = [
 const AUTO_SWG_MASKED_SETTINGS = ['shareCode', 'poolName'];
 
 export interface AutoSwgHistoryRecord {
-    source: 'auto' | 'manual' | 'settings'; // 'auto' = applied via SWG Assist; 'manual' = changed some other way; 'settings' = SWG Assist settings were changed (see `changes`)
+    source: 'auto' | 'manual' | 'settings' | 'held'; // 'auto' = applied via SWG Assist; 'manual' = changed some other way; 'settings' = SWG Assist settings were changed (see `changes`); 'held' = an automatic change was not made (see `held`)
+    held?: string;            // held only: why, e.g. 'super chlorinate' (the % in effect did not change; recommendedPct is what would have been applied)
     changes?: AutoSwgSettingChange[]; // settings only: what changed
     via?: 'tune' | 'auto-tune' | 'away-ended'; // settings only: the change was applied from the Tune dialog, or by auto tune
     algorithm?: number;       // AUTO_SWG_ALGORITHM_VERSION when this was written (absent on older records)
