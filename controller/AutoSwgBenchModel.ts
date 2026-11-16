@@ -733,6 +733,30 @@ export function scoreFlags(r: { days: number; proj: number; f1: number; gen?: nu
     return f;
 }
 
+// The fields of a bench score row that syncLiveRows reads and writes (BenchScoreRow in AutoSwgBench.ts).
+export interface LiveSyncRow { t: number; mode: string; replay?: boolean; test: number; proj: number; miss: number; days: number; f1: number; gen?: number; cov?: number; flags?: ScoreFlag[]; liveWas?: number; }
+// Brings the live rows in line with SWG Assist's current projection at each test (the 'reading' points of AutoSwgProjection.ts). A live row mirrors
+// that projection, and SWG Assist works its points out again when its count changes (the cycle count from the power log, 2026-11-16), so unlike the
+// model rows, which keep the projection they made with the fit frozen then, a live row is updated: proj, miss and flags, and liveWas keeps the first
+// projection. Returns how many rows changed; the rows are changed in place.
+export function syncLiveRows(rows: LiveSyncRow[], points: { t: number; fc: number }[], scoring: ScoringSettings): number {
+    const at = new Map<number, number>();
+    for (const p of points) at.set(p.t, p.fc);
+    let n = 0;
+    for (const r of rows) {
+        if (!r || r.mode !== 'live' || r.replay) continue;
+        const fc = at.get(r.t);
+        if (typeof fc !== 'number' || Math.abs(fc - r.proj) < 0.005) continue;
+        if (typeof r.liveWas !== 'number') r.liveWas = r.proj;
+        r.proj = fc;
+        r.miss = Math.round((r.test - fc) * 100) / 100;
+        const f = scoreFlags(r, scoring);
+        if (f.length) r.flags = f; else delete r.flags;
+        n++;
+    }
+    return n;
+}
+
 export interface GapStats { label: string; n: number; flagged?: number; halfWidth90?: number; mae?: number; note?: string; }
 export interface ScoreStats {
     n: number; mae?: number; bias?: number; halfWidth90?: number; p5?: number; p95?: number;
