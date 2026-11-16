@@ -126,6 +126,18 @@
       "build": true
     },
     {
+      "name": "feature/swg-assist-poolmath-feed",
+      "kind": "feature",
+      "status": "active",
+      "purpose": "SWG Assist super chlorinate handling and PoolMath feed: reads the chlorinator logging's super chlorinate runs, credits them in the burn, projections, backtests and Tune, holds automatic changes during a run and makes up a check after, and hands each SWG % change to the PoolMath SWG log as its feeder. On feature/swg-assist with feature/poolmath-swg-log merged in.",
+      "depends": [
+        "feature/swg-assist",
+        "feature/poolmath-swg-log"
+      ],
+      "upstream": "",
+      "build": true
+    },
+    {
       "name": "archive/2026-11-13/feature/dashboard-enhancements",
       "kind": "archive",
       "status": "archive",
