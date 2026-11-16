@@ -1906,9 +1906,9 @@ export class PoolMathSettings extends EqItem {
     // from here: this section is served by GET /config/poolMath.
     public get swgLogEnabled(): boolean { return this.data.swgLogEnabled === true; }
     public set swgLogEnabled(val: boolean) { this.setDataVal('swgLogEnabled', val === true); }
-    public get swgLogHours(): number { return Number.isInteger(this.data.swgLogHours) && this.data.swgLogHours > 0 && this.data.swgLogHours <= 24 ? this.data.swgLogHours : 0; }
-    public set swgLogHours(val: number) { this.setDataVal('swgLogHours', Number.isInteger(val) && val > 0 && val <= 24 ? val : 0); }
-    // The schedule the SWG runs on: its window for the day, rounded to whole hours, is the run hours sent (swgLogHours is then only the
+    public get swgLogHours(): number { const v = this.data.swgLogHours; return typeof v === 'number' && v >= 0.1 && v <= 24 ? Math.round(v * 10) / 10 : 0; }
+    public set swgLogHours(val: number) { this.setDataVal('swgLogHours', typeof val === 'number' && val >= 0.1 && val <= 24 ? Math.round(val * 10) / 10 : 0); }
+    // The schedule the SWG runs on: its window for the day, to 0.1 h, is the run hours sent (swgLogHours is then only the
     // fallback when the schedule is missing, disabled or has no window). -1, the default: swgLogHours.
     public get swgLogScheduleId(): number { return Number.isInteger(this.data.swgLogScheduleId) && this.data.swgLogScheduleId >= 0 ? this.data.swgLogScheduleId : -1; }
     public set swgLogScheduleId(val: number) { this.setDataVal('swgLogScheduleId', Number.isInteger(val) && val >= 0 ? val : -1); }

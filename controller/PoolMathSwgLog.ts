@@ -17,23 +17,23 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 // Writes an SWG entry to the pool owner's PoolMath log when the chlorinator's pool % changes (PoolMathClient.ts does the talking). Off by
-// default (the poolMath section's swgLogEnabled), and it needs the SWG run hours a day (swgLogHours, whole hours) and the encrypted
+// default (the poolMath section's swgLogEnabled), and it needs the SWG run hours a day (swgLogHours, to 0.1 h) and the encrypted
 // credentials file. The rules:
-//   - one entry each time the pool % setting or the whole-hour run time changes while njsPC runs, once it has held for HOLD_MS; it is
+//   - one entry each time the pool % setting or the run time (to 0.1 h) changes while njsPC runs, once it has held for HOLD_MS; it is
 //     timed at the change. A change undone within that time writes nothing. Changes from dashPanel, the API, another njsPC feature or a panel
 //     all count: only the setting is watched. The spa %, the power, the flow and the actual output never write.
 //   - a feeder: another module that keeps its own record of the SWG's changes (with the exact time, rate and hours it worked out) can hand
 //     each one in (PoolMathSwgLogService.submitPoolMathSwgEntry) while it is registered (setPoolMathSwgFeeder). The setting is then not
-//     watched: each handed-in change is written as given (its time, %, FC ppm a day; the hours rounded to whole hours for PoolMath) when its
-//     % or whole hours differ from the last one logged, the last of several within HOLD_MS only. Without a feeder, the setting is watched.
+//     watched: each handed-in change is written as given (its time, %, FC ppm a day to 0.01; the hours to 0.1 h, as PoolMath keeps them) when
+//     its % or hours differ from the last one logged, the last of several within HOLD_MS only. Without a feeder, the setting is watched.
 //   - never at a start: the % then becomes the starting point, also when it differs from the last one logged (STARTUP_GRACE_MS after a
 //     start, a change only moves the starting point). The same when the writing is turned on, or the hours are not set.
 //   - super chlorinate (ChlorinatorSuperChlorLog.ts): when a run ends, two entries: 100% for the hours the cell had power during the run
-//     (rounded to whole hours; nothing when that is 0) with the FC the run made, timed at its start, and the pool % in force again with the
+//     (to 0.1 h; nothing when that is 0, a run under 3 minutes) with the FC the run made (to 0.01), timed at its start, and the pool % in force again with the
 //     run hours a day, timed at its end. A run that ended while njsPC was stopped is written after the start. % changes during a run
 //     write nothing themselves: the second entry carries the % the cell goes back to.
 //   - only with exactly one chlorinator (PoolMath's SWG entries are the pool's), and only with a set clock.
-//   - FC ppm = lb/day x %/100 x hours/24 / (gallons x 8.345e-6), rounded to 0.1, from the cell's rating and the pool volume
+//   - FC ppm = lb/day x %/100 x hours/24 / (gallons x 8.345e-6), rounded to 0.1 (to 0.01 for a super chlorinate run), from the cell's rating and the pool volume
 //     (ChlorinatorLogService.poolGallons).
 //   - the SWG change itself never waits for PoolMath: entries wait in a queue saved in data/poolMathSwgLog.json (which also keeps the
 //     starting point, so nothing is written twice across restarts) and are sent in time order. A failure PoolMath answered, or one where the
@@ -57,16 +57,19 @@ export const MAX_PER_DAY = 24;
 export const MIN_SEND_GAP_MS = 5 * 1000;
 const LB_PER_GALLON_PPM = 8.345e-6;   // lb of chlorine per gallon for 1 ppm
 
-// FC ppm an SWG run makes, rounded to 0.1 (0 when the rating or volume is unknown).
-export function swgPpm(lbsPerDay: number, percent: number, hours: number, gallons: number): number {
+// FC ppm an SWG run makes, rounded to 0.1 (or to 0.01 with digits 2; 0 when the rating or volume is unknown).
+export function swgPpm(lbsPerDay: number, percent: number, hours: number, gallons: number, digits: 1 | 2 = 1): number {
     if (!(lbsPerDay > 0) || !(gallons > 0) || !(percent >= 0) || !(hours >= 0)) return 0;
-    return Math.round(lbsPerDay * (percent / 100) * (hours / 24) / (gallons * LB_PER_GALLON_PPM) * 10) / 10;
+    const f = digits === 2 ? 100 : 10;
+    return Math.round(lbsPerDay * (percent / 100) * (hours / 24) / (gallons * LB_PER_GALLON_PPM) * f) / f;
 }
+// Run hours as PoolMath keeps them: to 0.1 h.
+export function tenthHours(hours: number): number { return Math.round(hours * 10) / 10; }
 
 export type SwgEntryKind = 'change' | 'superChlorRun' | 'superChlorRestore';
 export interface QueuedSwgEntry { kind: SwgEntryKind; ts: number; percent: number; hours: number; ppm: number; queuedAt: number; nextAt: number; tries: number; }
 interface SwgLogFile {
-    baseline?: { percent: number; at: number; hours?: number; ppm?: number };   // the last % and whole hours logged (or the starting point)
+    baseline?: { percent: number; at: number; hours?: number; ppm?: number };   // the last % and hours (to 0.1 h) logged (or the starting point)
     queue: QueuedSwgEntry[];
     sent: number[];                                // when entries were sent, for the daily limit (the last day only)
     lastWritten?: { kind: SwgEntryKind; ts: number; percent: number; hours: number; ppm: number; at: number; id?: string };
@@ -134,8 +137,8 @@ export class SwgLogWriter {
         this.save();
     }
 
-    // A change handed in by the feeder: written (after HOLD_MS, the last of several only) when its % or whole hours differ from the last
-    // logged. Returns false when it is not taken (the writing is off, or the values are not usable).
+    // A change handed in by the feeder: written (after HOLD_MS, the last of several only) when its % or hours (to 0.1 h) differ from the
+    // last logged. Returns false when it is not taken (the writing is off, or the values are not usable).
     public submit(e: { ts: number; percent: number; hours: number; ppm: number }): boolean {
         const now = this.now();
         if (!this.deps.settings().enabled) return false;
@@ -152,7 +155,7 @@ export class SwgLogWriter {
         if (r.superChlorOn) { this.fed = undefined; logger.info('PoolMath SWG log: a handed-in change during super chlorinate is not written; the entry at its end carries the %.'); return; }
         if (now - f.receivedAt < HOLD_MS) return;
         this.fed = undefined;
-        const hours = Math.max(1, Math.round(f.hours));
+        const hours = Math.max(0.1, tenthHours(f.hours));
         const b = this.data.baseline;
         if (b && b.percent === f.percent && b.hours === hours) { b.ppm = f.ppm; this.save(); return; }
         this.enqueue('change', f.ts, f.percent, hours, Math.round(f.ppm * 100) / 100, now);
@@ -229,10 +232,10 @@ export class SwgLogWriter {
             const backHours = same ? b.hours : set.hours;
             if (!(backHours > 0)) return;
             const backPpm = same && typeof b.ppm === 'number' ? Math.round(b.ppm * 100) / 100 : swgPpm(r.lbsPerDay, r.percent, backHours, r.gallons);
-            const hours = Math.round(run.poweredHours);
+            const hours = tenthHours(run.poweredHours);
             this.candidate = undefined; this.fed = undefined;
-            if (hours <= 0) { logger.info('PoolMath SWG log: super chlorinate ran less than half an hour with power; nothing written to PoolMath.'); return; }
-            this.enqueue('superChlorRun', run.start, 100, hours, swgPpm(r.lbsPerDay, 100, run.poweredHours, r.gallons), now);
+            if (hours <= 0) { logger.info('PoolMath SWG log: super chlorinate ran less than 3 minutes with power; nothing written to PoolMath.'); return; }
+            this.enqueue('superChlorRun', run.start, 100, hours, swgPpm(r.lbsPerDay, 100, run.poweredHours, r.gallons, 2), now);
             this.enqueue('superChlorRestore', run.end, r.percent, backHours, backPpm, now);
             this.data.baseline = { percent: r.percent, at: run.end, hours: backHours, ppm: same ? b.ppm : undefined };
             this.save();
