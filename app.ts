@@ -30,6 +30,7 @@ import * as readline from 'readline';
 import { sl } from './controller/comms/ScreenLogic'
 import { startChlorinatorLog, stopChlorinatorLog } from './controller/ChlorinatorLogService';
 import { startPoolMathSync, stopPoolMathSync } from './controller/PoolMathSync';
+import { startPoolMathSwgLog, stopPoolMathSwgLog } from './controller/PoolMathSwgLogService';
 
 export async function initAsync() {
     try {
@@ -42,6 +43,7 @@ export async function initAsync() {
         await sys.start();
         startChlorinatorLog();
         startPoolMathSync();
+        startPoolMathSwgLog();
         await webApp.initAutoBackup();
         await sl.openAsync();
     } catch (err) { console.log(`Error Initializing nodejs-PoolController ${err.message}`);  }
@@ -89,6 +91,7 @@ async function stopProcessesAsync(): Promise<void> {
     try {
         console.log('Shutting down open processes');
         await webApp.stopAutoBackup();
+        stopPoolMathSwgLog();
         stopPoolMathSync();
         stopChlorinatorLog();
         await sys.stopAsync();

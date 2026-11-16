@@ -47,6 +47,7 @@ import { SUPER_CHLOR_APPLY_REFUSED, SUPER_CHLOR_HELD, SUPER_CHLOR_HOLD_NOTE, sup
 import { chlorinatorLog } from "../../../controller/ChlorinatorLog";
 import { chlorinatorPowerLog } from "../../../controller/ChlorinatorPowerLog";
 import { cellUsageInfo, firstChlorinatorId, recountCellUsage, setChlorinatorPowerSource, setOwnSwgEntriesSource } from "../../../controller/ChlorinatorLogService";
+import { poolMathSwgLogStatus } from "../../../controller/PoolMathSwgLogService";
 import { onPoolMathUpdated, poolMathHistory, poolMathHistoryKinds, poolMathSyncStatus, requestPoolMathRefresh } from "../../../controller/PoolMathSync";
 
 // 'HH:MM' wall-clock time of `dt` in `timeZone`.
@@ -1855,6 +1856,10 @@ export class StateRoute {
             try { return res.status(200).send(poolMathSyncStatus()); } catch (err) { next(err); }
         });
         // Every kind of data in the PoolMath archive: [{ kind, name, unit, group, count, first, last, selected }], selected = shown as history.
+        // The PoolMath SWG log's status: credentials file found, last sign-in, last error, entries waiting (never the user, password or token).
+        app.get('/state/poolMath/swgLog', (req, res, next) => {
+            try { return res.status(200).send(poolMathSwgLogStatus()); } catch (err) { next(err); }
+        });
         app.get('/state/poolMath/history/kinds', (req, res, next) => {
             try { return res.status(200).send(poolMathHistoryKinds()); } catch (err) { next(err); }
         });

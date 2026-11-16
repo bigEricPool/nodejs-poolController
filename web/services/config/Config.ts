@@ -39,6 +39,7 @@ import { IntelliCenterWSComms, icws } from "../../../controller/comms/IntelliCen
 import { screenlogic } from "node-screenlogic";
 import { checkCellSettings, setCellSettings } from "../../../controller/ChlorinatorLogService";
 import { setPoolMathSettings } from "../../../controller/PoolMathSync";
+import { setPoolMathSwgLogSettings } from "../../../controller/PoolMathSwgLogService";
 
 export class ConfigRoute {
     private static securitySessions: Map<string, any> = new Map<string, any>();
@@ -583,12 +584,13 @@ export class ConfigRoute {
             } catch (err) { next(err); }
         });
         // The pool's PoolMath share (the history archive is read for it): GET/PUT /config/poolMath { shareCode, poolName, historyKinds }
-        // (historyKinds: the kinds shown as history, null for the defaults; see GET /state/poolMath/history/kinds)
+        // (historyKinds: the kinds shown as history, null for the defaults; see GET /state/poolMath/history/kinds), and the PoolMath SWG log's
+        // { swgLogEnabled, swgLogScheduleId, swgLogHours } (see controller/PoolMathSwgLog.ts; its sign-in is never part of this section)
         app.get('/config/poolMath', (req, res, next) => {
             try { return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
         });
         app.put('/config/poolMath', (req, res, next) => {
-            try { setPoolMathSettings(req.body); return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
+            try { setPoolMathSwgLogSettings(req.body); setPoolMathSettings(req.body); return res.status(200).send(sys.poolMath.get(true)); } catch (err) { next(err); }
         });
         app.get('/config/options/chlorinators', async (req, res, next) => {
             try {
