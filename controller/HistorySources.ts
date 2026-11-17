@@ -168,7 +168,9 @@ function cellSpans(id: number, field: 'power' | 'current', from: number, to: num
         const ivs = conductingIntervals(events, a, end, { cycleHours: chlor.cycleHours, restartsOnPower: restarts, burstFirst: chlor.burstFirst }, pctAtFromHours(hours));
         spans = currentSpansOf(ivs, faultHoursOf(hours));
     }
-    return daily ? dailyHoursOf(spans, a, end) : spans;
+    // the days before the power log began are left out, not shown as days with nothing on
+    if (!events.length) return [];
+    return daily ? dailyHoursOf(spans, Math.max(a, localDayStart(events[0].t)), end) : spans;
 }
 
 // The times the power was on between a and b (ms), each from its on line to the next off (or b while it is still on), cut to [a, b]. A

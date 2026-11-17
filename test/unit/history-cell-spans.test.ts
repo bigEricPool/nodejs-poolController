@@ -85,6 +85,8 @@ describe('the Power and Current (modelled) kinds', () => {
             // a month: the hours of each day
             const m = chlorinatorHistorySource.series(['50:current'], T(11, 0) - 30 * 24 * H, T(11, 0));
             expect(m['50:current'][m['50:current'].length - 1]).toEqual({ t: new Date(2026, 10, 17).getTime(), v: Math.round(2 * burst / H * 100) / 100 });
+            // and only from the day the power log began
+            expect(m['50:current'].map(p => p.t)).toEqual([new Date(2026, 10, 17).getTime()]);
         } finally { vi.useRealTimers(); }
     });
 });
