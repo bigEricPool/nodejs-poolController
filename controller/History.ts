@@ -35,11 +35,12 @@ import { logger } from "../logger/Logger";
 //   spans    times something was on, each from t to e (in a long view, where spans would be too many to draw, a point for each day
 //            with v the hours it was on and no e)
 // `future` marks a kind with points ahead of now (a projection), so a chart can run past the present. `view` names the view a dashboard
-// shows the kind in before the user has set up views of their own (kinds with the same view name share it).
+// shows the kind in before the user has set up views of their own (kinds with the same view name share it). `note`, where given, says how
+// the kind's values come about (for example that they are worked out, not measured); a dashboard shows it with the chart.
 export type HistoryStyle = 'line' | 'band' | 'steps' | 'dots' | 'markers' | 'spans';
 export interface HistoryKind {
     kind: string; name: string; unit: string; group: string; style: HistoryStyle;
-    future?: boolean; view?: string; count?: number; first?: string; last?: string; selected?: boolean;
+    future?: boolean; view?: string; note?: string; count?: number; first?: string; last?: string; selected?: boolean;
 }
 export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; seg?: number; e?: number; }
 export interface HistorySource {

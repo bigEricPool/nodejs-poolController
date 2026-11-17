@@ -111,8 +111,12 @@ export const chlorinatorHistorySource: HistorySource = {
             // The cell's power (from the power log) and, for a cell counted by cycles, when current flowed: shown with the FC, as they are
             // what makes it.
             if (!chlorinatorPowerLog.lastEvent(c.id)) continue;
-            out.push({ kind: `${c.id}:power`, name: `${name} Power`, unit: 'h', group: 'chlorinator', style: 'spans', view: 'FC' });
-            if (c.cycleHours > 0) out.push({ kind: `${c.id}:current`, name: `${name} Current (modelled)`, unit: 'h', group: 'chlorinator', style: 'spans', view: 'FC' });
+            out.push({ kind: `${c.id}:power`, name: `${name} Power`, unit: 'h', group: 'chlorinator', style: 'spans', view: 'FC',
+                note: `${name} Power is measured: when the cell's power was on, from the chlorinator power log (an njsPC stall or stop counts as off).` });
+            if (c.cycleHours > 0) out.push({ kind: `${c.id}:current`, name: `${name} Current (modelled)`, unit: 'h', group: 'chlorinator', style: 'spans', view: 'FC',
+                note: `${name} Current is modelled, not measured: the cell does not report its current. It is worked out from the power and the % in force: ` +
+                    `the cell runs in ${c.cycleHours} h cycles${c.cycleRestartsOnPower ? ', a new one at each power-on' : ''}, and each cycle makes current ` +
+                    `${c.burstFirst ? 'first' : 'last'}, for the % set at its start, until the power goes off.` });
         }
         return out;
     },
