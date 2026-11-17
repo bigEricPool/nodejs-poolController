@@ -169,6 +169,10 @@ function poolMathWaterTemps(): WaterTemp[] {
     return out.sort((a, b) => a.t - b.t);
 }
 
+// A short local date for the acid advice ('Nov 20').
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function shortDate(t: number): string { const d = new Date(t); return `${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+
 // A local date for the advice text (YYYY-MM-DD).
 function localDate(t: number): string {
     const d = new Date(t);
@@ -817,7 +821,7 @@ class AutoSwgBench {
         const v = PH_VARIANTS.find(x => x.id === s.main) || PH_VARIANTS[0];
         const fit = fits.find(f => f.id === v.id);
         if (!fit) return;
-        const advice = acidAdvice(ctx, v, fit, clocks, now, s, localDate);
+        const advice = acidAdvice(ctx, v, fit, clocks, now, s, shortDate);
         this.lastAcidAdvice = advice;
         if (JSON.stringify(state.autoSwg.benchAcidAdvice || null) !== JSON.stringify(advice)) {
             state.autoSwg.benchAcidAdvice = advice;
@@ -834,7 +838,7 @@ class AutoSwgBench {
             t: now, kind: 'run', run: now, variant: v.id, fit: { r: fit.r, c: fit.c, n: fit.n }, start: { t: last.t, ph: last.v },
             points: times.map((t, k) => [t, r2(ph[k]), r2(csiAt(ctx, t, ph[k])), r1(taAt(ctx, t)), r1(ctx.cya(t))])
         };
-        if (advice.level !== 'none') run.advice = { level: advice.level, at: advice.at, doseFlOz: advice.doseFlOz, doseTo: advice.doseTo, reason: advice.reason };
+        if (advice.level !== 'none') run.advice = { level: advice.level, at: advice.at, doseFlOz: advice.doseFlOz, doseNowFlOz: advice.doseNowFlOz, doseTo: advice.doseTo, reason: advice.reason, text: advice.text };
         this.appendRows(CHEM_RUNS_FILE, [run]);
         if (Date.now() - this.chemTrimmedAt > 7 * DAY_MS) { this.chemTrimmedAt = Date.now(); this.rewriteRows(CHEM_RUNS_FILE, () => true); this.rewriteRows(CHEM_SCORES_FILE, () => true); }
     }

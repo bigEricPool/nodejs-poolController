@@ -412,6 +412,10 @@ export interface AcidAdvice {
     level: 'none' | 'recommended' | 'needed'; reason?: string; at?: string;
     ph?: number; csi?: number; phAhead?: number; csiAhead?: number; lastTest?: { t: string; ph: number }; stale?: boolean;
     doseFlOz?: number; doseTo?: number; doseStrength?: number; taDrop?: number; variant: string;
+    // the dose if it went in now, from the pH projected now (doseFlOz is for when the level is reached); the pH the dose is sized from
+    doseNowFlOz?: number; doseFromPh?: number;
+    // the whole advice in words, without the level: when, how much then, and how much now
+    text?: string;
 }
 // Acid recommended when the projected pH reaches phRecommended or the CSI csiRecommended within aheadDays, needed at phNeeded or csiNeeded (advisory
 // only). The dose brings the projected pH now to doseTargetHighTa (TA above taSplit) or doseTargetLowTa, in fl oz at doseStrength.
@@ -440,17 +444,29 @@ export function acidAdvice(ctx: ChemContext, v: PhVariant, fit: PhFit, clocks: P
     out.level = needed >= 0 ? 'needed' : 'recommended';
     out.at = new Date(times[k]).toISOString();
     const byPh = ph[k] >= (out.level === 'needed' ? s.phNeeded : s.phRecommended);
-    const when = k === 0 ? 'now' : `by ${fmt(times[k])}`;
-    out.reason = byPh
-        ? `The pH is projected to reach ${round2(ph[k])} ${when} (${out.level === 'needed' ? s.phNeeded : s.phRecommended} or more).`
-        : `The CSI is projected to reach ${round2(csis[k])} ${when} (${out.level === 'needed' ? s.csiNeeded : s.csiRecommended} or more).`;
+    const signed = (x: number) => (x > 0 ? '+' : '') + x.toFixed(2);
+    const what = byPh
+        ? `pH ${k === 0 ? `projected at ${ph[0].toFixed(2)} now` : `projected to reach ${(out.level === 'needed' ? s.phNeeded : s.phRecommended).toFixed(1)} around ${fmt(times[k])}`}`
+        : `CSI ${k === 0 ? `projected at ${signed(csis[0])} now` : `projected to reach ${signed(out.level === 'needed' ? s.csiNeeded : s.csiRecommended)} around ${fmt(times[k])}`}`;
+    out.reason = `The ${what} (${byPh ? (out.level === 'needed' ? s.phNeeded : s.phRecommended).toFixed(1) : signed(out.level === 'needed' ? s.csiNeeded : s.csiRecommended)} or more).`;
     const ta = taAt(ctx, now);
     const taV = typeof ta === 'number' ? ta : 80;
+    const cya = ctx.cya(now), bor = borAt(ctx, now);
     out.doseTo = taV > s.taSplit ? s.doseTargetHighTa : s.doseTargetLowTa;
     out.doseStrength = s.doseStrength;
-    out.doseFlOz = acidDoseFlOz(Math.max(ph[0], ph[k]), out.doseTo, taV, ctx.cya(now), borAt(ctx, now), s.doseStrength, ctx.gallons);
+    // sized for when the level is reached (the pH projected then), and for now
+    out.doseFromPh = Math.round(Math.max(ph[0], ph[k]) * 100) / 100;
+    out.doseFlOz = acidDoseFlOz(out.doseFromPh, out.doseTo, taV, cya, bor, s.doseStrength, ctx.gallons);
+    out.doseNowFlOz = acidDoseFlOz(ph[0], out.doseTo, taV, cya, bor, s.doseStrength, ctx.gallons);
     out.taDrop = Math.round(acidTaDrop(out.doseFlOz * ML_PER_FL_OZ, s.doseStrength, ctx.gallons) * 10) / 10;
-    if (out.stale) out.reason += ` The last pH test is ${Math.floor((now - last.t) / DAY_MS)} days old; a test would firm this up.`;
+    const acid = `${s.doseStrength}% muriatic acid`, to = out.doseTo.toFixed(1);
+    if (k === 0) out.text = `${what}; add about ${out.doseFlOz} fl oz of ${acid} to bring it to ${to}.`;
+    else out.text = `${what}; then add about ${out.doseFlOz} fl oz of ${acid} to bring it to ${to}`
+        + (out.doseNowFlOz > 0 ? ` (about ${out.doseNowFlOz} fl oz if added today).` : ` (none needed today: pH is projected at ${ph[0].toFixed(2)}).`);
+    if (out.stale) {
+        const old = ` The last pH test is ${Math.floor((now - last.t) / DAY_MS)} days old; a test would firm this up.`;
+        out.reason += old; out.text += old;
+    }
     return out;
 }
 
