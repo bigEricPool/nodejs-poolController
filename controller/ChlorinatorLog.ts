@@ -28,6 +28,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   st     the statuses seen (0 = OK; see the chlorinatorStatus value map), only when any was not 0
 //   salt   the chlorinator's salt reading (ppm, last sample)    age  the longest time since the chlorinator last reported (seconds); a
 //          stale output looks like production when njsPC has lost the chlorinator
+//   stale  the samples taken when the chlorinator had not reported for more than CHLORINATOR_SILENT_SAMPLE_SEC, only when any (at night,
+//          with the cell's power off, all of them)
 // A line without `id` was written before the log recorded more than one chlorinator; it belongs to the first chlorinator (see `idOf`).
 // Two lines can have the same `t` and `id` (njsPC restarted within the hour); add them, weighting by n. Appended as lines, never rewritten,
 // except when the oldest hour is more than a month past the 48 months, which rewrites the file once a month at most (the daily check
@@ -52,6 +54,8 @@ export const CLOCK_FLOOR_MS = Date.UTC(2025, 0, 1);
 const CLOCK_BACK_LIMIT_MS = 7 * 24 * HOUR_MS;
 // The hours in which the chlorinator went more than this long without reporting are counted as stale.
 export const CHLORINATOR_STALE_SEC = 15 * 60;
+// A sample taken this long after the chlorinator last reported counts in the hour's `stale` (njsPC asks it every few seconds).
+export const CHLORINATOR_SILENT_SAMPLE_SEC = 30;
 
 export interface ChlorinatorOutputSample {
     id: number;             // the chlorinator id
@@ -63,7 +67,7 @@ export interface ChlorinatorOutputSample {
     commAgeSec?: number;    // seconds since the chlorinator last reported, when known
 }
 export interface ChlorinatorOutputHour {
-    t: string; id?: number; n: number; on: number; out: number; max: number; set: number; tgt: number; st?: number[]; salt: number; age?: number;
+    t: string; id?: number; n: number; on: number; out: number; max: number; set: number; tgt: number; st?: number[]; salt: number; age?: number; stale?: number;
 }
 export interface ChlorinatorOutputSummary {
     hours: number;                  // hours with samples
@@ -76,7 +80,7 @@ export interface ChlorinatorOutputSummary {
     setHistogram: { [pct: string]: number };   // hours at each setpoint
 }
 
-interface Bucket { id: number; start: number; n: number; on: number; sum: number; max: number; set: number; tgt: number; st: number[]; salt: number; age: number; }
+interface Bucket { id: number; start: number; n: number; on: number; sum: number; max: number; set: number; tgt: number; st: number[]; salt: number; age: number; stale: number; }
 
 // Whether a time looks like a set clock (see CLOCK_FLOOR_MS).
 export function clockLooksSet(now: number): boolean {
@@ -167,7 +171,7 @@ export class ChlorinatorOutputLog {
         this.warnedClock = false;
         for (const b of Array.from(this.buckets.values())) if (b.start !== start) this.flushBucket(b.id);
         let b = this.buckets.get(s.id);
-        if (!b) { b = { id: s.id, start: start, n: 0, on: 0, sum: 0, max: 0, set: 0, tgt: 0, st: [], salt: 0, age: 0 }; this.buckets.set(s.id, b); }
+        if (!b) { b = { id: s.id, start: start, n: 0, on: 0, sum: 0, max: 0, set: 0, tgt: 0, st: [], salt: 0, age: 0, stale: 0 }; this.buckets.set(s.id, b); }
         b.n++;
         if (s.output > 0) b.on++;
         b.sum += s.output;
@@ -177,6 +181,7 @@ export class ChlorinatorOutputLog {
         if (typeof s.status === 'number' && s.status !== 0 && b.st.indexOf(s.status) < 0) b.st.push(s.status);
         if (typeof s.salt === 'number' && s.salt > 0) b.salt = s.salt;
         if (typeof s.commAgeSec === 'number' && s.commAgeSec > b.age) b.age = s.commAgeSec;
+        if (typeof s.commAgeSec === 'number' && s.commAgeSec > CHLORINATOR_SILENT_SAMPLE_SEC) b.stale++;
         if (now - this.lastPrune > PRUNE_EVERY_MS) this.prune(now);
     }
     private warnClock(msg: string) {
@@ -203,6 +208,7 @@ export class ChlorinatorOutputLog {
         const line: ChlorinatorOutputHour = { t: new Date(b.start).toISOString(), id: b.id, n: b.n, on: b.on, out: Math.round((b.sum / b.n) * 10) / 10, max: b.max, set: b.set, tgt: b.tgt, salt: b.salt };
         if (b.st.length) line.st = b.st;
         if (b.age > 0) line.age = b.age;
+        if (b.stale > 0) line.stale = b.stale;
         try {
             const f = this.file();
             fs.mkdirSync(path.dirname(f), { recursive: true });

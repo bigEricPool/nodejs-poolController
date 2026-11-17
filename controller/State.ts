@@ -2717,6 +2717,10 @@ export class ChlorinatorState extends EqState {
         if (typeof this.data.virtualControllerStatus !== 'undefined') delete this.data.virtualControllerStatus;
     }
     public dataName: string = 'chlorinator';
+    /** The last time njsPC's chlorinator power check ran (ms), kept in poolState.json so a start after a crash or a power loss knows when
+     * njsPC stopped (see ChlorinatorLogService.markPowerOffAfterOutage). */
+    public get lastAlive(): number { return this.data.lastAlive || 0; }
+    public set lastAlive(val: number) { if (Number.isFinite(val) && val > 0) this.setDataVal('lastAlive', val); }
     // The lastComm property has a fundamental flaw.  Although, the structure is
     // not dirtied where the emitter sends out a message on each lastComm, the persistence proxy is
     // triggered by this. We need to find a way that the property change does not trigger persistence.

@@ -24,6 +24,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Each line: t  the time (ISO, UTC)    id  the chlorinator id    on  true when the power came on, false when it went off
 //            cause  only on a drop njsPC did not see happen (recordDrop): "stall", the relays the power is wired through timed out while
 //                   they were not refreshed (njsPC stalled, or the relay manager could not be reached). Readers can ignore it.
+//            cause  only on an "off" written at a start for a stop that wrote nothing (a crash, a kill, a power loss): "outage", the time is the
+//                   last time njsPC was known to be running, not the start. Readers can ignore it.
 //
 // What "has power" means is up to ChlorinatorLogService.ts (by default the chlorinator's body is on). The same clock guards as the
 // output log apply: nothing is written while the time looks unset, nor before the newest event (the clock went back).
@@ -38,7 +40,7 @@ const PRUNE_EVERY_MS = DAY_MS;
 // As for the output log, the file is rewritten only when its oldest line is this far past the cutoff.
 const PRUNE_SLACK_MS = 31 * DAY_MS;
 
-export type ChlorinatorPowerCause = 'stall';
+export type ChlorinatorPowerCause = 'stall' | 'outage';
 export interface ChlorinatorPowerEvent { t: string; id: number; on: boolean; cause?: ChlorinatorPowerCause; }
 
 function isEvent(e: any): e is ChlorinatorPowerEvent {
