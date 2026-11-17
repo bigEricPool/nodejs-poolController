@@ -306,8 +306,9 @@ export class NixiePump extends NixieEquipment {
         this._relaysOkAt = now;
         // A chlorinator powered through these relays lost its power for a moment too: the chlorinator power log records it (it skips a gap
         // its own stall check already wrote, and chlorinators not wired through these relays).
-        if (!first && gap > NixiePump.relayLatchMs) {
-            try { noteChlorinatorRelayGap(now - gap, now, ((this.pump.relays as any).get() || []).map((r: any) => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding }))); }
+        // Same slack as priming: the gap holds the pass's own send time (see relayGapSlackMs).
+        if (!first && NixiePump.relayGapExpired(gap)) {
+            try { noteChlorinatorRelayGap(now - gap, now, ((this.pump.relays as any).get() || []).map((r: any) => ({ connectionId: r.connectionId, deviceBinding: r.deviceBinding })), NixiePump.relayGapSlackMs); }
             catch (err) { logger.warn(`NCP: Could not note the relay gap of pump ${this.pump.name} for the chlorinator power log: ${err.message}`); }
         }
         try {
