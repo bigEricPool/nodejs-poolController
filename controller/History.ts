@@ -22,29 +22,32 @@ import { logger } from "../logger/Logger";
 // a projection...) and a function that gives their points over a span of time. A source that cannot recompute its history keeps it itself;
 // this registry stores nothing. A kind is named to the outside as `<source>:<kind>`, so two sources can use the same kind name.
 //
-// A point is { t, v?, lo?, hi?, text?, o?, seg? }: t the time (ms), v the value, lo and hi a band (the low and high of an hour or a day, or the
+// A point is { t, v?, lo?, hi?, text?, o?, seg?, e? }: t the time (ms), v the value, lo and hi a band (the low and high of an hour or a day, or the
 // levels a setting holds between), text a note or an addition written out, and o: 1 for a reading taken while the equipment was off (shown
 // apart from the others), and seg, where given, the line a point belongs to (a line kind whose points carry different seg values is drawn as
-// one line for each, such as a projection remade by each calculation). How a kind is best drawn is given by its style:
+// one line for each, such as a projection remade by each calculation), and e, for a span, the time (ms) it ended. How a kind is best drawn
+// is given by its style:
 //   line     a value that is followed continuously (with a band where the points carry lo and hi)
 //   band     a range in force at each time (lo to hi), stepped where it changed
 //   steps    a setting that holds until the next point
 //   dots     occasional readings (tests)
 //   markers  events with text (additions, notes)
+//   spans    times something was on, each from t to e (in a long view, where spans would be too many to draw, a point for each day
+//            with v the hours it was on and no e)
 // `future` marks a kind with points ahead of now (a projection), so a chart can run past the present. `view` names the view a dashboard
 // shows the kind in before the user has set up views of their own (kinds with the same view name share it).
-export type HistoryStyle = 'line' | 'band' | 'steps' | 'dots' | 'markers';
+export type HistoryStyle = 'line' | 'band' | 'steps' | 'dots' | 'markers' | 'spans';
 export interface HistoryKind {
     kind: string; name: string; unit: string; group: string; style: HistoryStyle;
     future?: boolean; view?: string; count?: number; first?: string; last?: string; selected?: boolean;
 }
-export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; seg?: number; }
+export interface HistoryPoint { t: number; v?: number; lo?: number; hi?: number; text?: string; o?: number; seg?: number; e?: number; }
 export interface HistorySource {
     id: string;             // short and without ':' (for example 'temps', 'poolMath')
     name: string;           // shown to the user as the heading of the source's kinds
     kinds(): HistoryKind[];
     // The points of each kind between from and to (ms). For a band or steps kind, also the last point before `from`, so the range or setting in
-    // force at the start of the span shows.
+    // force at the start of the span shows; for a spans kind, the span that began before `from` and runs into it.
     series(kinds: string[], from: number, to: number): { [kind: string]: HistoryPoint[] };
 }
 export interface ListedHistoryKind extends HistoryKind { id: string; source: string; sourceName: string; }
