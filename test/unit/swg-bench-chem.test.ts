@@ -156,17 +156,26 @@ describe('the acid advice', () => {
         expect(a.doseFlOz).toBeGreaterThan(0);
         expect(a.taDrop).toBeGreaterThan(0);
         expect(a.doseStrength).toBe(31.45);
+        // the dose is for when the pH reaches 8.0; today's, from the pH projected now, is smaller, and the words say both
+        expect(a.doseNowFlOz).toBeLessThanOrEqual(a.doseFlOz);
+        expect(a.doseNowFlOz).toBeGreaterThan(0);
+        expect(a.doseFromPh).toBeGreaterThanOrEqual(8.0);
+        expect(a.text).toMatch(/^pH projected to reach 8\.0 around 2026-0\d-\d\d; then add about \d+ fl oz of 31\.45% muriatic acid to bring it to 7\.6 \(about \d+ fl oz if added today\)\.$/);
     });
     it('says acid is needed at 8.2, and doses only to 7.8 when TA is 60 or less', () => {
         const a = at(8.2, 400, 60, Object.assign({}, fit, { c: 0.5 }));
         expect(a.level).toBe('needed');
         expect(a.doseTo).toBe(7.8);
+        // reached now: one dose, from the pH now
+        expect(a.doseFlOz).toBe(a.doseNowFlOz);
+        expect(a.text).toMatch(/^pH projected at 8\.\d\d now; add about \d+ fl oz of 31\.45% muriatic acid to bring it to 7\.8\.$/);
     });
     it('goes by the CSI when CH is high', () => {
         // CH 1500: the CSI reaches 0.6 in about two days while the pH stays under 8.2
         const a = at(7.85, 1500);
         expect(a.level).toBe('needed');
         expect(a.reason).toContain('CSI');
+        expect(a.text).toMatch(/^CSI projected to reach \+0\.60 around /);
     });
     it('gives no advice while the pH and CSI stay low', () => {
         const ctx = context({ ph: [{ t: now - DAY_MS, v: 7.3 }], ta: [{ t: day(0), v: 70 }], ch: [{ t: day(0), v: 300 }] });
