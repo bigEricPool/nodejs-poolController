@@ -28,7 +28,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // At each automatic check (onCheck) every variant version is fitted on what is known then. When a new FC test arrives (onReadings) every version
 // projects it from the reading before (horizon 'next') and from the one before that ('skip', the weekly-testing case), with the fit it froze at the
 // last check before the test (no look-ahead): 'nowcast' with the weather that happened, 'forecast' with only the clear sky and the recent clearness.
-// The live projection is scored from SWG Assist's own projected FC at each test (AutoSwgProjection.ts 'reading' points).
+// The live projection is scored from SWG Assist's own projected FC at each test (AutoSwgProjection.ts 'reading' points), and its rows follow those
+// points when SWG Assist works them out again (syncLiveRows; the first projection is kept in liveWas).
 //
 // CYA (AutoSwgBenchCya.ts): the path variants use the CYA between tests as it was known at each check. When a new CYA test arrives the path since the
 // test before is redrawn to land on it; the scores already recorded are never rewritten, but each score since the test before gets a "revised
@@ -48,7 +49,7 @@ import {
     BenchGeometry, BenchHour, BenchPumpHour, BenchSources, BenchTempHour, BenchVariant, BenchWeatherHour, buildHourlyInputs, chlorinePpm,
     CyaSource, CyaTest, cyaFor, DAY_MS, DEFAULT_VARIANTS, FcReading, Fit, fitVariant, gapDays, generationBetween, HOUR_MS, inputCoverage, InputStarts, inputStarts,
     Interval, intervalsFrom, normalizeGeometry, normalizeScoring, pairedDifference, plainRate, poundsToPpm, projectLoss, recentClearness, ScoreFlag, scoreFlags,
-    ScoringSettings, scoreSummary, spanCoverage
+    ScoringSettings, scoreSummary, spanCoverage, syncLiveRows
 } from './AutoSwgBenchModel';
 import {
     CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, pathVsTests, polygonArea,
@@ -107,7 +108,9 @@ export interface BenchScoreRow {
     t1: number; f1: number; test: number; proj: number; miss: number; days: number; fitAt?: number; replay?: boolean;
     sunShare?: number; revisedProj?: number; revisedMiss?: number; revisedAt?: number;
     gen?: number; cov?: number; flags?: ScoreFlag[];
+    liveWas?: number;   // a live row: the projection it was first scored with, when SWG Assist's projection at that test was worked out again since
 }
+
 export interface BenchCyaTestRow {
     t: number; kind: 'test'; ppm: number; projected?: number; status?: string; reason?: string; rainKBefore?: number; rainKAfter?: number;
     adviceRule?: number; baseline?: boolean; revised?: number;
@@ -425,6 +428,17 @@ class AutoSwgBench {
         }
         return out;
     }
+    // The live rows of the last SCORE_DAYS days follow SWG Assist's projection points (see syncLiveRows); the file is rewritten only when one changed.
+    private syncLiveScores(now: number) {
+        const since = now - SCORE_DAYS * DAY_MS;
+        const points = projectionLog.read(Math.ceil((Date.now() - since) / DAY_MS) + 1).filter(p => p.kind === 'reading');
+        if (!points.length) return;
+        const rows = this.readRows<BenchScoreRow>(SCORES_FILE);
+        const n = syncLiveRows(rows.filter(r => r && r.t >= since), points, this.getSettings().scoring);
+        if (!n) return;
+        this.writeAllRows(SCORES_FILE, rows);
+        logger.info(`SWG Assist bench: ${n} live score${n === 1 ? '' : 's'} updated to SWG Assist's projection as it is worked out now.`);
+    }
     // The chlorine credited over a scored pair, its input coverage, and its flags under today's settings.
     private markRow(row: BenchScoreRow, inp: ReturnType<AutoSwgBench['gatherInputs']>, gen: number) {
         row.gen = round(gen);
@@ -459,6 +473,9 @@ class AutoSwgBench {
             }
             catch (err) { logger.warn(`SWG Assist bench: the CYA drift check failed: ${err && err.message}`); }
             this.refreshAdvice(inp, now);
+            // the projection points may have been worked out again since the last check (see syncLiveRows)
+            try { this.syncLiveScores(now); }
+            catch (err) { logger.warn(`SWG Assist bench: updating the live scores failed: ${err && err.message}`); }
             this.chemCheck(now);
             this.lastCheck = now;
             this.lastError = undefined;
@@ -573,6 +590,8 @@ class AutoSwgBench {
             }
             this.appendRows(SCORES_FILE, fresh);
             if (fresh.length) logger.info(`SWG Assist bench: ${fresh.length} projection score${fresh.length === 1 ? '' : 's'} added.`);
+            try { this.syncLiveScores(now); }
+            catch (err) { logger.warn(`SWG Assist bench: updating the live scores failed: ${err && err.message}`); }
             try { this.recordCyaTests(inp, now); }
             catch (err) { logger.warn(`SWG Assist bench: recording the CYA tests failed: ${err && err.message}`); }
             this.refreshAdvice(inp, now);
