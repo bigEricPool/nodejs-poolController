@@ -61,7 +61,7 @@ export function advicePointsOf(runs: any[], from: number, to: number): BenchHist
         const what = a.level === 'needed' ? 'Acid needed' : 'Acid recommended';
         const dose = typeof a.doseFlOz === 'number' && a.doseFlOz > 0 ? `: ${a.doseFlOz} fl oz to ${a.doseTo}` : '';
         const first = Array.isArray(r.points) ? r.points.find((p: any[]) => p[0] >= r.run) : undefined;
-        return { t: r.run, v: first && typeof first[1] === 'number' ? first[1] : undefined, text: `${what}${dose}. ${a.reason || ''}`.trim() };
+        return { t: r.run, v: first && typeof first[1] === 'number' ? first[1] : undefined, text: a.text ? `${what}: ${a.text}` : `${what}${dose}. ${a.reason || ''}`.trim() };
     });
 }
 
