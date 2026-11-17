@@ -76,15 +76,21 @@ export function pctAtFromHours(hours: ChlorinatorOutputHour[]): (ms: number) => 
     return (ms: number) => { const h = byHour.get(Math.floor(ms / HOUR_MS) * HOUR_MS); return h ? hourPct(h) : 0; };
 }
 
-// The hours current flowed between `a` and `b` (ms), from the power events: each time the power is on is split into cycles from the
-// power-on (or from the first power-on when the cycles do not restart), and each cycle conducts for the % in force at its start (or at
-// the power-on, for a cycle that began while the power was off) times the cycle length, cut off where the power goes off.
-export function cycleConduction(events: PowerEvent[], a: number, b: number, cycle: CycleSettings, pctAt: (ms: number) => number): number {
+// A time current flowed (ms), cut to the span asked for: `cycle` is the start of the cycle it belongs to and `pct` the % that cycle ran
+// at (the % in force at its start, or at the power-on for a cycle that began while the power was off).
+export interface ConductingInterval { start: number; end: number; cycle: number; pct: number; }
+
+// The times current flowed between `a` and `b` (ms), oldest first, from the power events: each time the power is on is split into cycles
+// from the power-on (or from the first power-on when the cycles do not restart), and each cycle conducts for the % in force at its start
+// (or at the power-on, for a cycle that began while the power was off) times the cycle length, cut off where the power goes off. A
+// change of the % part way through a burst does not change that burst; a cycle at 0% conducts nothing. These are worked out from the
+// power and the %, not measured: the cell does not report its current.
+export function conductingIntervals(events: PowerEvent[], a: number, b: number, cycle: CycleSettings, pctAt: (ms: number) => number): ConductingInterval[] {
+    const out: ConductingInterval[] = [];
     const C = cycle.cycleHours * HOUR_MS;
-    if (!(C > 0) || !(b > a) || !events || !events.length) return 0;
+    if (!(C > 0) || !(b > a) || !events || !events.length) return out;
     const evs = events.filter(e => e && isFinite(e.t)).sort((x, y) => x.t - y.t);
     const firstOn = evs.find(e => e.on);
-    let total = 0;
     for (let i = 0; i < evs.length; i++) {
         if (!evs[i].on) continue;
         const s = evs[i].t;
@@ -95,12 +101,21 @@ export function cycleConduction(events: PowerEvent[], a: number, b: number, cycl
         for (let k = Math.floor((lo - anchor) / C); ; k++) {
             const cs = anchor + k * C;
             if (cs >= hi) break;
-            const p = Math.max(0, Math.min(100, pctAt(Math.max(cs, s)) || 0)) / 100;
+            const pct = Math.max(0, Math.min(100, pctAt(Math.max(cs, s)) || 0));
+            const p = pct / 100;
             const bs = cycle.burstFirst ? cs : cs + (1 - p) * C;
             const be = cycle.burstFirst ? cs + p * C : cs + C;
-            total += Math.max(0, Math.min(be, hi) - Math.max(bs, lo));
+            const start = Math.max(bs, lo), end = Math.min(be, hi);
+            if (end > start) out.push({ start, end, cycle: cs, pct });
         }
     }
+    return out;
+}
+
+// The hours current flowed between `a` and `b` (ms): the sum of conductingIntervals, so the count and the times shown always agree.
+export function cycleConduction(events: PowerEvent[], a: number, b: number, cycle: CycleSettings, pctAt: (ms: number) => number): number {
+    let total = 0;
+    for (const iv of conductingIntervals(events, a, b, cycle, pctAt)) total += iv.end - iv.start;
     return total / HOUR_MS;
 }
 
