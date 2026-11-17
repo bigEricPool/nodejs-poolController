@@ -2511,6 +2511,10 @@ export class ChlorinatorState extends EqState {
         if (typeof this.data.virtualControllerStatus !== 'undefined') delete this.data.virtualControllerStatus;
     }
     public dataName: string = 'chlorinator';
+    /** The last time njsPC's chlorinator power check ran (ms), kept in poolState.json so a start after a crash or a power loss knows when
+     * njsPC stopped (see ChlorinatorLogService.markPowerOffAfterOutage). */
+    public get lastAlive(): number { return this.data.lastAlive || 0; }
+    public set lastAlive(val: number) { if (Number.isFinite(val) && val > 0) this.setDataVal('lastAlive', val); }
     // The lastComm property has a fundamental flaw.  Although, the structure is
     // not dirtied where the emitter sends out a message on each lastComm, the persistence proxy is
     // triggered by this. We need to find a way that the property change does not trigger persistence.
@@ -2647,12 +2651,18 @@ export class ChlorinatorState extends EqState {
     public get usageHours(): number { return this.data.usageHours || 0; }
     public get usagePounds(): number { return this.data.usagePounds || 0; }
     public get usageSince(): number { return this.data.usageSince || 0; }
+    /** For a cell counted by cycles: the time up to which its cycles have been added to the totals, so the lines of an hour split by a
+     * restart each add only their own part of the hour. Set with the totals (resetUsage) and moved on as each hour is added. */
+    public get usageCountedTo(): number { return this.data.usageCountedTo || 0; }
+    public set usageCountedTo(val: number) { if (Number.isFinite(val) && val > this.usageCountedTo) this.setDataVal('usageCountedTo', val); }
     /** Hours the output was above 0 (the cell enabled; it is energized only part of that time). The equivalent hours above are the work it did. */
     public get usageRunHours(): number { return this.data.usageRunHours || 0; }
     /** Pounds of the total that were estimated from pool log SWG entries, for the time before the output log began. */
     public get usageEstimatedPounds(): number { return this.data.usageEstimatedPounds || 0; }
     public addUsage(hours: number, pounds: number, runHours: number = 0) {
-        if (!(hours > 0)) return;
+        // an hour can be enabled with no current in it (a cell on for a few minutes of each cycle), so either may be 0
+        if (!(hours > 0) && !(runHours > 0)) return;
+        if (!(hours > 0)) hours = 0;
         this.setDataVal('usageHours', this.usageHours + hours);
         this.setDataVal('usagePounds', this.usagePounds + (pounds > 0 ? pounds : 0));
         this.setDataVal('usageRunHours', this.usageRunHours + (runHours > 0 ? runHours : 0));
@@ -2665,6 +2675,7 @@ export class ChlorinatorState extends EqState {
         this.setDataVal('usageRunHours', runHours);
         this.setDataVal('usageEstimatedPounds', estimatedPounds > 0 ? Math.min(estimatedPounds, pounds) : 0);
         this.setDataVal('usageSince', since);
+        this.setDataVal('usageCountedTo', since);
     }
     public calcSaltRequired(saltTarget?: number) : number {
         if (typeof saltTarget === 'undefined') saltTarget = sys.chlorinators.getItemById(this.id, false).saltTarget || 0;

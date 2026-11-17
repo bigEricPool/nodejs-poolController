@@ -32,6 +32,17 @@ describe('ChlorinatorOutputLog.record', () => {
         const [h] = lines();
         expect(h).toEqual({ t: '2026-07-01T12:00:00.000Z', id: 1, n: 3, on: 2, out: 50, max: 100, set: 60, tgt: 60, salt: 3300, st: [2], age: 30 });
     });
+    it('counts the samples taken when the chlorinator had been silent over 30 s (stale), only when any', () => {
+        log.record(sample({ commAgeSec: 3 }), T);
+        log.record(sample({ commAgeSec: 31 }), T + 10 * 60000);
+        log.record(sample({ commAgeSec: 734 }), T + 20 * 60000);
+        log.record(sample({ commAgeSec: 2 }), T + H);
+        log.record(sample({ commAgeSec: 30 }), T + 2 * H);
+        const [a, b] = lines();
+        expect(a.stale).toBe(2);
+        expect(a.age).toBe(734);
+        expect(b.stale).toBeUndefined();
+    });
     it('keeps one line per chlorinator, and a later sample from any of them ends the hour for all', () => {
         log.record(sample({ id: 1 }), T);
         log.record(sample({ id: 2, output: 80 }), T + 60000);

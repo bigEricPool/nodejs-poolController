@@ -107,7 +107,7 @@ describe('history series', () => {
         expect(kinds[0].kind).toBe('fc');
         expect(by('fc')).toMatchObject({ name: 'FC', unit: 'ppm', group: 'test', count: 3 });
         expect(by('waterTemp')).toMatchObject({ unit: '°F' });
-        expect(by('chem:14')).toMatchObject({ name: 'Muriatic Acid', unit: 'fl oz', group: 'addition', count: 1 });
+        expect(by('chem:14')).toMatchObject({ name: 'Muriatic Acid 31.45%', unit: 'fl oz', group: 'addition', count: 1 });
         expect(by('chem:99')).toMatchObject({ name: 'Chemical 99', unit: 'unit 3' });
         expect(by('swg')).toMatchObject({ unit: '%', group: 'addition' });
         expect(by('weather:precipPast24Hours')).toMatchObject({ unit: 'mm', group: 'weather' });

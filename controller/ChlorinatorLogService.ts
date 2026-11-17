@@ -19,7 +19,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Runs the chlorinator output log: samples every configured chlorinator every ten minutes (ChlorinatorLog.ts), credits each hour
 // written to that chlorinator's cell usage totals (ChlorinatorUsage.ts), and recounts the totals from the install date when the
 // cell's install date, rating or cycle settings change. Also writes when each chlorinator's power comes on and goes off
-// (ChlorinatorPowerLog.ts), checked every 15 seconds, which places the cycles of a cell counted by cycles.
+// (ChlorinatorPowerLog.ts), checked every 15 seconds, which places the cycles of a cell counted by cycles, and when each chlorinator's
+// RS-485 link changes (ChlorinatorCommsLog.ts), checked every 2 seconds.
 
 import { logger } from '../logger/Logger';
 import { ServiceParameterError } from './Errors';
@@ -28,6 +29,7 @@ import { Chlorinator, sys } from './Equipment';
 import { state } from './State';
 import { chlorinatorLog, ChlorinatorOutputHour, clockLooksSet } from './ChlorinatorLog';
 import { chlorinatorPowerLog } from './ChlorinatorPowerLog';
+import { chlorinatorCommsLog, CommsReading, CommsTracker } from './ChlorinatorCommsLog';
 import { cellUsageForHour, cellUsageFromInstall, CycleContext, mergeSwgEntries, pctAtFromHours, SwgEntry } from './ChlorinatorUsage';
 
 const SAMPLE_MS = 10 * 60 * 1000;
@@ -138,9 +140,11 @@ export function chlorinatorCommsExpected(chlor: Chlorinator, now: number = Date.
     }
     return !quiet;
 }
-// Writes each chlorinator's power state when it changed.
+// Writes each chlorinator's power state when it changed, and notes that njsPC is running (lastAlive, for markPowerOffAfterOutage).
 export function checkChlorinatorPower(now: number = Date.now()) {
     for (const chlor of sys.chlorinators.toArray()) {
+        try { if (clockLooksSet(now)) { const s = state.chlorinators.getItemById(chlor.id, false); if (s) s.lastAlive = now; } }
+        catch (err) { logger.warn(`Chlorinator power log: could not note chlorinator ${chlor.id} as running: ${err.message}`); }
         try {
             const on = chlorinatorHasPower(chlor);
             if (typeof on !== 'boolean') continue;
@@ -151,11 +155,60 @@ export function checkChlorinatorPower(now: number = Date.now()) {
     }
 }
 
+// The comms log (ChlorinatorCommsLog.ts): each chlorinator's RS-485 port and, while its power relays are on, whether it answers, checked
+// every COMMS_CHECK_MS. A chlorinator with no power relays set has only its port followed.
+const COMMS_CHECK_MS = 2000;
+let commsTimer: NodeJS.Timeout | undefined;
+const commsRelaysOnSince = new Map<number, number>();
+const commsTracker = new CommsTracker({ freshSec: COMM_FRESH_SEC, graceSec: POWER_UP_GRACE_SEC }, (id) => { const e = chlorinatorCommsLog.lastEvent(id); return e ? e.port : undefined; });
+// The RS-485 port of an id, from the comms module, loaded on first use (it brings the serial port and the web server with it, which the
+// tests of this module do not load). Tests can set their own.
+type PortLookup = (portId: number) => { enabled: boolean; isOpen: boolean } | undefined;
+let portLookup: PortLookup | undefined;
+export function setPortLookup(fn: PortLookup | undefined) { portLookup = fn; }
+function findPort(portId: number) {
+    if (!portLookup) { const { conn } = require('./comms/Comms'); portLookup = (id: number) => conn.findPortById(id); }
+    return portLookup(portId);
+}
+export function commsReadingOf(chlor: Chlorinator, now: number): CommsReading {
+    const portId = typeof chlor.portId === 'number' ? chlor.portId : 0;
+    let portOpen: boolean | undefined;
+    let portError = false;
+    try {
+        const p = findPort(portId);
+        if (p && p.enabled) {
+            portOpen = p.isOpen === true;
+            portError = (state.equipment.messages.get() || []).some((m: any) => m && m.code === `rs485:${portId}:connection`);
+        }
+    } catch (err) { portOpen = undefined; }
+    let relaysOn: boolean | undefined;
+    const list = chlor.powerRelays || [];
+    if (list.length) {
+        const relays = list.map(r => { try { return relayIsOn(r); } catch (err) { return undefined; } });
+        if (relays.every(r => typeof r === 'boolean')) relaysOn = relays.every(r => r === true);
+    }
+    if (relaysOn === true) { if (!commsRelaysOnSince.has(chlor.id)) commsRelaysOnSince.set(chlor.id, now); }
+    else commsRelaysOnSince.delete(chlor.id);
+    let lastComm: number | undefined;
+    try { const s = state.chlorinators.getItemById(chlor.id, false); if (s && typeof s.lastComm === 'number' && s.lastComm > 0) lastComm = s.lastComm; } catch (err) { /* not known */ }
+    return { id: chlor.id, portOpen, portError, relaysOn, relaysOnSince: commsRelaysOnSince.get(chlor.id), lastComm };
+}
+export function checkChlorinatorComms(now: number = Date.now()) {
+    if (!clockLooksSet(now)) return;
+    for (const chlor of sys.chlorinators.toArray()) {
+        try {
+            const e = commsTracker.check(commsReadingOf(chlor, now), now);
+            if (e && chlorinatorCommsLog.write(e))
+                logger.info(`Chlorinator ${chlor.id}: RS-485 port ${e.port}${typeof e.answering === 'boolean' ? `, ${e.answering ? 'answering again' : 'not answering while its power relays are on'}` : ''}.`);
+        }
+        catch (err) { logger.warn(`Chlorinator comms log: could not check chlorinator ${chlor.id}: ${err.message}`); }
+    }
+}
+
 // On Nixie njsPC drives the circuits itself (through its relay boards), so they go off while it is not running, and a cell powered by
 // them starts a new cycle when it comes back. A controller with its own panel keeps its circuits running.
 export function powerStopsWithApp(): boolean { return sys.controllerType === ControllerType.Nixie; }
-// Writes "off" for each chlorinator last logged as powered, when its power stops with njsPC: at a stop, and at a start after a stop that
-// wrote nothing (a crash or a power loss; the time is then the start, as the stop's time is not known). The next check writes "on".
+// Writes "off" for each chlorinator last logged as powered, when its power stops with njsPC (at a stop). The next check writes "on".
 export function markPowerOffWhileStopped(now: number = Date.now()) {
     if (!powerStopsWithApp()) return;
     for (const chlor of sys.chlorinators.toArray()) {
@@ -164,6 +217,33 @@ export function markPowerOffWhileStopped(now: number = Date.now()) {
             if (last && last.on) chlorinatorPowerLog.record(chlor.id, false, now);
         }
         catch (err) { logger.warn(`Chlorinator power log: could not mark chlorinator ${chlor.id} off: ${err.message}`); }
+    }
+}
+
+// A start that finds a chlorinator last logged as powered follows a stop that wrote nothing: a crash, a kill, a hang ended by the process
+// manager, or a power loss. Its power went off when njsPC stopped refreshing the relays, so the "off" goes at the last time njsPC was known
+// to be running, plus the relay latch: the later of the last power check (lastAlive) and the chlorinator's last answer (lastComm), when at
+// or after the "on" (else the "on" itself). Not the start: the outage, overnight included, would count as powered. Nor the clock at the
+// start, which on a board without a clock battery can be behind until it is synced; the "on" that follows waits until the clock has
+// passed the "off" (ChlorinatorPowerLog.record).
+export const OUTAGE_RELAY_LATCH_MS = 5000;
+export function outageOffTime(lastOnMs: number, lastAliveMs?: number, lastCommMs?: number): number {
+    let t = lastOnMs;
+    for (const x of [lastAliveMs, lastCommMs]) if (typeof x === 'number' && isFinite(x) && x > t) t = x;
+    return t + OUTAGE_RELAY_LATCH_MS;
+}
+export function markPowerOffAfterOutage() {
+    if (!powerStopsWithApp()) return;
+    for (const chlor of sys.chlorinators.toArray()) {
+        try {
+            const last = chlorinatorPowerLog.lastEvent(chlor.id);
+            if (!last || !last.on) continue;
+            const s = state.chlorinators.getItemById(chlor.id, false);
+            const off = outageOffTime(new Date(last.t).getTime(), s ? s.lastAlive : undefined, s ? s.lastComm : undefined);
+            if (chlorinatorPowerLog.record(chlor.id, false, off, 'outage'))
+                logger.info(`Chlorinator ${chlor.id}: njsPC stopped without logging the power off (a crash or a power loss); logged it off at ${new Date(off).toISOString()}, the last time njsPC was known to be running.`);
+        }
+        catch (err) { logger.warn(`Chlorinator power log: could not mark chlorinator ${chlor.id} off after an outage: ${err.message}`); }
     }
 }
 
@@ -180,10 +260,10 @@ function cycleContextFor(chlor: Chlorinator, hours: ChlorinatorOutputHour[], now
 }
 // The last hours of each chlorinator, for the % in force at a cycle start when an hour is credited (a cycle can begin hours before).
 const recentHours = new Map<number, ChlorinatorOutputHour[]>();
-function recentHoursOf(id: number, h: ChlorinatorOutputHour): ChlorinatorOutputHour[] {
+function recentHoursOf(id: number, h: ChlorinatorOutputHour, now: number = Date.now()): ChlorinatorOutputHour[] {
     let list = recentHours.get(id);
     if (!list) {
-        list = chlorinatorLog.read(1, Date.now(), id, firstChlorinatorId());
+        list = chlorinatorLog.read(1, now, id, firstChlorinatorId());
         recentHours.set(id, list);
     }
     if (list.indexOf(h) < 0 && !list.some(x => x.t === h.t && x.n === h.n && x.id === h.id)) list.push(h);
@@ -221,18 +301,29 @@ export function sampleChlorinators(now: number = Date.now()) {
     }
 }
 
-// Each hour written is added to that chlorinator's totals (hours that start before the totals were last set are already in them).
-function creditHour(h: ChlorinatorOutputHour) {
+// Each hour written is added to that chlorinator's totals (hours that start before the totals were last set are already in them). A cell
+// counted by cycles adds the cycles from where its count reached (usageCountedTo) to now or the end of the hour, so the lines of an hour
+// split by a restart (one written at the stop, one at the end of the hour) each add their own part, not the whole hour twice.
+export function creditHour(h: ChlorinatorOutputHour, now: number = Date.now()) {
     const first = firstChlorinatorId();
     const id = typeof h.id === 'number' ? h.id : first;
     if (typeof id !== 'number') return;
     const chlor = sys.chlorinators.find(c => c.id === id);
     if (!chlor) return;
     const s = state.chlorinators.getItemById(id, false);
-    if (!s || new Date(h.t).getTime() < s.usageSince) return;
-    const ctx = chlor.cycleHours > 0 ? cycleContextFor(chlor, recentHoursOf(id, h), Date.now()) : undefined;
-    const u = cellUsageForHour(h, chlor.cellLbsPerDay, ctx);
-    if (u.hours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
+    const start = new Date(h.t).getTime();
+    if (!s || !isFinite(start)) return;
+    // by cycles, an hour the totals were set in part way through (a recount) still adds the part after it
+    const countedTo = Math.max(s.usageCountedTo, s.usageSince);
+    const byCycles = chlor.cycleHours > 0 && start + 3600000 > countedTo;
+    if (start < s.usageSince && !byCycles) return;
+    const ctx = chlor.cycleHours > 0 ? cycleContextFor(chlor, recentHoursOf(id, h, now), now) : undefined;
+    const span: [number, number] = [Math.max(start, countedTo), Math.min(start + 3600000, now)];
+    const u = cellUsageForHour(h, chlor.cellLbsPerDay, ctx, span);
+    if (!u.cycle && start < s.usageSince) return;
+    if (u.cycle) s.usageCountedTo = span[1];
+    // the enabled time counts even in an hour with no current (most hours of a cell at a low %)
+    if (u.hours > 0 || u.runHours > 0) { s.addUsage(u.hours, u.pounds, u.runHours); s.emitEquipmentChange(); }
 }
 
 function swgEntriesFor(id: number): SwgEntry[] {
@@ -356,11 +447,16 @@ export function cellUsageInfo(id: number) {
 export function startChlorinatorLog() {
     if (timer) return;
     chlorinatorLog.onHour = creditHour;
-    markPowerOffWhileStopped();
+    markPowerOffAfterOutage();
     // the power every 15 seconds, from half a minute after start (when the bodies' state is known)
     powerTimer = setTimeout(function check() {
         try { checkChlorinatorPower(); } catch (err) { logger.warn(`Chlorinator power log: ${err.message}`); }
         powerTimer = setTimeout(check, POWER_CHECK_MS);
+    }, 30000);
+    // the RS-485 link every 2 seconds, from the same half minute after start (the port is open by then)
+    commsTimer = setTimeout(function commsCheck() {
+        try { checkChlorinatorComms(); } catch (err) { logger.warn(`Chlorinator comms log: ${err.message}`); }
+        commsTimer = setTimeout(commsCheck, COMMS_CHECK_MS);
     }, 30000);
     // a first sample a minute after start, when the chlorinators have reported, then every ten minutes
     timer = setTimeout(function tick() {
@@ -372,6 +468,7 @@ export function startChlorinatorLog() {
 export function stopChlorinatorLog() {
     if (timer) { clearTimeout(timer); timer = undefined; }
     if (powerTimer) { clearTimeout(powerTimer); powerTimer = undefined; }
+    if (commsTimer) { clearTimeout(commsTimer); commsTimer = undefined; }
     markPowerOffWhileStopped();
     try { chlorinatorLog.flush(); } catch (err) { logger.warn(`Chlorinator log: could not write the last hour: ${err.message}`); }
 }
