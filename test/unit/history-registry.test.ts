@@ -18,6 +18,7 @@ vi.mock('../../controller/Equipment', () => ({
 vi.mock('../../controller/State', () => ({ state: { temps: { units: 0 }, getTempHistory: () => fx.tempHistory } }));
 vi.mock('../../controller/ChlorinatorLog', () => ({ chlorinatorLog: { read: () => fx.chlorHours } }));
 vi.mock('../../controller/ChlorinatorLogService', () => ({ firstChlorinatorId: () => 50 }));
+vi.mock('../../controller/ChlorinatorPowerLog', () => ({ chlorinatorPowerLog: { lastEvent: () => undefined, read: () => [] } }));
 vi.mock('../../controller/PoolMathArchive', () => ({
     readPoolMathArchive: () => ({ entries: [] }),
     historySeriesOf: (entries: any[], kinds: string[]) => { const s: any = {}; for (const k of kinds) s[k] = [{ t: 5, v: 7 }]; return s; },
