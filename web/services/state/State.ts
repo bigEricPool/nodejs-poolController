@@ -1968,6 +1968,21 @@ export class StateRoute {
         app.get('/state/autoSwg/bench/chem', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.chemReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
         });
+        // The pool's water level and concentration (rain, evaporation, the local water log, spills; the level ahead from the saved forecast), ?days=.
+        app.get('/state/autoSwg/bench/water', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.waterReport(Number(req.query.days) || 30)); } catch (err) { next(err); }
+        });
+        // The local water log, until PoolMath can log water changes: POST { t (ISO or ms), kind 'add' | 'remove', inches, note }; DELETE by id.
+        app.post('/state/autoSwg/bench/water', (req, res, next) => {
+            try {
+                const e = autoSwgBench.addWater(req.body);
+                if (!e) return res.status(400).send({ error: 'Give t, kind (add or remove) and inches (above 0, at most 60).' });
+                return res.status(200).send(e);
+            } catch (err) { next(err); }
+        });
+        app.delete('/state/autoSwg/bench/water/:id', (req, res, next) => {
+            try { return autoSwgBench.removeWater(req.params.id) ? res.status(200).send({ removed: req.params.id }) : res.status(404).send({ error: 'No such entry.' }); } catch (err) { next(err); }
+        });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
         app.get('/state/autoSwg/projectionAccuracy', async (req, res, next) => {
