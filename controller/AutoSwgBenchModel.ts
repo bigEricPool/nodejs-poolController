@@ -214,7 +214,7 @@ function hourMean(tEnd: number, f: (t: number) => number): number {
 
 // ---------------------------------------------------------------- hourly inputs
 
-export interface BenchWeatherHour { t: number; lt?: string; solarRad?: number; solarRadMean?: number; clearness?: number; clearnessMean?: number; precipTotal?: number; temp?: number; }
+export interface BenchWeatherHour { t: number; lt?: string; solarRad?: number; solarRadMean?: number; clearness?: number; clearnessMean?: number; precipTotal?: number; temp?: number; humidity?: number; windSpeed?: number; }
 export interface BenchTempHour { t: number; v: number; }           // the start of the hour, the mean water temperature while the pump ran
 export interface BenchPumpHour { t: number; seconds: number; }     // the start of the hour, the seconds the pump ran
 export interface BenchSwgEntry { ts: number; ppmPerDay: number; hrs: number; pct: number; }
@@ -248,6 +248,10 @@ export interface BenchHour {
     temp?: number;          // water temperature
     pumpSec?: number;
     salt?: number;
+    air?: number;           // the station's air temperature (F), humidity (%) and wind (mph), for the evaporation (AutoSwgBenchWater.ts)
+    rh?: number;
+    wind?: number;
+    dil?: number;           // the hour's concentration factor from the water balance (rain and added water below 1, evaporation above 1)
 }
 
 // Liquid chlorine: ppm that `ml` of a `percent` solution adds to `gallons`.
@@ -323,6 +327,9 @@ export function buildHourlyInputs(src: BenchSources, from: number, to: number, g
             if (r) r.rain = rain;
         }
         if (!r) continue;
+        if (typeof w.temp === 'number') r.air = w.temp;
+        if (typeof w.humidity === 'number') r.rh = w.humidity;
+        if (typeof w.windSpeed === 'number') r.wind = w.windSpeed;
         if (typeof w.solarRad === 'number') r.sunHigh = w.solarRad;
         const mean = typeof w.solarRadMean === 'number' ? w.solarRadMean : w.solarRad;
         if (typeof mean === 'number') r.sun = mean;
@@ -436,6 +443,8 @@ export interface BenchVariant {
     cya?: 'held' | 'path';      // model: CYA held at the last test (held, also when not set) or the full path between tests (path)
     temp?: boolean;             // model: the sun term times exp(c x (T - 80 F)), T the water temperature, c fitted from TEMP_C_GRID
     rainWash?: boolean;         // model: plus b2 x the rain in inches (a wash-in demand), b2 fitted
+    dilution?: boolean;         // any kind: FC follows the water balance (rain and added water dilute it, evaporation concentrates it, see
+                                // AutoSwgBenchWater.ts), a known loss taken out before fitting and added to the projection; nothing about it is fitted
 }
 
 export const DEFAULT_VARIANTS: BenchVariant[] = [
@@ -451,14 +460,34 @@ export const DEFAULT_VARIANTS: BenchVariant[] = [
     { id: 'sun-cya-30-rainwash', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', rainWash: true, label: 'Pool sun x FC/CYA plus rain wash-in, 30-day fit' },
     { id: 'sun-cya-14', version: 2, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 14, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun x FC/CYA, 14-day fit' },
     { id: 'sun-cya-45', version: 2, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 45, ridge: 0.5, fcPath: 'model', cya: 'path', label: 'Pool sun x FC/CYA, 45-day fit' },
+    // FC diluted by rain and concentrated by evaporation (the water balance), physical, not fitted (2026-11-20: the rain wash-in's fitted b2 of about
+    // 0.2 ppm an inch is FC x 1.96% an inch, the dilution)
+    { id: 'live-dil', version: 1, kind: 'live', dilution: true, label: 'SWG Assist projection plus the water balance' },
+    { id: 'plain14-dil', version: 1, kind: 'plain', windowDays: 14, dilution: true, label: '14-day average plus the water balance' },
+    { id: 'sun-cya-30-dil', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 30, ridge: 0.5, fcPath: 'model', cya: 'path', dilution: true, label: 'Pool sun x FC/CYA plus the water balance, 30-day fit' },
+    { id: 'sun-cya-45-dil', version: 1, kind: 'model', sun: 'pool', fcTerm: 'fcCya', fitDays: 45, ridge: 0.5, fcPath: 'model', cya: 'path', dilution: true, label: 'Pool sun x FC/CYA plus the water balance, 45-day fit' },
 ];
 
-// The sunlight term of an hour (W/m2) for a variant; undefined when the hour lacks the input. `clearness` is the recent clearness a forecast uses.
-export function sunTerm(r: BenchHour, term: BenchSunTerm, forecastClearness?: number): number | undefined {
+// What a forecast knows at a check: the recent clearness, and when a weather forecast was saved at the check (AutoSwgBenchForecast.ts), its hours
+// keyed by their end: the sun (W/m2, at the station), the rain (inches) and the water balance factor of the hour. A number is the clearness alone.
+export interface ForecastHour { sun?: number; rain?: number; dil?: number; }
+export interface BenchForecast { clearness?: number; hours?: Map<number, ForecastHour>; }
+export type ForecastInput = number | BenchForecast;
+function forecastOf(f: ForecastInput | undefined): BenchForecast | undefined {
+    if (typeof f === 'number') return { clearness: f };
+    return f && (typeof f.clearness === 'number' || f.hours) ? f : undefined;
+}
+// The sunlight term of an hour (W/m2) for a variant; undefined when the hour lacks the input. A forecast uses its own sun for the hour when it has
+// one, else the clear sky times the recent clearness.
+export function sunTerm(r: BenchHour, term: BenchSunTerm, forecastClearness?: ForecastInput): number | undefined {
     if (term === 'none') return 0;
-    if (typeof forecastClearness === 'number') {
-        // what a forecast can know: the clear sky times the recent clearness (on the water for the pool terms)
-        const s = r.clear * forecastClearness;
+    const fc = forecastOf(forecastClearness);
+    if (fc) {
+        const h = fc.hours ? fc.hours.get(r.t) : undefined;
+        let s: number | undefined;
+        if (h && typeof h.sun === 'number') s = h.sun;
+        else if (typeof fc.clearness === 'number') s = r.clear * fc.clearness;
+        if (typeof s !== 'number') return r.clear > 20 ? undefined : 0;
         return term === 'station' ? s : s * r.frac;
     }
     switch (term) {
@@ -504,9 +533,27 @@ export function rainBetween(rows: BenchHour[], t1: number, t2: number): number {
     return s;
 }
 
+// The FC the water balance takes (+) or gives back (-) between two moments, with FC from `fcAt`: each hour FC x (1 - its factor), the end hours for
+// the part inside. `dilAt(i)` is a row's factor (the rows' own `dil` when not given; a forecast passes its own).
+export function dilutionLoss(rows: BenchHour[], t1: number, t2: number, fcAt: (t: number) => number, dilAt?: (i: number) => number | undefined): number {
+    let s = 0;
+    for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t - HOUR_MS < t2; i++) {
+        const r = rows[i];
+        const d = dilAt ? dilAt(i) : r.dil;
+        if (typeof d !== 'number' || d === 1) continue;
+        const part = (Math.min(r.t, t2) - Math.max(r.t - HOUR_MS, t1)) / HOUR_MS;
+        if (part > 0) s += Math.max(0, fcAt(r.t)) * (1 - d) * part;
+    }
+    return s;
+}
+// The FC lost to the water balance over an interval, FC straight between its two readings.
+export function intervalDilution(iv: Interval, rows: BenchHour[]): number {
+    return dilutionLoss(rows, iv.t1, iv.t2, t => iv.f1 + (iv.f2 - iv.f1) * (t - iv.t1) / (iv.t2 - iv.t1));
+}
+
 // The sun feature of a span: the sum over its hours of FC/CYA x S / 1000 (times the temperature factor with `c`), with FC from `fcAt`. Undefined when
 // an hour in sunlight lacks the input. A forecast holds the water temperature at `heldTemp`.
-export function sunFeature(v: BenchVariant, rows: BenchHour[], t1: number, t2: number, cya: (t: number) => number, fcAt: (t: number) => number, forecastClearness?: number, c?: number, heldTemp?: number): number | undefined {
+export function sunFeature(v: BenchVariant, rows: BenchHour[], t1: number, t2: number, cya: (t: number) => number, fcAt: (t: number) => number, forecastClearness?: ForecastInput, c?: number, heldTemp?: number): number | undefined {
     const term = v.sun || 'pool';
     let s = 0;
     for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t <= t2; i++) {
@@ -547,7 +594,7 @@ export function ridgeSolve(X: number[][], y: number[], ridge: number): number[] 
 
 // The app's flat average as of `asOf`: the consumption since the newest reading at least `windowDays` old (or the oldest there is), per day.
 // `intervals` are every consecutive pair of readings, oldest first; only those that end at or before asOf count.
-export function plainRate(intervals: Interval[], asOf: number, windowDays: number): number | undefined {
+export function plainRate(intervals: Interval[], asOf: number, windowDays: number, netOf?: (iv: Interval) => number): number | undefined {
     const known = intervals.filter(iv => iv.t2 <= asOf);
     if (!known.length) return undefined;
     const last = known[known.length - 1].t2;
@@ -556,7 +603,7 @@ export function plainRate(intervals: Interval[], asOf: number, windowDays: numbe
     const span = (last - known[j].t1) / DAY_MS;
     if (!(span > 0)) return undefined;
     let c = 0;
-    for (let k = j; k < known.length; k++) c += consumption(known[k]);
+    for (let k = j; k < known.length; k++) c += consumption(known[k]) - (netOf ? netOf(known[k]) : 0);
     return c / span;
 }
 
@@ -577,7 +624,7 @@ export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHo
             if (typeof s !== 'number') continue;
             const x = [s, gapDays(iv)];
             if (v.rainWash) x.push(rainBetween(rows, iv.t1, iv.t2));
-            X.push(x); y.push(consumption(iv));
+            X.push(x); y.push(consumption(iv) - (v.dilution ? intervalDilution(iv, rows) : 0));
         }
         nUsed = X.length;
         if (X.length < (v.minIntervals || 5)) { best = undefined; break; }
@@ -587,7 +634,7 @@ export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHo
         if (!best || sse < best.sse - 1e-9) best = { w: w, c: c, n: X.length, sse: sse };
     }
     if (!best) {
-        const r = plainRate(intervals, asOf, 14);
+        const r = plainRate(intervals, asOf, 14, v.dilution ? (iv => intervalDilution(iv, rows)) : undefined);
         return typeof r === 'number' ? { a: 0, b: r, n: nUsed, fallback: 'plain14', plainRate: r } : undefined;
     }
     const fit: Fit = { a: best.w[0], b: best.w[1], n: best.n };
@@ -597,18 +644,37 @@ export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHo
 }
 
 // The loss a variant projects from a reading (t1, f1) to t2 with a fit. With fcPath 'model' FC inside the gap follows the projection itself (the
-// generation from the rows less the projected loss, hour by hour); with 'held' it stays at f1. `forecastClearness` makes it a forecast.
-// A forecast (forecastClearness given) holds the water temperature at the last one known at asOf and expects no rain.
-export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaInput, asOf: number, t1: number, f1: number, t2: number, forecastClearness?: number): number | undefined {
+// generation from the rows less the projected loss, hour by hour); with 'held' it stays at f1. `forecastClearness` makes it a forecast: the recent
+// clearness alone (a number: no rain, as before 2026-11-20), or a saved weather forecast (its sun, rain and water balance by hour).
+// A forecast holds the water temperature at the last one known at asOf. With `dilution` the water balance's loss is added (the rows' factors, or the
+// forecast's).
+// `trace` is told the projected FC at the end of each hour (fcPath 'model' only), for the History panel's projection lines.
+export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaInput, asOf: number, t1: number, f1: number, t2: number, forecastClearness?: ForecastInput, trace?: (t: number, fc: number) => void): number | undefined {
     const days = (t2 - t1) / DAY_MS;
-    if (fit.fallback === 'plain14') return fit.b * days;
+    const fcst = forecastOf(forecastClearness);
+    const forecast = !!fcst;
+    const fhour = (i: number): ForecastHour | undefined => fcst && fcst.hours ? fcst.hours.get(rows[i].t) : undefined;
+    const rainOf = (i: number): number => {
+        if (!forecast) return typeof rows[i].rain === 'number' ? rows[i].rain : 0;
+        const h = fhour(i);
+        return h && typeof h.rain === 'number' ? h.rain : 0;
+    };
+    const dilAt = (i: number): number | undefined => {
+        if (!forecast) return rows[i].dil;
+        const h = fhour(i);
+        return h ? h.dil : undefined;
+    };
+    if (fit.fallback === 'plain14') return fit.b * days + (v.dilution ? dilutionLoss(rows, t1, t2, () => f1, dilAt) : 0);
     const cya = cyaFor(v, cyaTests, asOf);
-    const forecast = typeof forecastClearness === 'number';
     const heldTemp = forecast && fit.c ? rowTemp(rows, firstRowAfter(rows, asOf) - 1) : undefined;
-    const b2 = typeof fit.b2 === 'number' && !forecast ? fit.b2 : 0;
+    // the rain wash-in: the rain that happened (nowcast) or the forecast's (a forecast without one expects no rain)
+    const b2 = typeof fit.b2 === 'number' ? fit.b2 : 0;
     if (v.fcPath === 'held') {
         const s = sunFeature(v, rows, t1, t2, cya, () => f1, forecastClearness, fit.c, heldTemp);
-        return typeof s === 'number' ? fit.a * s + fit.b * days + b2 * rainBetween(rows, t1, t2) : undefined;
+        if (typeof s !== 'number') return undefined;
+        let rain = 0;
+        if (b2) for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t <= t2; i++) rain += rainOf(i);
+        return fit.a * s + fit.b * days + b2 * rain + (v.dilution ? dilutionLoss(rows, t1, t2, () => f1, dilAt) : 0);
     }
     let fc = f1, loss = 0, t = t1;
     const term = v.sun || 'pool';
@@ -623,16 +689,46 @@ export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTes
             const sun = sunTerm(r, term, forecastClearness);
             if (typeof sun !== 'number') { if (r.clear > 20) return undefined; }
             else sunLoss = fit.a * (v.fcTerm === 'fc' ? Math.max(fc, 0.5) : Math.max(fc, 0.5) / cya(r.t)) * sun / 1000 * tempFactor(rows, i, fit.c, heldTemp);
-            if (b2 && typeof r.rain === 'number') sunLoss += b2 * r.rain;
+            if (b2) sunLoss += b2 * rainOf(i);
         }
-        const step = sunLoss + fit.b * part / 24;
+        let step = sunLoss + fit.b * part / 24;
+        if (v.dilution) { const d = dilAt(i); if (typeof d === 'number') step += Math.max(0, fc) * (1 - d) * part; }
         loss += step;
         fc = Math.max(0, fc + r.gen * part - step);
+        if (trace) trace(end, fc);
         t = end;
     }
     // a gap that runs past the rows: the steady part only
     if (t < t2) loss += fit.b * (t2 - t) / DAY_MS;
     return loss;
+}
+
+// The rows carried on past their end to `until`, hour by hour, for a projection ahead: each new hour repeats the chlorine made and the sun geometry
+// of the same hour a day earlier (the SWG keeps its pattern until the next check), with no weather of its own (a forecast supplies it).
+export function extendRows(rows: BenchHour[], until: number): BenchHour[] {
+    if (!rows.length) return rows;
+    const out = rows.slice();
+    for (let t = rows[rows.length - 1].t + HOUR_MS; t <= until; t += HOUR_MS) {
+        const prev = out[out.length - 24] || out[out.length - 1];
+        out.push({ t: t, gen: prev.gen, genFrom: prev.genFrom, frac: prev.frac, clear: prev.clear, temp: prev.temp });
+    }
+    return out;
+}
+// A plain variant's FC hour by hour from (t1, f1) to t2: the rows' chlorine less the rate, and the water balance with `dilution`. `dilAt` is a
+// row's factor (a forecast's for hours ahead).
+export function plainPath(v: BenchVariant, rate: number, rows: BenchHour[], t1: number, f1: number, t2: number, dilAt: (i: number) => number | undefined, trace: (t: number, fc: number) => void): number {
+    let fc = f1;
+    for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t - HOUR_MS < t2; i++) {
+        const r = rows[i];
+        const end = Math.min(r.t, t2);
+        const part = (end - Math.max(r.t - HOUR_MS, t1)) / HOUR_MS;
+        if (!(part > 0)) continue;
+        let step = rate * part / 24;
+        if (v.dilution) { const d = dilAt(i); if (typeof d === 'number') step += Math.max(0, fc) * (1 - d) * part; }
+        fc = Math.max(0, fc + r.gen * part - step);
+        trace(end, fc);
+    }
+    return fc;
 }
 
 // ---------------------------------------------------------------- replay (as the 2026-11-13 offline run did it)
@@ -648,8 +744,8 @@ export function replayVariant(v: BenchVariant, intervals: Interval[], rows: Benc
         if (iv.t1 < from || iv.t1 >= to || iv.t2 - iv.t1 <= minGap || iv.t1 <= firstFitFrom) continue;
         let proj: number | undefined, fit: Fit | undefined;
         if (v.kind === 'plain') {
-            const r = plainRate(intervals, iv.t1, v.windowDays || 14);
-            if (typeof r === 'number') proj = r * gapDays(iv);
+            const r = plainRate(intervals, iv.t1, v.windowDays || 14, v.dilution ? (x => intervalDilution(x, rows)) : undefined);
+            if (typeof r === 'number') proj = r * gapDays(iv) + (v.dilution ? dilutionLoss(rows, iv.t1, iv.t2, () => iv.f1) : 0);
         }
         else if (v.kind === 'model') {
             fit = fitVariant(v, intervals.filter(x => x.t1 >= firstFitFrom), rows, cyaTests, iv.t1);
@@ -740,7 +836,7 @@ export function scoreFlags(r: { days: number; proj: number; f1: number; gen?: nu
 }
 
 // The fields of a bench score row that syncLiveRows reads and writes (BenchScoreRow in AutoSwgBench.ts).
-export interface LiveSyncRow { t: number; mode: string; replay?: boolean; test: number; proj: number; miss: number; days: number; f1: number; gen?: number; cov?: number; flags?: ScoreFlag[]; liveWas?: number; }
+export interface LiveSyncRow { t: number; mode: string; replay?: boolean; test: number; proj: number; miss: number; days: number; f1: number; gen?: number; cov?: number; flags?: ScoreFlag[]; liveWas?: number; adj?: number; }
 // Brings the live rows in line with SWG Assist's current projection at each test (the 'reading' points of AutoSwgProjection.ts). A live row mirrors
 // that projection, and SWG Assist works its points out again when its count changes (the cycle count from the power log, 2026-11-16), so unlike the
 // model rows, which keep the projection they made with the fit frozen then, a live row is updated: proj, miss and flags, and liveWas keeps the first
@@ -751,8 +847,11 @@ export function syncLiveRows(rows: LiveSyncRow[], points: { t: number; fc: numbe
     let n = 0;
     for (const r of rows) {
         if (!r || r.mode !== 'live' || r.replay) continue;
-        const fc = at.get(r.t);
-        if (typeof fc !== 'number' || Math.abs(fc - r.proj) < 0.005) continue;
+        const p = at.get(r.t);
+        if (typeof p !== 'number') continue;
+        // a variant with dilution keeps what the water balance adds (adj)
+        const fc = Math.round((p + (typeof r.adj === 'number' ? r.adj : 0)) * 100) / 100;
+        if (Math.abs(fc - r.proj) < 0.005) continue;
         if (typeof r.liveWas !== 'number') r.liveWas = r.proj;
         r.proj = fc;
         r.miss = Math.round((r.test - fc) * 100) / 100;

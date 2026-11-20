@@ -49,8 +49,10 @@ import {
     BenchGeometry, BenchHour, BenchPumpHour, BenchSources, BenchTempHour, BenchVariant, BenchWeatherHour, buildHourlyInputs, chlorinePpm,
     CyaSource, CyaTest, cyaFor, DAY_MS, DEFAULT_VARIANTS, FcReading, Fit, fitVariant, gapDays, generationBetween, HOUR_MS, inputCoverage, InputStarts, inputStarts,
     Interval, intervalsFrom, normalizeGeometry, normalizeScoring, pairedDifference, plainRate, poundsToPpm, projectLoss, recentClearness, ScoreFlag, scoreFlags,
-    ScoringSettings, scoreSummary, spanCoverage, syncLiveRows
+    ScoringSettings, scoreSummary, spanCoverage, syncLiveRows, dilutionLoss, intervalDilution, extendRows, plainPath
 } from './AutoSwgBenchModel';
+import { balanceFactor, meanDepthInches, normalizeWaterSettings, WaterBalance, waterLog, WaterSettings } from './AutoSwgBenchWater';
+import { benchForecastLog, forecastFor, waterTempBefore } from './AutoSwgBenchForecast';
 import {
     CyaAddition, CyaAdvice, cyaAdvice, CyaPath, cyaPath, CyaSettings, defaultRainK, DriftCheck, modelDrift, normalizeCyaSettings, pathSamples, pathVsTests, polygonArea,
     tfpSwgFc, WaterTemp, Dilution
@@ -97,7 +99,7 @@ function fromSource<T>(name: string, fn: ((a: number, b: number) => T[]) | undef
 
 // ---------------------------------------------------------------- settings and files
 
-export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; scoring: ScoringSettings; chem: ChemSettings; }
+export interface BenchSettings { enabled: boolean; geometry: BenchGeometry; variants: BenchVariant[]; cya: CyaSettings; scoring: ScoringSettings; chem: ChemSettings; water: WaterSettings; }
 export interface BenchFitRow { t: number; id: string; v: number; fit?: Fit; cya?: number; clearness?: number; replay?: boolean; }
 export type BenchMode = 'nowcast' | 'forecast' | 'live';
 // sunShare: the share of the projected loss that is the sun term (models). revised*: the revised hindcast after a later CYA test (see the top).
@@ -109,6 +111,8 @@ export interface BenchScoreRow {
     sunShare?: number; revisedProj?: number; revisedMiss?: number; revisedAt?: number;
     gen?: number; cov?: number; flags?: ScoreFlag[];
     liveWas?: number;   // a live row: the projection it was first scored with, when SWG Assist's projection at that test was worked out again since
+    adj?: number;       // a live row of a variant with dilution: what the water balance adds to SWG Assist's projection (kept when the point is worked out again)
+    wx?: 'saved';       // a forecast row that used the weather forecast saved at the check (AutoSwgBenchForecast.ts); without it it knew only the clearness
 }
 
 export interface BenchCyaTestRow {
@@ -126,6 +130,9 @@ const SETTINGS_FILE = 'autoSwgBench.json', FITS_FILE = 'autoSwgBenchFits.jsonl',
 // History panel (AutoSwgBenchHistorySource.ts on the wiring branch)
 const CHEM_SCORES_FILE = 'autoSwgBenchChemScores.jsonl', CHEM_RUNS_FILE = 'autoSwgBenchChem.jsonl';
 const CHEM_AHEAD_DAYS = 7, CHEM_STEP_MS = 6 * HOUR_MS;
+// Each check's FC projection by every variant that uses the weather (the models, and any with the water balance), for the History panel: from the
+// last FC reading to the check on the weather that happened, then FC_AHEAD_DAYS ahead on the saved forecast. Kept FC_KEEP_DAYS days.
+const FC_RUNS_FILE = 'autoSwgBenchFc.jsonl', FC_AHEAD_DAYS = 3, FC_KEEP_DAYS = 120, FC_MAX_READING_AGE_DAYS = 10;
 
 function sameDefinition(a: BenchVariant, b: BenchVariant): boolean {
     const strip = (v: BenchVariant) => JSON.stringify(Object.assign({}, v, { version: 0, label: undefined, retired: undefined }));
@@ -151,6 +158,7 @@ export function normalizeVariant(raw: any): BenchVariant | undefined {
         if (raw.temp === true) v.temp = true;
         if (raw.rainWash === true) v.rainWash = true;
     }
+    if (raw.dilution === true) v.dilution = true;
     return v;
 }
 
@@ -197,7 +205,7 @@ class AutoSwgBench {
         const variants: BenchVariant[] = raw && Array.isArray(raw.variants) ? raw.variants.map(normalizeVariant).filter((v: any) => !!v) : DEFAULT_VARIANTS.map(v => Object.assign({}, v));
         // a default variant added in a later release joins a stored list (the stored ones are kept as they are)
         for (const d of DEFAULT_VARIANTS) if (!variants.some(v => v.id === d.id)) variants.push(Object.assign({}, d));
-        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya), scoring: normalizeScoring(raw && raw.scoring), chem: normalizeChemSettings(raw && raw.chem) };
+        this.settings = { enabled: !raw || raw.enabled !== false, geometry: normalizeGeometry(raw && raw.geometry), variants: variants, cya: normalizeCyaSettings(raw && raw.cya), scoring: normalizeScoring(raw && raw.scoring), chem: normalizeChemSettings(raw && raw.chem), water: normalizeWaterSettings(raw && raw.water) };
         return this.settings;
     }
     private writeSettings(s: BenchSettings) {
@@ -211,7 +219,7 @@ class AutoSwgBench {
     // in the list is kept; `retired` hides it from the checks.
     public putSettings(body: any): BenchSettings {
         const cur = this.getSettings();
-        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya, scoring: cur.scoring, chem: cur.chem };
+        const next: BenchSettings = { enabled: cur.enabled, geometry: cur.geometry, variants: cur.variants.map(v => Object.assign({}, v)), cya: cur.cya, scoring: cur.scoring, chem: cur.chem, water: cur.water };
         if (body && typeof body.enabled === 'boolean') next.enabled = body.enabled;
         // the scoring settings, as { scoring: {...} } or as maxGapDays, minCoverage, minGapN at the top
         if (body && typeof body === 'object') {
@@ -221,6 +229,7 @@ class AutoSwgBench {
         }
         if (body && body.cya && typeof body.cya === 'object') next.cya = normalizeCyaSettings(Object.assign({}, cur.cya, body.cya));
         if (body && body.chem && typeof body.chem === 'object') next.chem = normalizeChemSettings(Object.assign({}, cur.chem, body.chem));
+        if (body && body.water && typeof body.water === 'object') next.water = normalizeWaterSettings(Object.assign({}, cur.water, body.water));
         if (body && body.geometry) next.geometry = normalizeGeometry(Object.assign({}, cur.geometry, body.geometry));
         if (body && Array.isArray(body.variants)) {
             for (const raw of body.variants) {
@@ -287,6 +296,9 @@ class AutoSwgBench {
         const c = this.cyaInputs(gallons);
         const cya = c.cya, cyaAdds = c.cyaAdds, saltAdds = c.saltAdds, cyaPathAt = c.pathAt;
         const settings = this.getSettings();
+        // each hour's concentration factor from the water balance as known now (rain, evaporation, the water log), for the variants with dilution
+        const bal = cyaPathAt(Math.min(to, Date.now())).water;
+        if (bal) for (const r of rows) r.dil = balanceFactor(bal, r.t - HOUR_MS, r.t);
         // the intervals the model fits leave out: a long gap or thin inputs (see scoreFlags)
         const starts = inputStarts(rows), sc = settings.scoring;
         const skipFit = (iv: Interval) => gapDays(iv) > sc.maxGapDays || spanCoverage(rows, iv.t1, iv.t2, starts) < sc.minCoverage;
@@ -320,7 +332,8 @@ class AutoSwgBench {
             weather: fromSource('weather', weatherSource, from - DAY_MS, to),
             waterTemp: fromSource('water temperature', waterTempSource, from, to),
             pump: fromSource('pump', pumpSource, from, to),
-            salt: saltHistory.daily(days).map(d => ({ t: new Date(d.date + 'T12:00:00').getTime(), ppm: d.median }))
+            // each day's median at the middle of its 24 hours (daily() dates are the ISO end of each block)
+            salt: saltHistory.daily(days).map(d => ({ t: new Date(d.date).getTime() - DAY_MS / 2, ppm: d.median })).filter(d => isFinite(d.t))
         };
     }
 
@@ -350,13 +363,21 @@ class AutoSwgBench {
         const waterTemps = poolMathWaterTemps();
         const settings = this.getSettings();
         const defaultK = defaultRainK(polygonArea(settings.geometry.outline), gallons);
+        const water = this.waterOptions(gallons);
         const memo = new Map<number, CyaPath>();
         const pathAt = (asOf: number): CyaPath => {
             let p = memo.get(asOf);
-            if (!p) { p = cyaPath(cya, cyaAdds, long.rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK, waterTemps: waterTemps }); memo.set(asOf, p); }
+            if (!p) { p = cyaPath(cya, cyaAdds, long.rows, settings.cya, asOf, { saltAdds: saltAdds, defaultK: defaultK, waterTemps: waterTemps, water: water }); memo.set(asOf, p); }
             return p;
         };
         return { cya: cya, cyaAdds: cyaAdds, saltAdds: saltAdds, waterTemps: waterTemps, pathAt: pathAt, rows: long.rows };
+    }
+    // The water balance's inputs: the pool's mean depth (gallons over the outline's area), the settings, the local water log, the deck as the spill level.
+    private waterOptions(gallons: number) {
+        const s = this.getSettings();
+        const depth = meanDepthInches(gallons, polygonArea(s.geometry.outline));
+        if (!(depth > 0)) return undefined;
+        return { depth: depth, settings: s.water, events: waterLog.list(), spillInches: s.geometry.deckToWaterIn };
     }
     private maxFitDays(): number { return Math.max(30, ...this.getSettings().variants.map(v => Math.max(v.fitDays || 0, v.windowDays || 0) + 2)); }
 
@@ -368,7 +389,7 @@ class AutoSwgBench {
         const row: BenchFitRow = { t: t, id: v.id, v: v.version };
         if (replay) row.replay = true;
         if (v.kind === 'plain') {
-            const r = plainRate(inp.intervals, t, v.windowDays || 14);
+            const r = plainRate(inp.intervals, t, v.windowDays || 14, v.dilution ? (iv => intervalDilution(iv, inp.rows)) : undefined);
             if (typeof r !== 'number') return undefined;
             row.fit = { a: 0, b: r, n: 0, plainRate: r };
             return row;
@@ -392,10 +413,14 @@ class AutoSwgBench {
             const gen = generationBetween(inp.rows, start.t, test.t);
             const modes: ('nowcast' | 'forecast')[] = v.kind === 'model' ? ['nowcast', 'forecast'] : ['nowcast'];
             for (const mode of modes) {
-                let loss: number | undefined;
-                if (v.kind === 'plain' || (fit.fit && fit.fit.fallback)) loss = fit.fit.b * (test.t - start.t) / DAY_MS;
-                else if (mode === 'forecast' && typeof fit.clearness !== 'number') loss = undefined;
-                else loss = projectLoss(v, fit.fit, inp.rows, inp.cyaSrc, fit.t, start.t, start.fc, test.t, mode === 'forecast' ? fit.clearness : undefined);
+                let loss: number | undefined, saved = false;
+                if (v.kind === 'plain') loss = fit.fit.b * (test.t - start.t) / DAY_MS + (v.dilution ? dilutionLoss(inp.rows, start.t, test.t, () => start.fc) : 0);
+                else if (mode === 'forecast') {
+                    const f = this.forecastAt(inp, fit);
+                    saved = !!(f && f.hours);
+                    loss = f ? projectLoss(v, fit.fit, inp.rows, inp.cyaSrc, fit.t, start.t, start.fc, test.t, f) : undefined;
+                }
+                else loss = projectLoss(v, fit.fit, inp.rows, inp.cyaSrc, fit.t, start.t, start.fc, test.t);
                 if (typeof loss !== 'number' || !isFinite(loss)) continue;
                 const proj = start.fc + gen - loss;
                 const days = (test.t - start.t) / DAY_MS;
@@ -405,6 +430,7 @@ class AutoSwgBench {
                 };
                 // the sun's share of the projected loss: what is left after the steady demand (and the rain wash-in)
                 if (v.kind === 'model' && !fit.fit.fallback && loss > 0) row.sunShare = round(Math.max(0, Math.min(1, 1 - fit.fit.b * days / loss)));
+                if (saved) row.wx = 'saved';
                 this.markRow(row, inp, gen);
                 if (replay) row.replay = true;
                 out.push(row);
@@ -413,6 +439,19 @@ class AutoSwgBench {
         return out;
     }
 
+    // What a forecast knew at a frozen fit: the weather forecast saved at that check (sun, rain and the water balance by hour) when there is one,
+    // and the recent clearness. Undefined when it knows neither.
+    private forecastAt(inp: ReturnType<AutoSwgBench['gatherInputs']>, fit: BenchFitRow) {
+        const w = this.waterOptions(inp.gallons);
+        return forecastFor(benchForecastLog.at(fit.t), fit.clearness, w ? w.depth : 0, waterTempBefore(inp.rows, fit.t), this.getSettings().water.evapScale);
+    }
+    // A live variant with dilution: what the water balance adds to SWG Assist's projection over a gap. SWG Assist's burn average already holds the
+    // dilution of its window, so only the gap's dilution beyond that average counts (the 14-day average less its net of dilution).
+    private liveDilutionAdj(inp: ReturnType<AutoSwgBench['gatherInputs']>, t1: number, f1: number, t2: number): number {
+        const gross = plainRate(inp.intervals, t1, 14), net = plainRate(inp.intervals, t1, 14, iv => intervalDilution(iv, inp.rows));
+        const avg = typeof gross === 'number' && typeof net === 'number' ? gross - net : 0;
+        return -(dilutionLoss(inp.rows, t1, t2, () => f1) - avg * (t2 - t1) / DAY_MS);
+    }
     private liveScores(v: BenchVariant, inp: ReturnType<AutoSwgBench['gatherInputs']>, have: Set<string>, since: number): BenchScoreRow[] {
         const out: BenchScoreRow[] = [];
         const points = projectionLog.read(Math.ceil((Date.now() - since) / DAY_MS) + 1).filter(p => p.kind === 'reading');
@@ -422,7 +461,10 @@ class AutoSwgBench {
             const p = points.find(x => x.t === test.t);
             if (!p) continue;
             const start = inp.readings[k - 1];
-            const row: BenchScoreRow = { t: test.t, id: v.id, v: v.version, horizon: 'next', mode: 'live', t1: start.t, f1: start.fc, test: test.fc, proj: p.fc, miss: Math.round((test.fc - p.fc) * 100) / 100, days: Math.round(gapDays({ t1: start.t, t2: test.t }) * 100) / 100 };
+            const adj = v.dilution ? round(this.liveDilutionAdj(inp, start.t, start.fc, test.t)) : 0;
+            const proj = round(p.fc + adj);
+            const row: BenchScoreRow = { t: test.t, id: v.id, v: v.version, horizon: 'next', mode: 'live', t1: start.t, f1: start.fc, test: test.fc, proj: proj, miss: Math.round((test.fc - proj) * 100) / 100, days: Math.round(gapDays({ t1: start.t, t2: test.t }) * 100) / 100 };
+            if (v.dilution) row.adj = adj;
             this.markRow(row, inp, generationBetween(inp.rows, start.t, test.t));
             out.push(row);
         }
@@ -453,6 +495,9 @@ class AutoSwgBench {
         if (!s.enabled || this.busy) return;
         this.busy = true;
         try {
+            // the weather forecast as known at this check, for the forecast scores of the tests to come and the projections ahead (never throws)
+            const loc: any = sys.general && sys.general.location;
+            await benchForecastLog.refresh(loc && loc.latitude, loc && loc.longitude, now);
             const inp = this.gatherInputs(now - (this.maxFitDays() + 20) * DAY_MS, now);
             const rows: BenchFitRow[] = [];
             for (const v of s.variants) {
@@ -477,11 +522,50 @@ class AutoSwgBench {
             try { this.syncLiveScores(now); }
             catch (err) { logger.warn(`SWG Assist bench: updating the live scores failed: ${err && err.message}`); }
             this.chemCheck(now);
+            try { this.fcProjections(inp, rows, now); }
+            catch (err) { logger.warn(`SWG Assist bench: the FC projections failed: ${err && err.message}`); }
             this.lastCheck = now;
             this.lastError = undefined;
         }
         catch (err) { this.lastError = err && err.message; logger.warn(`SWG Assist bench: the check failed: ${err && err.message}`); }
         finally { this.busy = false; }
+    }
+    // The variants whose projections are logged for the History panel: the models (they use the sun) and any with the water balance.
+    public fcVariants(): BenchVariant[] { return this.getSettings().variants.filter(v => !v.retired && v.kind !== 'live' && (v.kind === 'model' || v.dilution)); }
+    // Each such variant's FC from the last reading through the check and FC_AHEAD_DAYS ahead, with the fits just frozen, appended to FC_RUNS_FILE.
+    private fcTrimmedAt = 0;
+    private fcProjections(inp: ReturnType<AutoSwgBench['gatherInputs']>, fits: BenchFitRow[], now: number) {
+        const last = inp.readings.filter(r => r.t <= now).pop();
+        if (!last || now - last.t > FC_MAX_READING_AGE_DAYS * DAY_MS) return;
+        const ahead = now + FC_AHEAD_DAYS * DAY_MS;
+        const rows = extendRows(inp.rows, Math.floor(ahead / HOUR_MS) * HOUR_MS);
+        const out: any[] = [];
+        for (const v of this.fcVariants()) {
+            const fr = fits.find(f => f.id === v.id && f.v === v.version);
+            if (!fr || !fr.fit) continue;
+            const pts: [number, number][] = [[last.t, last.fc]];
+            const trace = (t: number, fc: number) => { pts.push([t, Math.round(fc * 100) / 100]); };
+            const fcst = this.forecastAt(inp, fr);
+            const fhours = fcst && fcst.hours;
+            const dilAhead = (i: number) => { const h = fhours ? fhours.get(rows[i].t) : undefined; return h ? h.dil : undefined; };
+            if (v.kind === 'plain' || fr.fit.fallback) {
+                const rate = fr.fit.b;
+                const fcNow = plainPath(v, rate, rows, last.t, last.fc, now, i => rows[i].dil, trace);
+                plainPath(v, rate, rows, now, fcNow, ahead, dilAhead, trace);
+            }
+            else {
+                if (typeof projectLoss(v, fr.fit, rows, inp.cyaSrc, now, last.t, last.fc, now, undefined, trace) !== 'number') continue;
+                const fcNow = pts[pts.length - 1][1];
+                if (fcst) projectLoss(v, fr.fit, rows, inp.cyaSrc, now, now, fcNow, ahead, fcst, trace);
+            }
+            out.push({ kind: 'run', run: now, id: v.id, v: v.version, from: last.t, wx: fhours ? 'saved' : 'clearness', points: pts });
+        }
+        this.appendRows(FC_RUNS_FILE, out);
+        if (now - this.fcTrimmedAt > 7 * DAY_MS) { this.fcTrimmedAt = now; this.rewriteRows(FC_RUNS_FILE, r => r.run >= now - FC_KEEP_DAYS * DAY_MS); }
+    }
+    // The logged FC projection runs of a variant id (any version) that reach into [from, to].
+    public fcRuns(id: string, from: number, to: number): any[] {
+        return this.readRows<any>(FC_RUNS_FILE).filter(r => r.kind === 'run' && r.id === id && r.run >= from - (FC_AHEAD_DAYS + FC_MAX_READING_AGE_DAYS) * DAY_MS && r.run <= to).sort((a, b) => a.run - b.run);
     }
     private mainVariant(): BenchVariant | undefined {
         const vs = this.getSettings().variants.filter(v => !v.retired && v.kind === 'model');
@@ -713,6 +797,62 @@ class AutoSwgBench {
 
     // The CYA path over the last `days` days as known now (every 6 hours, with `samples`), the tests and how the path took each, the additions, the
     // rain k, the advice, the recorded tests and the last drift checks.
+    // The water balance as known now: the level (inches against the start of the rows, held at the deck), the evaporation and rain by day, the
+    // concentration factor, the local water log, and the level ahead from the newest saved weather forecast (with the hours it would spill).
+    public waterReport(days: number = 30): any {
+        const now = Date.now();
+        const d = Math.max(3, Math.min(400, Math.floor(days) || 30));
+        const cfg: any = sys.autoSwg;
+        const gallons = cfg.gallons > 0 ? cfg.gallons : 0;
+        const w = this.waterOptions(gallons);
+        const inp = this.cyaInputs(gallons, now);
+        const bal: WaterBalance | undefined = inp.pathAt(now).water;
+        const iso = (t: number) => new Date(t).toISOString();
+        const base: any = { settings: this.getSettings().water, depth: w ? round(w.depth, 1) : undefined, spillInches: w ? w.spillInches : undefined, log: waterLog.list().map(e => Object.assign({}, e, { t: iso(e.t) })), forecast: benchForecastLog.status() };
+        if (!bal || !bal.t.length) return Object.assign(base, { note: 'No water balance: the pool needs gallons (SWG Assist settings) and an outline (bench geometry).' });
+        const n = bal.t.length, from = now - d * DAY_MS;
+        const byDay = new Map<string, { rain: number; evap: number; spilled: number }>();
+        const samples: [string, number][] = [];
+        for (let i = 0; i < n; i++) {
+            const t = bal.t[i];
+            if (t <= from) continue;
+            const day = localDate(t - 1);
+            const x = byDay.get(day) || { rain: 0, evap: 0, spilled: 0 };
+            const r = inp.rows[i];
+            x.rain += r && typeof r.rain === 'number' ? r.rain : 0; x.evap += bal.evap[i]; x.spilled += bal.spilled[i];
+            byDay.set(day, x);
+            if (t % (6 * HOUR_MS) === 0) samples.push([iso(t), round(bal.level[i])]);
+        }
+        const levelNow = bal.level[n - 1];
+        // ahead: the newest saved forecast from the last row on
+        const snap = benchForecastLog.at(now) || benchForecastLog.read().slice(-1)[0];
+        const ahead: { t: string; level: number; rain: number; evap: number }[] = [];
+        let spillAt: string | undefined, maxLevel = levelNow;
+        if (snap && w) {
+            const fc = forecastFor(snap, undefined, w.depth, waterTempBefore(inp.rows, now), w.settings.evapScale);
+            let level = levelNow, rain = 0, evap = 0;
+            for (const [t, , r] of snap.hours) {
+                if (t <= bal.t[n - 1]) continue;
+                const h = fc && fc.hours ? fc.hours.get(t) : undefined;
+                const rr = typeof r === 'number' ? Math.max(0, r) : 0;
+                // the hour's evaporation back out of its factor: depth / (depth + rain - evap) = f
+                const e = h && typeof h.dil === 'number' && h.dil > 0 ? Math.max(0, w.depth + rr - w.depth / h.dil) : 0;
+                level += rr - e; rain += rr; evap += e;
+                if (typeof w.spillInches === 'number' && level > w.spillInches) { if (!spillAt) spillAt = iso(t); level = w.spillInches; }
+                maxLevel = Math.max(maxLevel, level);
+                if (t % (6 * HOUR_MS) === 0) ahead.push({ t: iso(t), level: round(level), rain: round(rain), evap: round(evap) });
+            }
+        }
+        return Object.assign(base, {
+            levelNow: round(levelNow), levelNote: 'inches against the level at the start of the rows; logged water removed lowers it, unlogged removal leaves it high',
+            factor: { days7: round(balanceFactor(bal, now - 7 * DAY_MS, now), 4), days30: round(balanceFactor(bal, now - 30 * DAY_MS, now), 4) },
+            days: Array.from(byDay.entries()).map(([day, x]) => ({ date: day, rain: round(x.rain), evap: round(x.evap), spilled: round(x.spilled) })),
+            level: samples, ahead: ahead, aheadMax: round(maxLevel), spillAhead: spillAt, forecastAt: snap ? iso(snap.t) : undefined
+        });
+    }
+    public addWater(body: any): any { const e = waterLog.add(body); this.longCache = undefined; return e; }
+    public removeWater(id: string): boolean { const ok = waterLog.remove(id); this.longCache = undefined; return ok; }
+
     public cyaReport(days: number, samples: boolean = true): any {
         const now = Date.now();
         const d = Math.max(7, Math.min(400, Math.floor(days) || 120));

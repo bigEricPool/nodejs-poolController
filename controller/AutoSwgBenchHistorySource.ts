@@ -25,6 +25,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   swgBench:phBand         the levels acid is recommended and needed at                    band                       view pH
 //   swgBench:csiBand        TFP's CSI target for SWG pools, -0.3 to 0.0                     band                       view CSI
 //   swgBench:acidAdvice     each run that advised acid, with its dose                       markers                    view pH
+//   swgBench:fc:<variant>   each check's FC projection by a variant that uses the weather   line, future, seg = run    view FC
+//                           (from the last reading, then 3 days ahead on the saved forecast), beside SWG Assist's Projected FC
 // The registry is on the branches with the History panel; this file only describes the shape it expects, and registerBenchHistorySource does
 // nothing where there is no registry.
 
@@ -65,11 +67,21 @@ export function advicePointsOf(runs: any[], from: number, to: number): BenchHist
     });
 }
 
+// The logged FC projection runs as points within [from, to], each run its own line.
+export function fcRunPoints(runs: any[], from: number, to: number): BenchHistoryPoint[] {
+    const out: BenchHistoryPoint[] = [];
+    for (const r of runs || []) {
+        if (!r || !Array.isArray(r.points)) continue;
+        for (const p of r.points) if (Array.isArray(p) && p[0] >= from && p[0] <= to && typeof p[1] === 'number') out.push({ t: p[0], v: p[1], seg: r.run });
+    }
+    return out;
+}
+
 export const benchHistorySource = {
     id: 'swgBench', name: 'SWG Assist Model Bench',
     kinds(): BenchHistoryKind[] {
         if (!sys.autoSwg.shareCode || !bench().getSettings().enabled) return [];
-        return [
+        const fixed: BenchHistoryKind[] = [
             { kind: 'phProjection', name: 'Projected pH', unit: '', group: GROUP, style: 'line', future: true, view: 'pH' },
             { kind: 'phBand', name: 'Acid Recommended to Needed pH', unit: '', group: GROUP, style: 'band', view: 'pH' },
             { kind: 'acidAdvice', name: 'Acid Advice', unit: '', group: GROUP, style: 'markers', view: 'pH' },
@@ -78,6 +90,7 @@ export const benchHistorySource = {
             { kind: 'taPath', name: 'TA Between Tests', unit: 'ppm', group: GROUP, style: 'line', future: true, view: 'TA' },
             { kind: 'cyaPath', name: 'CYA Path', unit: 'ppm', group: GROUP, style: 'line', future: true, view: 'CYA' }
         ];
+        return fixed.concat(bench().fcVariants().map((v: any): BenchHistoryKind => ({ kind: `fc:${v.id}`, name: `Bench FC: ${v.label || v.id}`, unit: "ppm", group: "fc", style: "line", future: true, view: "FC" })));
     },
     series(kinds: string[], from: number, to: number): { [kind: string]: BenchHistoryPoint[] } {
         const out: { [kind: string]: BenchHistoryPoint[] } = {};
@@ -91,6 +104,10 @@ export const benchHistorySource = {
         const s = bench().getSettings().chem;
         if (want('phBand')) out.phBand = [{ t: from, lo: s.phRecommended, hi: s.phNeeded }, { t: to, lo: s.phRecommended, hi: s.phNeeded }];
         if (want('csiBand')) out.csiBand = [{ t: from, lo: TFP_SWG_CSI.lo, hi: TFP_SWG_CSI.hi }, { t: to, lo: TFP_SWG_CSI.lo, hi: TFP_SWG_CSI.hi }];
+        for (const k of kinds) {
+            if (k.indexOf('fc:') !== 0) continue;
+            out[k] = fcRunPoints(bench().fcRuns(k.slice(3), from, to), from, to);
+        }
         if (want('cyaPath')) {
             const now = Date.now();
             const cfg: any = sys.autoSwg;

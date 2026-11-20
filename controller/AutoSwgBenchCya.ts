@@ -25,13 +25,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //      the middle of TFP's 5-10, at 85 F), straight between, by the hour's water temperature (the water temperature history, else the last PoolMath
 //      water temperature, else 80 F). Test pairs never feed back into the rate.
 //   3. Dilution, from a source that is a setting:
-//        rain   each inch of rain on the pool replaces a share k of the water, k from the pool's area and gallons (physical, not fitted). A storm of
+//        rain   the water balance (AutoSwgBenchWater.ts) when the pool's depth is known: rain and logged added water dilute, evaporation
+//               concentrates, logged removed water and spills change only the level. Without it: each inch of rain replaces a share k of the
+//               water, k from the pool's area and gallons (physical, not fitted). Either way a storm of
 //               1.5 in or more can bring in runoff: when the salt after it (days 3-7, net of salt added) fell more than one meter step (100 ppm) beyond
 //               what k explains, that storm's inches count up to runoffMax (2) times. Nothing else changes k.
 //        salt   the chlorinator's salt reading, with the salt added since taken off: the share of the water still there
 //        both   salt anchors the level at each change of the reading, rain between those changes
 //        none   no dilution
 //   4. Stabilizer dissolves slowly: each logged addition enters straight over rampDays (5) days from its time.
+//      A test taken before it is all in ends the ramp there: the test shows what has entered, and the amount is scaled to land on it.
 //   5. Each new test is the level from its time on. The stretch since the test before is redrawn to land on it: when stabilizer was added in it, the
 //      additions are scaled (the logged amount is corrected by the test); what is left is a correction growing from nothing at the earlier test to all of it
 //      at the new one.
@@ -41,6 +44,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Past asOf the path goes on with the rain the rows hold (the weather that happened, as a nowcast uses it); additions after asOf are not known.
 
 import { BenchHour, BenchVariant, CyaTest, DAY_MS, Fit, gapDays, HOUR_MS, Interval, consumption, sunFeature } from './AutoSwgBenchModel';
+import { balanceFactor, WaterBalance, waterBalance, WaterEvent, WaterSettings } from './AutoSwgBenchWater';
 
 export interface CyaAddition { t: number; ppm: number; }
 export interface WaterTemp { t: number; f: number; }      // a water temperature in F (PoolMath's tests)
@@ -134,6 +138,7 @@ export class Dilution {
     private saltSince: number[] = [];      // the time the salt reading last changed, at each row
     private adds: CyaAddition[];
     private rows: BenchHour[];
+    private balance: WaterBalance | undefined;
     constructor(rows: BenchHour[], saltAdds: CyaAddition[] = []) {
         let c = 0, prev: number | undefined, since = -Infinity;
         this.rows = rows;
@@ -210,10 +215,23 @@ export class Dilution {
         }
         return events;
     }
-    // The share of the water at t1 still in the pool at t2.
+    // A row's rain with its storm's runoff multiplier (inches).
+    public effectiveRainOfRow(i: number): number { return i < 0 || i >= this.cumEff.length ? 0 : this.cumEff[i] - (i > 0 ? this.cumEff[i - 1] : 0); }
+    // Works out the water balance on the rows (after setRunoff, so a storm's runoff counts); from then on the rain dilution is the balance's.
+    public setBalance(depth: number, s: WaterSettings, events: WaterEvent[], opts: { waterTempAt?: (t: number) => number | undefined; spillInches?: number } = {}): WaterBalance | undefined {
+        if (!(depth > 0)) return undefined;
+        this.balance = waterBalance(this.rows, depth, s, events, {
+            rainMult: i => { const r = this.rows[i].rain; return typeof r === 'number' && r > 0 ? this.effectiveRainOfRow(i) / r : 1; },
+            waterTempAt: opts.waterTempAt, spillInches: opts.spillInches
+        });
+        return this.balance;
+    }
+    public get water(): WaterBalance | undefined { return this.balance; }
+    // The share of the water at t1 still in the pool at t2 (the concentration factor).
     public factor(t1: number, t2: number, source: CyaDilutionSource, k: number): number {
         if (!(t2 > t1) || source === 'none') return 1;
-        const rain = (a: number, b: number) => b > a ? Math.exp(-k * this.effectiveRain(a, b)) : 1;
+        const bal = this.balance;
+        const rain = (a: number, b: number) => b > a ? (bal ? balanceFactor(bal, a, b) : Math.exp(-k * this.effectiveRain(a, b))) : 1;
         if (source === 'rain') return rain(t1, t2);
         if (source === 'salt') { const f = this.saltFactor(t1, t2); return typeof f === 'number' ? f : rain(t1, t2); }
         // both: the salt up to its last change before t2, rain after it
@@ -238,6 +256,7 @@ export interface CyaPath {
     runoff: RainEvent[];        // the storms whose salt showed runoff (m > 1)
     storms: RainEvent[];        // every storm of RUNOFF_MIN_INCHES or more the salt could judge
     lossNow: number;            // ppm a month at the newest water temperature
+    water?: WaterBalance;       // the water balance the rain dilution used (when the pool's depth is known)
 }
 
 const MIN_CYA = 10;
@@ -246,7 +265,7 @@ const MAX_ADD_SCALE = 3;
 // The CYA path as known at asOf (see the top of the file). `defaultK` is the rain k when the settings do not set one; `waterTemps` are PoolMath's water
 // temperatures, for hours the rows have none.
 export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchHour[], settings: CyaSettings, asOf: number,
-    opts: { saltAdds?: CyaAddition[]; defaultK?: number; waterTemps?: WaterTemp[] } = {}): CyaPath {
+    opts: { saltAdds?: CyaAddition[]; defaultK?: number; waterTemps?: WaterTemp[]; water?: { depth: number; settings: WaterSettings; events: WaterEvent[]; spillInches?: number } } = {}): CyaPath {
     const s = settings;
     const known: CyaTest[] = [];
     for (const c of tests.filter(x => x.t <= asOf && x.ppm > 0).sort((a, b) => a.t - b.t)) {
@@ -257,10 +276,12 @@ export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchH
     const kGeo = typeof opts.defaultK === 'number' ? opts.defaultK : RAIN_K_FALLBACK;
     const k = typeof s.rainK === 'number' ? s.rainK : kGeo;
     const events = s.source === 'rain' || s.source === 'both' ? dil.setRunoff(k, asOf, s.runoffMax) : [];
+    const temps = (opts.waterTemps || []).filter(w => isFinite(w.f)).sort((a, b) => a.t - b.t);
+    const w = opts.water;
+    const water = w ? dil.setBalance(w.depth, w.settings, w.events.filter(e => e.t <= asOf), { waterTempAt: waterTempLookup(temps), spillInches: w.spillInches }) : undefined;
     // per row: the hour's dilution factor, its loss in ppm, and the stabilizer entering in it (index of the addition, ppm)
     const n = rows.length;
     const fac = new Float64Array(n), loss = new Float64Array(n);
-    const temps = (opts.waterTemps || []).filter(w => isFinite(w.f)).sort((a, b) => a.t - b.t);
     let wi = -1, lastTemp: number | undefined;
     for (let i = 0; i < n; i++) {
         const r = rows[i];
@@ -271,10 +292,20 @@ export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchH
         loss[i] = tfpCyaLossPerMonth(t, s) / (30 * 24);
     }
     const rampMs = s.rampDays * DAY_MS;
+    // When an addition is still entering: from its time over rampDays, cut short by the first test after it. A test taken while it is still
+    // dissolving shows how much has entered by then, so the addition is all in at that test (its amount is then scaled to land on the test)
+    // and nothing more of it enters later.
+    const rampEnd = new Map<CyaAddition, number>();
+    for (const x of adds) {
+        const next = known.find(c => c.t > x.t);
+        rampEnd.set(x, next ? Math.min(x.t + rampMs, next.t) : x.t + rampMs);
+    }
     // the ppm of addition `a` entering in the hour that ends at t
     const enter = (a: CyaAddition, t: number) => {
-        const lo = Math.max(t - HOUR_MS, a.t), hi = Math.min(t, a.t + rampMs);
-        return hi > lo ? a.ppm * (hi - lo) / rampMs : 0;
+        const end = rampEnd.get(a), span = end - a.t;
+        if (!(span > 0)) return t - HOUR_MS < a.t && a.t <= t ? a.ppm : 0;
+        const lo = Math.max(t - HOUR_MS, a.t), hi = Math.min(t, end);
+        return hi > lo ? a.ppm * (hi - lo) / span : 0;
     };
     const rowIndex = (t: number): number => {       // the last row at or before t
         let lo = 0, hi = n;
@@ -288,7 +319,7 @@ export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchH
     const stretch = (a: CyaTest, bT: number, bPpm?: number): number => {
         const i0 = rowIndex(a.t) + 1, i1 = isFinite(bT) ? rowIndex(bT) : n - 1;
         const mine = adds.filter(x => x.t > a.t && x.t <= bT);
-        const carry = adds.filter(x => x.t <= a.t && x.t + rampMs > a.t);
+        const carry = adds.filter(x => x.t <= a.t && rampEnd.get(x) > a.t);
         const base = new Float64Array(Math.max(0, i1 - i0 + 1)), add = new Float64Array(base.length);
         let b0 = a.ppm, a0 = 0;
         for (let i = i0; i <= i1; i++) {
@@ -359,7 +390,16 @@ export function cyaPath(tests: CyaTest[], additions: CyaAddition[], rows: BenchH
     const judged = events.filter(e => typeof e.implied === 'number');
     return {
         at: at, rainK: k, defaultK: kGeo, notes: notes, anchor: last, source: s.source,
-        runoff: judged.filter(e => e.m > 1), storms: judged, lossNow: Math.round(tfpCyaLossPerMonth(lastTemp, s) * 100) / 100
+        runoff: judged.filter(e => e.m > 1), storms: judged, lossNow: Math.round(tfpCyaLossPerMonth(lastTemp, s) * 100) / 100, water: water
+    };
+}
+// PoolMath's water temperature in force at t (the newest at or before it, within 3 days).
+export function waterTempLookup(temps: WaterTemp[]): (t: number) => number | undefined {
+    return (t: number) => {
+        let lo = 0, hi = temps.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (temps[m].t <= t) lo = m + 1; else hi = m; }
+        const i = lo - 1;
+        return i >= 0 && t - temps[i].t <= 3 * DAY_MS ? temps[i].f : undefined;
     };
 }
 function round1(x: number): number { return Math.round(x * 10) / 10; }
