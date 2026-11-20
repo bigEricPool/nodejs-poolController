@@ -373,11 +373,11 @@ export function archivedCyaReadings(): { ts: Date; value: number }[] {
         .sort((a, b) => a.ts.getTime() - b.ts.getTime());
 }
 
-// The archived water temperatures logged with a test (in the units PoolMath logged them in), oldest first.
-export function archivedWaterTemps(): { ts: Date; value: number }[] {
+// The archived water temperatures logged with a test (in the units PoolMath logged them in, named by `unit`), oldest first.
+export function archivedWaterTemps(): { ts: Date; value: number; unit: string }[] {
     return readPoolMathArchive().entries
         .filter(e => e.type === 'testlog' && typeof e.waterTemp === 'number')
-        .map(e => ({ ts: new Date(e.ts), value: e.waterTemp }))
+        .map(e => ({ ts: new Date(e.ts), value: e.waterTemp, unit: waterTempUnit(e.waterTempUnits) }))
         .sort((a, b) => a.ts.getTime() - b.ts.getTime());
 }
 

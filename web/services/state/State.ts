@@ -1878,10 +1878,12 @@ export class StateRoute {
         // readings from PoolMath and SWG % entries from the local log plus PoolMath's
         // (a PoolMath SWG entry within an hour of a local one is left out). Each entry
         // is labeled with its source. Falls back to local-only data if PoolMath can't
-        // be read (see poolMathError in the response).
+        // be read (see poolMathError in the response). Water temperatures (TEMP rows) are listed too, in the units PoolMath logged.
+        // Needs only the PoolMath share code (sys.autoSwg.shareCode is sys.poolMath's), so it works with SWG Assist never set up:
+        // there are then no local SWG % or settings rows. The PoolMath History settings open it.
         app.get('/state/autoSwg/history/combined', async (req, res, next) => {
             try {
-                let combined = await buildCombinedHistory({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName || undefined, gallons: sys.autoSwg.gallons }, undefined, toLocalSwgEntries(readAutoSwgHistory()), () => ({ fc: archivedFcReadings(), swg: archivedSwgEvents(), cya: archivedCyaReadings(), chlorine: archivedChlorineAdditions() }), refreshAutoSwgArchiveFromPage, readAutoSwgHistory().filter(r => r.source === 'settings' && Array.isArray(r.changes)).map(r => ({ ts: r.appliedAt, changes: r.changes, via: r.via })));
+                let combined = await buildCombinedHistory({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName || undefined, gallons: sys.autoSwg.gallons }, undefined, toLocalSwgEntries(readAutoSwgHistory()), () => ({ fc: archivedFcReadings(), swg: archivedSwgEvents(), cya: archivedCyaReadings(), chlorine: archivedChlorineAdditions(), temp: archivedWaterTemps() }), refreshAutoSwgArchiveFromPage, readAutoSwgHistory().filter(r => r.source === 'settings' && Array.isArray(r.changes)).map(r => ({ ts: r.appliedAt, changes: r.changes, via: r.via })));
                 return res.status(200).send(combined);
             }
             catch (err) { next(err); }
