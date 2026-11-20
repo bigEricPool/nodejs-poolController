@@ -28,6 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import * as fs from 'fs';
 import * as path from 'path';
 import { logger } from '../logger/Logger';
+import { CHLORINATOR_STALE_SEC } from './ChlorinatorLog';
 
 const SAMPLE_MS = 55 * 60 * 1000;           // at most one sample an hour
 const KEEP_MS = 400 * 86400000;
@@ -75,9 +76,12 @@ class SaltHistory {
             this.lastSave = now;
         } catch (err) { logger.warn(`Could not save the salt history: ${err.message}`); this.lastSave = now; }
     }
-    // Adds the chlorinator's salt reading (ppm; 0 or less means unknown and is ignored). At most one sample an hour is kept.
-    public record(ppm: number, now: number = Date.now()) {
+    // Adds the chlorinator's salt reading (ppm; 0 or less means unknown and is ignored). At most one sample an hour is kept. `commAgeSec` is how
+    // long since the chlorinator last answered: past CHLORINATOR_STALE_SEC the reading is only the last one njsPC held on to (every night with
+    // the cell's power off), not a measurement, and is not kept.
+    public record(ppm: number, now: number = Date.now(), commAgeSec?: number) {
         if (typeof ppm !== 'number' || !isFinite(ppm) || !(ppm > 0)) return;
+        if (typeof commAgeSec === 'number' && commAgeSec > CHLORINATOR_STALE_SEC) return;
         if (!this.loaded) this.load();
         const last = this.samples[this.samples.length - 1];
         if (typeof last === 'undefined' || now - last.t >= SAMPLE_MS) {

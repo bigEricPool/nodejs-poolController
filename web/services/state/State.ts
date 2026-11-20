@@ -1111,7 +1111,10 @@ function sampleAutoSwgSalt() {
         let chlorRecord = sys.chlorinators.toArray().find(c => c.id === cfg.chlorinatorId);
         if (!chlorRecord || chlorRecord.ignoreSaltReading) return;
         let schlor = state.chlorinators.getItemById(chlorRecord.id, false);
-        if (schlor) saltHistory.record(schlor.saltLevel);
+        if (schlor) {
+            const now = Date.now();
+            saltHistory.record(schlor.saltLevel, now, typeof schlor.lastComm === 'number' && schlor.lastComm > 0 ? Math.max(0, (now - schlor.lastComm) / 1000) : undefined);
+        }
     }
     catch (err) { logger.warn(`SWG Assist: could not record the salt reading: ${err.message}`); }
 }
