@@ -155,3 +155,25 @@ describe('stabilizer ramp ended by a test', () => {
         expect(p.at(day(10))).toBeCloseTo(70, 0);
     });
 });
+
+describe('FC projection lines for the History panel', () => {
+    it('traces the model projection hour by hour, and carries the rows ahead with yesterday\'s chlorine', async () => {
+        const { extendRows, plainPath } = await import('../../controller/AutoSwgBenchModel');
+        const { fcRunPoints } = await import('../../controller/AutoSwgBenchHistorySource');
+        const r = rows(2, x => { x.gen = 0.05; x.dil = 1; });
+        const ext = extendRows(r, day(3));
+        expect(ext.length).toBe(r.length + 24);
+        expect(ext[ext.length - 1].gen).toBe(0.05);
+        expect(ext[ext.length - 1].sun).toBeUndefined();
+        const v: BenchVariant = { id: 'm', version: 1, kind: 'model', sun: 'none', fcTerm: 'fc', fcPath: 'model' };
+        const pts: [number, number][] = [];
+        projectLoss(v, { a: 0, b: 2.4, n: 5 }, r, [], day(0), day(0), 10, day(1), undefined, (t, fc) => pts.push([t, fc]));
+        expect(pts.length).toBe(24);
+        expect(pts[23][1]).toBeCloseTo(10 + 24 * 0.05 - 2.4, 6);
+        const pp: [number, number][] = [];
+        plainPath({ id: 'p', version: 1, kind: 'plain', dilution: true }, 2.4, ext, day(2), 10, day(3), () => 0.999, (t, fc) => pp.push([t, fc]));
+        expect(pp.length).toBe(24);
+        expect(pp[23][1]).toBeLessThan(10 + 24 * 0.05 - 2.4);
+        expect(fcRunPoints([{ run: 5, points: [[day(1), 9], [day(9), 8]] }], day(0), day(2))).toEqual([{ t: day(1), v: 9, seg: 5 }]);
+    });
+});
