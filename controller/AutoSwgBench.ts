@@ -49,7 +49,7 @@ import {
     BenchGeometry, BenchHour, BenchPumpHour, BenchSources, BenchTempHour, BenchVariant, BenchWeatherHour, buildHourlyInputs, chlorinePpm,
     CyaSource, CyaTest, cyaFor, DAY_MS, DEFAULT_VARIANTS, FcReading, Fit, fitVariant, gapDays, generationBetween, HOUR_MS, inputCoverage, InputStarts, inputStarts,
     Interval, intervalsFrom, normalizeGeometry, normalizeScoring, pairedDifference, plainRate, poundsToPpm, projectLoss, recentClearness, ScoreFlag, scoreFlags,
-    ScoringSettings, scoreSummary, spanCoverage, syncLiveRows, dilutionLoss, intervalDilution
+    ScoringSettings, scoreSummary, spanCoverage, syncLiveRows, dilutionLoss, intervalDilution, extendRows, plainPath
 } from './AutoSwgBenchModel';
 import { balanceFactor, meanDepthInches, normalizeWaterSettings, WaterBalance, waterLog, WaterSettings } from './AutoSwgBenchWater';
 import { benchForecastLog, forecastFor, waterTempBefore } from './AutoSwgBenchForecast';
@@ -130,6 +130,9 @@ const SETTINGS_FILE = 'autoSwgBench.json', FITS_FILE = 'autoSwgBenchFits.jsonl',
 // History panel (AutoSwgBenchHistorySource.ts on the wiring branch)
 const CHEM_SCORES_FILE = 'autoSwgBenchChemScores.jsonl', CHEM_RUNS_FILE = 'autoSwgBenchChem.jsonl';
 const CHEM_AHEAD_DAYS = 7, CHEM_STEP_MS = 6 * HOUR_MS;
+// Each check's FC projection by every variant that uses the weather (the models, and any with the water balance), for the History panel: from the
+// last FC reading to the check on the weather that happened, then FC_AHEAD_DAYS ahead on the saved forecast. Kept FC_KEEP_DAYS days.
+const FC_RUNS_FILE = 'autoSwgBenchFc.jsonl', FC_AHEAD_DAYS = 3, FC_KEEP_DAYS = 120, FC_MAX_READING_AGE_DAYS = 10;
 
 function sameDefinition(a: BenchVariant, b: BenchVariant): boolean {
     const strip = (v: BenchVariant) => JSON.stringify(Object.assign({}, v, { version: 0, label: undefined, retired: undefined }));
@@ -492,6 +495,9 @@ class AutoSwgBench {
         if (!s.enabled || this.busy) return;
         this.busy = true;
         try {
+            // the weather forecast as known at this check, for the forecast scores of the tests to come and the projections ahead (never throws)
+            const loc: any = sys.general && sys.general.location;
+            await benchForecastLog.refresh(loc && loc.latitude, loc && loc.longitude, now);
             const inp = this.gatherInputs(now - (this.maxFitDays() + 20) * DAY_MS, now);
             const rows: BenchFitRow[] = [];
             for (const v of s.variants) {
@@ -516,14 +522,50 @@ class AutoSwgBench {
             try { this.syncLiveScores(now); }
             catch (err) { logger.warn(`SWG Assist bench: updating the live scores failed: ${err && err.message}`); }
             this.chemCheck(now);
-            // the weather forecast as known at this check, for the forecast scores of the tests to come (never throws)
-            const loc: any = sys.general && sys.general.location;
-            await benchForecastLog.refresh(loc && loc.latitude, loc && loc.longitude, now);
+            try { this.fcProjections(inp, rows, now); }
+            catch (err) { logger.warn(`SWG Assist bench: the FC projections failed: ${err && err.message}`); }
             this.lastCheck = now;
             this.lastError = undefined;
         }
         catch (err) { this.lastError = err && err.message; logger.warn(`SWG Assist bench: the check failed: ${err && err.message}`); }
         finally { this.busy = false; }
+    }
+    // The variants whose projections are logged for the History panel: the models (they use the sun) and any with the water balance.
+    public fcVariants(): BenchVariant[] { return this.getSettings().variants.filter(v => !v.retired && v.kind !== 'live' && (v.kind === 'model' || v.dilution)); }
+    // Each such variant's FC from the last reading through the check and FC_AHEAD_DAYS ahead, with the fits just frozen, appended to FC_RUNS_FILE.
+    private fcTrimmedAt = 0;
+    private fcProjections(inp: ReturnType<AutoSwgBench['gatherInputs']>, fits: BenchFitRow[], now: number) {
+        const last = inp.readings.filter(r => r.t <= now).pop();
+        if (!last || now - last.t > FC_MAX_READING_AGE_DAYS * DAY_MS) return;
+        const ahead = now + FC_AHEAD_DAYS * DAY_MS;
+        const rows = extendRows(inp.rows, Math.floor(ahead / HOUR_MS) * HOUR_MS);
+        const out: any[] = [];
+        for (const v of this.fcVariants()) {
+            const fr = fits.find(f => f.id === v.id && f.v === v.version);
+            if (!fr || !fr.fit) continue;
+            const pts: [number, number][] = [[last.t, last.fc]];
+            const trace = (t: number, fc: number) => { pts.push([t, Math.round(fc * 100) / 100]); };
+            const fcst = this.forecastAt(inp, fr);
+            const fhours = fcst && fcst.hours;
+            const dilAhead = (i: number) => { const h = fhours ? fhours.get(rows[i].t) : undefined; return h ? h.dil : undefined; };
+            if (v.kind === 'plain' || fr.fit.fallback) {
+                const rate = fr.fit.b;
+                const fcNow = plainPath(v, rate, rows, last.t, last.fc, now, i => rows[i].dil, trace);
+                plainPath(v, rate, rows, now, fcNow, ahead, dilAhead, trace);
+            }
+            else {
+                if (typeof projectLoss(v, fr.fit, rows, inp.cyaSrc, now, last.t, last.fc, now, undefined, trace) !== 'number') continue;
+                const fcNow = pts[pts.length - 1][1];
+                if (fcst) projectLoss(v, fr.fit, rows, inp.cyaSrc, now, now, fcNow, ahead, fcst, trace);
+            }
+            out.push({ kind: 'run', run: now, id: v.id, v: v.version, from: last.t, wx: fhours ? 'saved' : 'clearness', points: pts });
+        }
+        this.appendRows(FC_RUNS_FILE, out);
+        if (now - this.fcTrimmedAt > 7 * DAY_MS) { this.fcTrimmedAt = now; this.rewriteRows(FC_RUNS_FILE, r => r.run >= now - FC_KEEP_DAYS * DAY_MS); }
+    }
+    // The logged FC projection runs of a variant id (any version) that reach into [from, to].
+    public fcRuns(id: string, from: number, to: number): any[] {
+        return this.readRows<any>(FC_RUNS_FILE).filter(r => r.kind === 'run' && r.id === id && r.run >= from - (FC_AHEAD_DAYS + FC_MAX_READING_AGE_DAYS) * DAY_MS && r.run <= to).sort((a, b) => a.run - b.run);
     }
     private mainVariant(): BenchVariant | undefined {
         const vs = this.getSettings().variants.filter(v => !v.retired && v.kind === 'model');

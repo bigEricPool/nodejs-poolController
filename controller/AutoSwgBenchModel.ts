@@ -648,7 +648,8 @@ export function fitVariant(v: BenchVariant, intervals: Interval[], rows: BenchHo
 // clearness alone (a number: no rain, as before 2026-11-20), or a saved weather forecast (its sun, rain and water balance by hour).
 // A forecast holds the water temperature at the last one known at asOf. With `dilution` the water balance's loss is added (the rows' factors, or the
 // forecast's).
-export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaInput, asOf: number, t1: number, f1: number, t2: number, forecastClearness?: ForecastInput): number | undefined {
+// `trace` is told the projected FC at the end of each hour (fcPath 'model' only), for the History panel's projection lines.
+export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTests: CyaInput, asOf: number, t1: number, f1: number, t2: number, forecastClearness?: ForecastInput, trace?: (t: number, fc: number) => void): number | undefined {
     const days = (t2 - t1) / DAY_MS;
     const fcst = forecastOf(forecastClearness);
     const forecast = !!fcst;
@@ -694,11 +695,40 @@ export function projectLoss(v: BenchVariant, fit: Fit, rows: BenchHour[], cyaTes
         if (v.dilution) { const d = dilAt(i); if (typeof d === 'number') step += Math.max(0, fc) * (1 - d) * part; }
         loss += step;
         fc = Math.max(0, fc + r.gen * part - step);
+        if (trace) trace(end, fc);
         t = end;
     }
     // a gap that runs past the rows: the steady part only
     if (t < t2) loss += fit.b * (t2 - t) / DAY_MS;
     return loss;
+}
+
+// The rows carried on past their end to `until`, hour by hour, for a projection ahead: each new hour repeats the chlorine made and the sun geometry
+// of the same hour a day earlier (the SWG keeps its pattern until the next check), with no weather of its own (a forecast supplies it).
+export function extendRows(rows: BenchHour[], until: number): BenchHour[] {
+    if (!rows.length) return rows;
+    const out = rows.slice();
+    for (let t = rows[rows.length - 1].t + HOUR_MS; t <= until; t += HOUR_MS) {
+        const prev = out[out.length - 24] || out[out.length - 1];
+        out.push({ t: t, gen: prev.gen, genFrom: prev.genFrom, frac: prev.frac, clear: prev.clear, temp: prev.temp });
+    }
+    return out;
+}
+// A plain variant's FC hour by hour from (t1, f1) to t2: the rows' chlorine less the rate, and the water balance with `dilution`. `dilAt` is a
+// row's factor (a forecast's for hours ahead).
+export function plainPath(v: BenchVariant, rate: number, rows: BenchHour[], t1: number, f1: number, t2: number, dilAt: (i: number) => number | undefined, trace: (t: number, fc: number) => void): number {
+    let fc = f1;
+    for (let i = firstRowAfter(rows, t1); i < rows.length && rows[i].t - HOUR_MS < t2; i++) {
+        const r = rows[i];
+        const end = Math.min(r.t, t2);
+        const part = (end - Math.max(r.t - HOUR_MS, t1)) / HOUR_MS;
+        if (!(part > 0)) continue;
+        let step = rate * part / 24;
+        if (v.dilution) { const d = dilAt(i); if (typeof d === 'number') step += Math.max(0, fc) * (1 - d) * part; }
+        fc = Math.max(0, fc + r.gen * part - step);
+        trace(end, fc);
+    }
+    return fc;
 }
 
 // ---------------------------------------------------------------- replay (as the 2026-11-13 offline run did it)
