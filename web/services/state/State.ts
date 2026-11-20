@@ -1154,7 +1154,10 @@ function sampleAutoSwgSalt() {
         let chlorRecord = sys.chlorinators.toArray().find(c => c.id === cfg.chlorinatorId);
         if (!chlorRecord || chlorRecord.ignoreSaltReading) return;
         let schlor = state.chlorinators.getItemById(chlorRecord.id, false);
-        if (schlor) saltHistory.record(schlor.saltLevel);
+        if (schlor) {
+            const now = Date.now();
+            saltHistory.record(schlor.saltLevel, now, typeof schlor.lastComm === 'number' && schlor.lastComm > 0 ? Math.max(0, (now - schlor.lastComm) / 1000) : undefined);
+        }
     }
     catch (err) { logger.warn(`SWG Assist: could not record the salt reading: ${err.message}`); }
 }
@@ -1983,10 +1986,12 @@ export class StateRoute {
         // readings from PoolMath and SWG % entries from the local log plus PoolMath's
         // (a PoolMath SWG entry within an hour of a local one is left out). Each entry
         // is labeled with its source. Falls back to local-only data if PoolMath can't
-        // be read (see poolMathError in the response).
+        // be read (see poolMathError in the response). Water temperatures (TEMP rows) are listed too, in the units PoolMath logged.
+        // Needs only the PoolMath share code (sys.autoSwg.shareCode is sys.poolMath's), so it works with SWG Assist never set up:
+        // there are then no local SWG % or settings rows. The PoolMath History settings open it.
         app.get('/state/autoSwg/history/combined', async (req, res, next) => {
             try {
-                let combined = await buildCombinedHistory({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName || undefined, gallons: sys.autoSwg.gallons }, undefined, toLocalSwgEntries(readAutoSwgHistory()), () => ({ fc: archivedFcReadings(), swg: archivedSwgEvents(), cya: archivedCyaReadings(), chlorine: archivedChlorineAdditions() }), refreshAutoSwgArchiveFromPage, readAutoSwgHistory().filter(r => r.source === 'settings' && Array.isArray(r.changes)).map(r => ({ ts: r.appliedAt, changes: r.changes, via: r.via })));
+                let combined = await buildCombinedHistory({ shareCode: sys.autoSwg.shareCode, poolName: sys.autoSwg.poolName || undefined, gallons: sys.autoSwg.gallons }, undefined, toLocalSwgEntries(readAutoSwgHistory()), () => ({ fc: archivedFcReadings(), swg: archivedSwgEvents(), cya: archivedCyaReadings(), chlorine: archivedChlorineAdditions(), temp: archivedWaterTemps() }), refreshAutoSwgArchiveFromPage, readAutoSwgHistory().filter(r => r.source === 'settings' && Array.isArray(r.changes)).map(r => ({ ts: r.appliedAt, changes: r.changes, via: r.via })));
                 return res.status(200).send(combined);
             }
             catch (err) { next(err); }
@@ -2054,6 +2059,21 @@ export class StateRoute {
         // The bench's water balance: pH and CSI projections, the fits and scores, the acid advice and the dose checks (advisory only).
         app.get('/state/autoSwg/bench/chem', (req, res, next) => {
             try { return res.status(200).send(autoSwgBench.chemReport(Number(req.query.days) || 120)); } catch (err) { next(err); }
+        });
+        // The pool's water level and concentration (rain, evaporation, the local water log, spills; the level ahead from the saved forecast), ?days=.
+        app.get('/state/autoSwg/bench/water', (req, res, next) => {
+            try { return res.status(200).send(autoSwgBench.waterReport(Number(req.query.days) || 30)); } catch (err) { next(err); }
+        });
+        // The local water log, until PoolMath can log water changes: POST { t (ISO or ms), kind 'add' | 'remove', inches, note }; DELETE by id.
+        app.post('/state/autoSwg/bench/water', (req, res, next) => {
+            try {
+                const e = autoSwgBench.addWater(req.body);
+                if (!e) return res.status(400).send({ error: 'Give t, kind (add or remove) and inches (above 0, at most 60).' });
+                return res.status(200).send(e);
+            } catch (err) { next(err); }
+        });
+        app.delete('/state/autoSwg/bench/water/:id', (req, res, next) => {
+            try { return autoSwgBench.removeWater(req.params.id) ? res.status(200).send({ removed: req.params.id }) : res.status(404).send({ error: 'No such entry.' }); } catch (err) { next(err); }
         });
         // How well the algorithm's projections have matched the FC readings actually measured (see
         // buildProjectionAccuracy). Reads the PoolMath share page once; ?days= sets how far back (default 120).
