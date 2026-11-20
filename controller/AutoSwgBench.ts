@@ -539,6 +539,10 @@ class AutoSwgBench {
         if (!last || now - last.t > FC_MAX_READING_AGE_DAYS * DAY_MS) return;
         const ahead = now + FC_AHEAD_DAYS * DAY_MS;
         const rows = extendRows(inp.rows, Math.floor(ahead / HOUR_MS) * HOUR_MS);
+        // the weather that happened reaches only to the last hour the station has reported (a daylight hour with no sun yet would stop a model);
+        // from there on the forecast takes over
+        let seen = last.t;
+        for (const r of inp.rows) { if (r.t > now) break; if (r.t > last.t && (typeof r.sun === 'number' || !(r.clear > 20))) seen = r.t; }
         const out: any[] = [];
         for (const v of this.fcVariants()) {
             const fr = fits.find(f => f.id === v.id && f.v === v.version);
@@ -554,11 +558,12 @@ class AutoSwgBench {
                 plainPath(v, rate, rows, now, fcNow, ahead, dilAhead, trace);
             }
             else {
-                if (typeof projectLoss(v, fr.fit, rows, inp.cyaSrc, now, last.t, last.fc, now, undefined, trace) !== 'number') continue;
+                if (typeof projectLoss(v, fr.fit, rows, inp.cyaSrc, now, last.t, last.fc, seen, undefined, trace) !== 'number') continue;
                 const fcNow = pts[pts.length - 1][1];
-                if (fcst) projectLoss(v, fr.fit, rows, inp.cyaSrc, now, now, fcNow, ahead, fcst, trace);
+                if (fcst) projectLoss(v, fr.fit, rows, inp.cyaSrc, now, seen, fcNow, ahead, fcst, trace);
             }
-            out.push({ kind: 'run', run: now, id: v.id, v: v.version, from: last.t, wx: fhours ? 'saved' : 'clearness', points: pts });
+            // t as well as run: the file's trim keeps rows by t
+            out.push({ t: now, kind: 'run', run: now, id: v.id, v: v.version, from: last.t, wx: fhours ? 'saved' : 'clearness', points: pts });
         }
         this.appendRows(FC_RUNS_FILE, out);
         if (now - this.fcTrimmedAt > 7 * DAY_MS) { this.fcTrimmedAt = now; this.rewriteRows(FC_RUNS_FILE, r => r.run >= now - FC_KEEP_DAYS * DAY_MS); }
