@@ -1762,13 +1762,14 @@ export async function computeRecommendation(params: AutoSwgParams, html?: string
 export interface CombinedHistoryEntry {
     ts: string;                  // ISO
     // 'CYA' rows are only the readings where the value changed (plus the first); 'CL' rows are liquid
-    // chlorine additions.
-    type: 'SWG' | 'FC' | 'CYA' | 'CL' | 'SETTINGS';
+    // chlorine additions; 'TEMP' rows are the water temperature logged with a test.
+    type: 'SWG' | 'FC' | 'CYA' | 'CL' | 'TEMP' | 'SETTINGS';
     source: SwgSource;           // FC readings always come from PoolMath
     pct?: number;                // SWG %
     ppmPerDay?: number;          // SWG: PoolMath-style "X ppm FC" per day
     hrs?: number;                // SWG: run hours
-    value?: number;              // FC ppm (FC rows) or CYA ppm (CYA rows)
+    value?: number;              // FC ppm (FC rows), CYA ppm (CYA rows) or the water temperature (TEMP rows)
+    unit?: string;               // TEMP rows: '°F' or '°C', as PoolMath logged it (absent when not known)
     previous?: number;           // CYA rows: the CYA reading before this one, when there was one
     percent?: number;            // CL rows: the chlorine's strength %
     ml?: number;                 // CL rows: the volume added, in mL
@@ -1802,7 +1803,7 @@ export interface ArchivedHistory {
     swg: { ts: Date; ppmPerDay: number; hrs: number; pct: number }[];
     cya: { ts: Date; value: number }[];
     chlorine: ChlorineAddition[];
-    temp?: { ts: Date; value: number }[];   // water temperature logged with a test, for the optional burn adjustment
+    temp?: { ts: Date; value: number; unit?: string }[];   // water temperature logged with a test, for the optional burn adjustment and the history's TEMP rows
 }
 
 // The SWG % and FC history exactly as a calculation would see it: FC readings
@@ -1813,6 +1814,7 @@ export async function buildCombinedHistory(params: { shareCode?: string; poolNam
     let fcEvents: FcEvent[] = [];
     let cyaEvents: FcEvent[] = [];
     let chlorine: ChlorineAddition[] = [];
+    let tempEvents: { ts: Date; value: number; unit?: string }[] = [];
     let poolMathSwgEvents: SwgEvent[] = [];
     let poolMathError: string;
     try {
@@ -1825,6 +1827,7 @@ export async function buildCombinedHistory(params: { shareCode?: string; poolNam
         fcEvents = parsed.fcEvents;
         cyaEvents = parsed.cyaEvents;
         chlorine = parsed.chlorineAdditions;
+        tempEvents = parsed.tempEvents;
         poolMathSwgEvents = parsed.swgEvents;
     }
     catch (err) { poolMathError = err.message; }
@@ -1838,6 +1841,11 @@ export async function buildCombinedHistory(params: { shareCode?: string; poolNam
         fcEvents = [...fcEvents, ...arch.fc.filter(a => !near(fcEvents, a.ts.getTime()))];
         cyaEvents = [...cyaEvents, ...arch.cya.filter(a => !near(cyaEvents, a.ts.getTime()))];
         chlorine = [...chlorine, ...arch.chlorine.filter(a => !near(chlorine, a.ts.getTime()))];
+        // Water temperatures: the archive's entry wins here, since only the archive knows the units PoolMath logged them in; a reading
+        // only the page has (newer than the archive's last read) takes the units of the archive's latest one.
+        const archTemps = arch.temp || [];
+        const lastUnit = archTemps.length ? archTemps[archTemps.length - 1].unit : undefined;
+        tempEvents = [...archTemps, ...tempEvents.filter(p => !near(archTemps, p.ts.getTime())).map(p => ({ ts: p.ts, value: p.value, unit: lastUnit }))];
         poolMathSwgEvents = [...poolMathSwgEvents, ...arch.swg.filter(a => !near(poolMathSwgEvents, a.ts.getTime())).map(a => ({ ts: a.ts, ppmPerDay: a.ppmPerDay, hrs: a.hrs, pct: a.pct, source: 'poolmath' as SwgSource }))];
     }
     const swgMerge = mergeSwgEvents(poolMathSwgEvents, localSwgEntries);
@@ -1855,6 +1863,7 @@ export async function buildCombinedHistory(params: { shareCode?: string; poolNam
         ...swgEventsToEntries(swgMerge.events),
         ...cyaRows,
         ...chlorineAdditions.map(a => ({ ts: a.ts, type: 'CL' as const, source: 'poolmath' as SwgSource, percent: a.percent, ml: a.ml, ppm: a.ppm })),
+        ...tempEvents.map(t => ({ ts: t.ts.toISOString(), type: 'TEMP' as const, source: 'poolmath' as SwgSource, value: t.value, unit: t.unit })),
         ...settingsChanges.map(c => ({ ts: c.ts, type: 'SETTINGS' as const, source: 'local-manual' as SwgSource, changes: c.changes, via: c.via })),
     ].sort(byTime);
     return { entries, localSwgEntriesUsed: swgMerge.localUsed, poolMathSwgEntriesReplaced: swgMerge.replaced, poolMathError, cya, chlorineAdditions };
