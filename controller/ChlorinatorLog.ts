@@ -26,7 +26,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //   n      samples in the hour             on     samples with an output above 0     out  mean output (%)     max  highest output (%)
 //   set    the pool setpoint (%) (last sample)     tgt  the chlorinator's target output (last sample)
 //   st     the statuses seen (0 = OK; see the chlorinatorStatus value map), only when any was not 0
-//   salt   the chlorinator's salt reading (ppm, last sample)    age  the longest time since the chlorinator last reported (seconds); a
+//   salt   the chlorinator's salt reading (ppm, last sample taken while it was answering; 0 when it was silent for more than
+//          CHLORINATOR_STALE_SEC all hour, as njsPC only holds its last reading then)    age  the longest time since the chlorinator last reported (seconds); a
 //          stale output looks like production when njsPC has lost the chlorinator
 //   stale  the samples taken when the chlorinator had not reported for more than CHLORINATOR_SILENT_SAMPLE_SEC, only when any (at night,
 //          with the cell's power off, all of them)
@@ -179,7 +180,9 @@ export class ChlorinatorOutputLog {
         if (typeof s.set === 'number') b.set = s.set;
         if (typeof s.target === 'number') b.tgt = s.target;
         if (typeof s.status === 'number' && s.status !== 0 && b.st.indexOf(s.status) < 0) b.st.push(s.status);
-        if (typeof s.salt === 'number' && s.salt > 0) b.salt = s.salt;
+        // A salt reading is taken only while the chlorinator is answering: njsPC keeps the last one when it stops (at night with the cell's power
+        // off), and that held value is not a measurement.
+        if (typeof s.salt === 'number' && s.salt > 0 && !(typeof s.commAgeSec === 'number' && s.commAgeSec > CHLORINATOR_STALE_SEC)) b.salt = s.salt;
         if (typeof s.commAgeSec === 'number' && s.commAgeSec > b.age) b.age = s.commAgeSec;
         if (typeof s.commAgeSec === 'number' && s.commAgeSec > CHLORINATOR_SILENT_SAMPLE_SEC) b.stale++;
         if (now - this.lastPrune > PRUNE_EVERY_MS) this.prune(now);

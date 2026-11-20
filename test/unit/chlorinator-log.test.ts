@@ -43,6 +43,16 @@ describe('ChlorinatorOutputLog.record', () => {
         expect(a.age).toBe(734);
         expect(b.stale).toBeUndefined();
     });
+    it('takes the salt only from samples taken while the chlorinator was answering (njsPC holds the last reading when it stops)', () => {
+        log.record(sample({ salt: 3300, commAgeSec: 3 }), T);
+        log.record(sample({ salt: 3300, commAgeSec: 15 * 60 + 1 }), T + 20 * 60000);
+        log.record(sample({ salt: 3300, commAgeSec: 3600 }), T + H);             // a whole hour silent: no salt
+        log.record(sample({ salt: 3300, commAgeSec: 7200 }), T + H + 30 * 60000);
+        log.record(sample({ salt: 3000, commAgeSec: 2 }), T + 2 * H);          // answering again
+        log.record(sample({ salt: 3000 }), T + 3 * H);                          // the age not known: taken as before
+        log.flush();
+        expect(lines().map(l => l.salt)).toEqual([3300, 0, 3000, 3000]);
+    });
     it('keeps one line per chlorinator, and a later sample from any of them ends the hour for all', () => {
         log.record(sample({ id: 1 }), T);
         log.record(sample({ id: 2, output: 80 }), T + 60000);
